@@ -1,0 +1,37 @@
+[package]
+name = "uppli-code"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "uppli-code"
+path = "src/main.rs"
+
+[dependencies]
+cc-core = { workspace = true, features = ["voice"] }
+cc-api = { workspace = true }
+cc-tools = { workspace = true }
+cc-query = { workspace = true }
+cc-tui = { workspace = true }
+cc-commands = { workspace = true }
+cc-mcp = { workspace = true }
+cc-bridge = { workspace = true }
+cc-plugins = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+tokio-util = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+crossterm = { workspace = true }
+parking_lot = { workspace = true }
+dirs = { workspace = true }
+nix = { workspace = true }
+

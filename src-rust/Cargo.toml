@@ -1,0 +1,110 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/api",
+    "crates/tools",
+    "crates/query",
+    "crates/tui",
+    "crates/commands",
+    "crates/mcp",
+    "crates/bridge",
+    "crates/cli",
+    "crates/buddy",
+    "crates/plugins",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Uppli <dev@uppli.dev>"]
+license = "MIT"
+repository = "https://github.com/uppli-io/uppli-code"
+homepage = "https://uppli.dev"
+description = "Multi-provider AI coding agent (DeepSeek, Qwen3, Ollama, Mistral)"
+keywords = ["ai", "coding-agent", "llm", "deepseek", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.44", features = ["full"] }
+tokio-stream = "0.1"
+futures = "0.3"
+async-trait = "0.1"
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "stream", "native-tls", "multipart"], default-features = false }
+reqwest-eventsource = "0.6"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# CLI
+clap = { version = "4", features = ["derive", "env", "string"] }
+
+# TUI
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+glob = "0.3"
+walkdir = "2"
+tempfile = "3"
+dirs = "5"
+which = "7"
+once_cell = "1"
+parking_lot = "0.12"
+dashmap = "6"
+indexmap = { version = "2", features = ["serde"] }
+bytes = "1"
+base64 = "0.22"
+sha2 = "0.10"
+hex = "0.4"
+getrandom = "0.2"
+enigo = "0.2"
+xcap = "0.0.13"
+url = "2"
+mime = "0.3"
+urlencoding = "2"
+open = "5"
+qrcode = "0.14"
+
+# Text processing
+similar = "2"
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "html"] }
+unicode-width = "0.2"
+unicode-segmentation = "1"
+
+# Process execution
+nix = { version = "0.29", features = ["process", "signal", "user"] }
+
+# Async channels
+tokio-util = { version = "0.7", features = ["codec", "rt"] }
+
+# JSON Schema
+schemars = { version = "0.8", features = ["derive"] }
+
+# Workspace crates
+cc-core = { path = "crates/core" }
+cc-api = { path = "crates/api" }
+cc-tools = { path = "crates/tools" }
+cc-query = { path = "crates/query" }
+cc-tui = { path = "crates/tui" }
+cc-commands = { path = "crates/commands" }
+cc-mcp = { path = "crates/mcp" }
+cc-bridge = { path = "crates/bridge" }
+cc-buddy = { path = "crates/buddy" }
+cc-plugins = { path = "crates/plugins" }

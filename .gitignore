@@ -1,0 +1,18 @@
+# Rust build artifacts
+src-rust/target/
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+*.swp
+*.swo
+
+# IDE
+.idea/
+.vscode/settings.json
+
+# Temp
+/tmp/
+*.log
