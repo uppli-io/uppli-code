@@ -35,7 +35,10 @@ struct GrepInput {
 }
 
 fn default_output_mode() -> String {
-    "files_with_matches".to_string()
+    // Default to "content" so the model sees matching lines, not just filenames.
+    // "files_with_matches" caused stuck loops where the model knew a file matched
+    // but couldn't see the code and kept retrying the same Grep.
+    "content".to_string()
 }
 
 /// Map file type shorthand to extensions (similar to ripgrep --type).

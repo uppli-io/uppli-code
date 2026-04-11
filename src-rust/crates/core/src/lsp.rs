@@ -470,8 +470,26 @@ impl LspClient {
 
         if let Some(mut child) = self.process.take() {
             // Give the process a moment to exit cleanly.
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
-            let _ = child.kill().await;
+            match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
+                Ok(Ok(_)) => {
+                    // Process exited cleanly within timeout.
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "LSP process wait error, forcing kill");
+                    let _ = child.kill().await;
+                    let _ = child.wait().await; // reap zombie
+                }
+                Err(_) => {
+                    // Timeout — process didn't exit, force kill.
+                    tracing::warn!("LSP process did not exit within 5s, forcing kill");
+                    if let Err(e) = child.kill().await {
+                        tracing::error!(error = %e, "Failed to kill LSP process");
+                    } else {
+                        // Reap the zombie so it doesn't linger in the process table.
+                        let _ = child.wait().await;
+                    }
+                }
+            }
         }
         self.is_initialized = false;
         Ok(())
@@ -598,7 +616,10 @@ fn path_to_uri(path: &str) -> String {
     if path.starts_with("file://") {
         return path.to_string();
     }
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|e| {
+        tracing::debug!(path = path, error = %e, "canonicalize failed, using raw path");
+        std::path::PathBuf::from(path)
+    });
     let s = canonical.to_string_lossy();
     if cfg!(target_os = "windows") {
         // Drive letters need a leading slash: file:///C:/...
@@ -609,14 +630,61 @@ fn path_to_uri(path: &str) -> String {
 }
 
 fn uri_to_path(uri: &str) -> String {
-    let stripped = uri
-        .strip_prefix("file:///")
-        .or_else(|| uri.strip_prefix("file://"))
-        .unwrap_or(uri);
-    if cfg!(target_os = "windows") {
-        stripped.replace('/', "\\")
+    let stripped = if let Some(s) = uri.strip_prefix("file:///") {
+        s
+    } else if let Some(s) = uri.strip_prefix("file://") {
+        s
     } else {
-        stripped.to_string()
+        return uri.to_string();
+    };
+    // Decode percent-encoded characters (e.g., %20 → space, %C3%A9 → é).
+    let decoder = percent_decode_str(stripped);
+    let decoded = decoder.decode_utf8_lossy();
+    if cfg!(target_os = "windows") {
+        // Windows: file:///C:/path → C:\path
+        decoded.replace('/', "\\")
+    } else {
+        // Unix: file:///tmp/path → /tmp/path (re-add leading slash)
+        format!("/{}", decoded)
+    }
+}
+
+/// Minimal percent-decoding without pulling in a full crate.
+fn percent_decode_str(input: &str) -> PercentDecoded<'_> {
+    PercentDecoded(input)
+}
+
+struct PercentDecoded<'a>(&'a str);
+
+impl<'a> PercentDecoded<'a> {
+    fn decode_utf8_lossy(&self) -> std::borrow::Cow<'_, str> {
+        if !self.0.contains('%') {
+            return std::borrow::Cow::Borrowed(self.0);
+        }
+        let bytes = self.0.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                    out.push(hi << 4 | lo);
+                    i += 3;
+                    continue;
+                }
+            }
+            out.push(bytes[i]);
+            i += 1;
+        }
+        String::from_utf8_lossy(&out).into_owned().into()
+    }
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -929,49 +997,171 @@ pub fn detect_installed_servers() -> Vec<LspServerConfig> {
     // (name, command_candidates, args, patterns, ext→lang mappings)
     let candidates: &[(&str, &[&str], &[&str], &[&str], &[(&str, &str)])] = &[
         // Python
-        ("pyright", &["pyright-langserver"], &["--stdio"], &["*.py"], &[(".py", "python")]),
+        (
+            "pyright",
+            &["pyright-langserver"],
+            &["--stdio"],
+            &["*.py"],
+            &[(".py", "python")],
+        ),
         ("pylsp", &["pylsp"], &[], &["*.py"], &[(".py", "python")]),
         // TypeScript / JavaScript
-        ("typescript", &["typescript-language-server"], &["--stdio"],
+        (
+            "typescript",
+            &["typescript-language-server"],
+            &["--stdio"],
             &["*.ts", "*.tsx", "*.js", "*.jsx"],
-            &[(".ts","typescript"), (".tsx","typescriptreact"), (".js","javascript"), (".jsx","javascriptreact")]),
+            &[
+                (".ts", "typescript"),
+                (".tsx", "typescriptreact"),
+                (".js", "javascript"),
+                (".jsx", "javascriptreact"),
+            ],
+        ),
         // Rust
-        ("rust-analyzer", &["rust-analyzer"], &[], &["*.rs"], &[(".rs", "rust")]),
+        (
+            "rust-analyzer",
+            &["rust-analyzer"],
+            &[],
+            &["*.rs"],
+            &[(".rs", "rust")],
+        ),
         // Go
         ("gopls", &["gopls"], &[], &["*.go"], &[(".go", "go")]),
         // C / C++
-        ("clangd", &["clangd"], &[], &["*.c", "*.cpp", "*.h", "*.hpp", "*.cc"],
-            &[(".c","c"), (".cpp","cpp"), (".h","c"), (".hpp","cpp"), (".cc","cpp")]),
+        (
+            "clangd",
+            &["clangd"],
+            &[],
+            &["*.c", "*.cpp", "*.h", "*.hpp", "*.cc"],
+            &[
+                (".c", "c"),
+                (".cpp", "cpp"),
+                (".h", "c"),
+                (".hpp", "cpp"),
+                (".cc", "cpp"),
+            ],
+        ),
         // Java
-        ("jdtls", &["jdtls", "java-language-server"], &[], &["*.java"], &[(".java", "java")]),
+        (
+            "jdtls",
+            &["jdtls", "java-language-server"],
+            &[],
+            &["*.java"],
+            &[(".java", "java")],
+        ),
         // C#
-        ("omnisharp", &["OmniSharp", "omnisharp"], &["--languageserver"], &["*.cs"], &[(".cs", "csharp")]),
+        (
+            "omnisharp",
+            &["OmniSharp", "omnisharp"],
+            &["--languageserver"],
+            &["*.cs"],
+            &[(".cs", "csharp")],
+        ),
         // Ruby
-        ("solargraph", &["solargraph"], &["stdio"], &["*.rb"], &[(".rb", "ruby")]),
+        (
+            "solargraph",
+            &["solargraph"],
+            &["stdio"],
+            &["*.rb"],
+            &[(".rb", "ruby")],
+        ),
         // PHP
-        ("phpactor", &["phpactor"], &["language-server"], &["*.php"], &[(".php", "php")]),
-        ("intelephense", &["intelephense"], &["--stdio"], &["*.php"], &[(".php", "php")]),
+        (
+            "phpactor",
+            &["phpactor"],
+            &["language-server"],
+            &["*.php"],
+            &[(".php", "php")],
+        ),
+        (
+            "intelephense",
+            &["intelephense"],
+            &["--stdio"],
+            &["*.php"],
+            &[(".php", "php")],
+        ),
         // Swift
-        ("sourcekit-lsp", &["sourcekit-lsp"], &[], &["*.swift"], &[(".swift", "swift")]),
+        (
+            "sourcekit-lsp",
+            &["sourcekit-lsp"],
+            &[],
+            &["*.swift"],
+            &[(".swift", "swift")],
+        ),
         // Kotlin
-        ("kotlin-ls", &["kotlin-language-server"], &[], &["*.kt", "*.kts"], &[(".kt","kotlin"), (".kts","kotlin")]),
+        (
+            "kotlin-ls",
+            &["kotlin-language-server"],
+            &[],
+            &["*.kt", "*.kts"],
+            &[(".kt", "kotlin"), (".kts", "kotlin")],
+        ),
         // Lua
-        ("lua-ls", &["lua-language-server"], &[], &["*.lua"], &[(".lua", "lua")]),
+        (
+            "lua-ls",
+            &["lua-language-server"],
+            &[],
+            &["*.lua"],
+            &[(".lua", "lua")],
+        ),
         // Elixir
-        ("elixir-ls", &["elixir-ls", "language_server.sh"], &[], &["*.ex", "*.exs"], &[(".ex","elixir"), (".exs","elixir")]),
+        (
+            "elixir-ls",
+            &["elixir-ls", "language_server.sh"],
+            &[],
+            &["*.ex", "*.exs"],
+            &[(".ex", "elixir"), (".exs", "elixir")],
+        ),
         // Zig
         ("zls", &["zls"], &[], &["*.zig"], &[(".zig", "zig")]),
         // YAML
-        ("yaml-ls", &["yaml-language-server"], &["--stdio"], &["*.yaml", "*.yml"], &[(".yaml","yaml"), (".yml","yaml")]),
+        (
+            "yaml-ls",
+            &["yaml-language-server"],
+            &["--stdio"],
+            &["*.yaml", "*.yml"],
+            &[(".yaml", "yaml"), (".yml", "yaml")],
+        ),
         // HTML / CSS
-        ("html-ls", &["vscode-html-language-server"], &["--stdio"], &["*.html"], &[(".html", "html")]),
-        ("css-ls", &["vscode-css-language-server"], &["--stdio"], &["*.css", "*.scss"], &[(".css","css"), (".scss","scss")]),
+        (
+            "html-ls",
+            &["vscode-html-language-server"],
+            &["--stdio"],
+            &["*.html"],
+            &[(".html", "html")],
+        ),
+        (
+            "css-ls",
+            &["vscode-css-language-server"],
+            &["--stdio"],
+            &["*.css", "*.scss"],
+            &[(".css", "css"), (".scss", "scss")],
+        ),
         // Bash
-        ("bash-ls", &["bash-language-server"], &["start"], &["*.sh", "*.bash"], &[(".sh","shellscript"), (".bash","shellscript")]),
+        (
+            "bash-ls",
+            &["bash-language-server"],
+            &["start"],
+            &["*.sh", "*.bash"],
+            &[(".sh", "shellscript"), (".bash", "shellscript")],
+        ),
         // Terraform
-        ("terraform-ls", &["terraform-ls"], &["serve"], &["*.tf"], &[(".tf", "terraform")]),
+        (
+            "terraform-ls",
+            &["terraform-ls"],
+            &["serve"],
+            &["*.tf"],
+            &[(".tf", "terraform")],
+        ),
         // Docker
-        ("dockerfile-ls", &["docker-langserver"], &["--stdio"], &["Dockerfile"], &[]),
+        (
+            "dockerfile-ls",
+            &["docker-langserver"],
+            &["--stdio"],
+            &["Dockerfile"],
+            &[],
+        ),
         // SQL
         ("sqls", &["sqls"], &[], &["*.sql"], &[(".sql", "sql")]),
     ];
@@ -1012,7 +1202,11 @@ pub fn detect_installed_servers() -> Vec<LspServerConfig> {
     if !servers.is_empty() {
         tracing::info!(
             count = servers.len(),
-            names = servers.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", "),
+            names = servers
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
             "Auto-detected LSP servers"
         );
     }
@@ -1330,5 +1524,75 @@ mod tests {
     fn test_parse_diagnostic_missing_range_returns_none() {
         let raw = serde_json::json!({ "message": "oops" });
         assert!(parse_diagnostic(&raw, "f.rs", "lsp").is_none());
+    }
+
+    // -- URI helpers tests --
+
+    #[test]
+    fn test_path_to_uri_unix() {
+        let uri = super::path_to_uri("/tmp/test.rs");
+        assert!(
+            uri.starts_with("file://"),
+            "URI should start with file://: {}",
+            uri
+        );
+    }
+
+    #[test]
+    fn test_uri_to_path_simple() {
+        let path = super::uri_to_path("file:///tmp/test.rs");
+        assert_eq!(path, "/tmp/test.rs");
+    }
+
+    #[test]
+    fn test_uri_to_path_percent_encoded_space() {
+        let path = super::uri_to_path("file:///tmp/my%20project/test.rs");
+        assert_eq!(path, "/tmp/my project/test.rs");
+    }
+
+    #[test]
+    fn test_uri_to_path_percent_encoded_unicode() {
+        // %C3%A9 = é in UTF-8
+        let path = super::uri_to_path("file:///tmp/caf%C3%A9/main.rs");
+        assert_eq!(path, "/tmp/café/main.rs");
+    }
+
+    #[test]
+    fn test_uri_to_path_no_encoding() {
+        let path = super::uri_to_path("file:///simple/path.txt");
+        assert_eq!(path, "/simple/path.txt");
+    }
+
+    #[test]
+    fn test_uri_to_path_fallback_no_prefix() {
+        let path = super::uri_to_path("/already/a/path");
+        assert_eq!(path, "/already/a/path");
+    }
+
+    #[test]
+    fn test_hex_val() {
+        assert_eq!(super::hex_val(b'0'), Some(0));
+        assert_eq!(super::hex_val(b'9'), Some(9));
+        assert_eq!(super::hex_val(b'a'), Some(10));
+        assert_eq!(super::hex_val(b'f'), Some(15));
+        assert_eq!(super::hex_val(b'A'), Some(10));
+        assert_eq!(super::hex_val(b'F'), Some(15));
+        assert_eq!(super::hex_val(b'g'), None);
+        assert_eq!(super::hex_val(b'z'), None);
+    }
+
+    #[test]
+    fn test_uri_roundtrip() {
+        let original = "/tmp/test.rs";
+        let uri = super::path_to_uri(original);
+        let back = super::uri_to_path(&uri);
+        // canonicalize may resolve symlinks, so just check it ends with the filename
+        assert!(
+            back.ends_with("test.rs"),
+            "Roundtrip failed: {} → {} → {}",
+            original,
+            uri,
+            back
+        );
     }
 }

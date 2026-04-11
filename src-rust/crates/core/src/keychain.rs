@@ -198,8 +198,13 @@ fn store_linux(provider: &str, key: &str) -> bool {
     };
 
     if let Some(ref mut stdin) = child.stdin {
-        let _ = stdin.write_all(key.as_bytes());
+        if let Err(e) = stdin.write_all(key.as_bytes()) {
+            debug!(error = %e, "Failed to write key to secret-tool stdin");
+            return false;
+        }
     }
+    // Drop stdin explicitly so secret-tool sees EOF before we wait.
+    drop(child.stdin.take());
 
     child.wait().map(|s| s.success()).unwrap_or(false)
 }

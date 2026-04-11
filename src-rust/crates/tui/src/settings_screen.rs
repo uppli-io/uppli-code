@@ -522,10 +522,7 @@ fn build_general_lines(screen: &SettingsScreen) -> Vec<Line<'static>> {
     lines.push(Line::from(""));
 
     // Model
-    let model_val = cfg
-        .model
-        .clone()
-        .unwrap_or_else(|| String::from("unknown"));
+    let model_val = cfg.model.clone().unwrap_or_else(|| String::from("unknown"));
     lines.extend(field_lines(
         "model",
         "Model",
@@ -1338,10 +1335,7 @@ pub fn handle_settings_key(
                 // Start editing the first editable text field
                 if screen.active_tab == SettingsTab::General {
                     let cfg = &screen.settings_snapshot.config;
-                    let model_val = cfg
-                        .model
-                        .clone()
-                        .unwrap_or_else(|| String::from("unknown"));
+                    let model_val = cfg.model.clone().unwrap_or_else(|| String::from("unknown"));
                     screen.start_edit("model", &model_val);
                 }
             }

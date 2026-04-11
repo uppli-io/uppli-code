@@ -4847,11 +4847,7 @@ impl SlashCommand for FastCommand {
         }
 
         let fast_model = ""; // provider-driven
-        let normal_model = ctx
-            .config
-            .model
-            .as_deref()
-            .unwrap_or("unknown");
+        let normal_model = ctx.config.model.as_deref().unwrap_or("unknown");
 
         if enable {
             let mut new_config = ctx.config.clone();
@@ -4870,10 +4866,7 @@ impl SlashCommand for FastCommand {
             new_config.model = None;
             CommandResult::ConfigChangeMessage(
                 new_config,
-                format!(
-                    "Fast mode OFF. Restored to default model ({}).",
-                    cc_core::constants::DEFAULT_MODEL
-                ),
+                "Fast mode OFF. Restored to provider default model.".to_string(),
             )
         }
     }

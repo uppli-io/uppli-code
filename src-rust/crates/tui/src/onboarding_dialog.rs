@@ -138,6 +138,9 @@ impl OnboardingDialogState {
 
     pub fn dismiss(&mut self) {
         self.visible = false;
+        // Clear sensitive data so it doesn't linger in memory.
+        self.key_input.clear();
+        self.key_cursor = 0;
     }
 
     pub fn is_done(&self) -> bool {
@@ -275,6 +278,10 @@ impl OnboardingDialogState {
             }
             OnboardingStep::ApiKey => self.step = OnboardingStep::ProviderChoice,
             OnboardingStep::ModelChoice => {
+                if self.provider_idx >= self.providers.len() {
+                    self.step = OnboardingStep::ProviderChoice;
+                    return;
+                }
                 let provider = &self.providers[self.provider_idx];
                 if provider.auth_required && self.chosen_key.is_none() {
                     self.step = OnboardingStep::ApiKey;
@@ -486,12 +493,9 @@ fn render_api_key(frame: &mut Frame, state: &OnboardingDialogState, area: Rect) 
     frame.render_widget(block, area);
 
     let display_key = if state.key_masked && !state.key_input.is_empty() {
-        let len = state.key_input.len();
-        if len > 4 {
-            format!("{}{}", "*".repeat(len - 4), &state.key_input[len - 4..])
-        } else {
-            "*".repeat(len)
-        }
+        // Show only character count when masked — never reveal suffix
+        // (even 4 chars leaks info about key format like "sk-" prefix).
+        format!("**** ({} chars)", state.key_input.len())
     } else {
         state.key_input.clone()
     };
@@ -592,7 +596,10 @@ fn render_model_choice(frame: &mut Frame, state: &OnboardingDialogState, area: R
         lines.push(Line::from(vec![
             Span::styled(marker.to_string(), style),
             Span::styled(m.display_name.clone(), style),
-            Span::styled(format!("  {}", m.description), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("  {}", m.description),
+                Style::default().fg(Color::DarkGray),
+            ),
         ]));
     }
 
@@ -639,10 +646,7 @@ fn render_confirm(frame: &mut Frame, state: &OnboardingDialogState, area: Rect) 
         .unwrap_or("?");
 
     let model = state.chosen_model.as_deref().unwrap_or("?");
-    let fast = state
-        .chosen_fast
-        .as_deref()
-        .unwrap_or("none");
+    let fast = state.chosen_fast.as_deref().unwrap_or("none");
 
     let key_display = if state.chosen_key.is_some() {
         "\u{2713} keychain"
@@ -671,10 +675,7 @@ fn render_confirm(frame: &mut Frame, state: &OnboardingDialogState, area: Rect) 
         ]),
         Line::from(vec![
             Span::styled("  Key:       ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                key_display.to_string(),
-                Style::default().fg(Color::Green),
-            ),
+            Span::styled(key_display.to_string(), Style::default().fg(Color::Green)),
         ]),
         Line::from(""),
         Line::from(""),

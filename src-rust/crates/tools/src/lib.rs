@@ -29,10 +29,16 @@ pub mod file_read;
 pub mod file_write;
 pub mod glob_tool;
 pub mod grep_tool;
+pub mod ast_edit;
+pub mod ast_grep_helper;
+pub mod ast_grep_rag;
+pub mod lint;
+pub mod tool_expertise;
 pub mod lsp_tool;
 pub mod mcp_auth_tool;
 pub mod mcp_resources;
 pub mod notebook_edit;
+pub mod patch_tool;
 pub mod powershell;
 pub mod repl_tool;
 pub mod send_message;
@@ -57,9 +63,12 @@ pub use config_tool::ConfigTool;
 pub use cron::{CronCreateTool, CronDeleteTool, CronListTool};
 pub use enter_plan_mode::EnterPlanModeTool;
 pub use exit_plan_mode::ExitPlanModeTool;
+pub use ast_edit::AstEditTool;
+pub use ast_grep_helper::AstGrepHelperTool;
 pub use file_edit::FileEditTool;
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
+// patch_tool removed — AstEdit replaces it for structural edits.
 pub use glob_tool::GlobTool;
 pub use grep_tool::GrepTool;
 pub use lsp_tool::LspTool;
@@ -288,6 +297,8 @@ pub fn all_tools() -> Vec<Box<dyn Tool>> {
         Box::new(FileReadTool),
         Box::new(FileEditTool),
         Box::new(FileWriteTool),
+        Box::new(AstEditTool),
+        Box::new(AstGrepHelperTool),
         Box::new(GlobTool),
         Box::new(GrepTool),
         Box::new(WebFetchTool),

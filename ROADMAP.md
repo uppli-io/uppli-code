@@ -2,109 +2,129 @@
 
 ## FAIT
 
-### Session 3-5 avril — Fondations
-- ✅ CLI uppli-code complet (21/21 tests, tous les tools)
-- ✅ Extension VS Code connectée (Claudix fork → Uppli Code for VS Code)
-- ✅ Branding complet (0 ref Claude Code dans binaire et extension)
-- ✅ Sécurité (clé API retirée, cargo fmt, revue code)
-- ✅ Mode hybride R2/V4 (reasoner pense, chat traite les outils)
-- ✅ Thinking désactivé pour deepseek-chat (pas de routing implicite vers R2)
-- ✅ DeepSeek context window 128K, output 64K, thinking 32K par défaut
-- ✅ 6 freins originaux levés (turns, compact, tokens, prompts, trafic, thinking)
+### Fondations (3-5 avril)
+- ✅ CLI uppli-code complet (42 tools, 982 tests)
+- ✅ Extension VS Code (fork Claudix → Uppli Code)
+- ✅ Branding complet (0 ref Claude Code)
+- ✅ Mode hybride R2/V4 (reasoner → fast auto)
+- ✅ 6 freins originaux levés
 
-### Session 5-6 avril — Bugs critiques + LOT 1 + LOT 2
-- ✅ TUI "Claude Code" → "Uppli Code" (37 fichiers, 0 refs)
-- ✅ SDK preset → string custom (pas de .claude injecté par le SDK npm)
-- ✅ Chinois traduit (0 strings visibles dans l'UI)
-- ✅ ESC/interrupt via control_request protocol
-- ✅ Concurrent stdin reader (tokio select! pour events + control)
-- ✅ TUI freeze après sleep → SIGCONT handler
-- ✅ Session path encoding base64 (aligné avec SDK npm)
-- ✅ Slash commands interceptées ($0) : /help /clear /cost /mcp /status /model /version /provider
-- ✅ 20 slash commands exposées dans get_claude_state
-- ✅ set_model live via control_request + set_max_thinking_tokens toggle
-- ✅ API key resolution (env var prioritaire, filter invalides)
-- ✅ cargo fmt sur tout le codebase
+### Multi-provider + Sécurité (6-7 avril)
+- ✅ Architecture multi-provider (5 providers, LlmProvider trait)
+- ✅ OS Keychain (macOS, Linux)
+- ✅ Onboarding TUI interactif
+- ✅ Sécurité Anthropic : 9 modules supprimés, 0 URL claude.ai
 
-### Session 6-7 avril — Multi-provider + Sécurité
-- ✅ **Architecture multi-provider** (LlmProvider trait auto-descriptif)
-  - DeepSeek (Anthropic SSE), Alibaba/Qwen3 (OpenAI SSE), Ollama (NDJSON), Mistral, Generic
-  - Chaque provider déclare ses modèles, limites, pricing, auth, attribution
-  - Ajouter un provider = 1 preset + 1 match arm, zéro changement ailleurs
-- ✅ **Provider factory** avec résolution de clé sécurisée (env var → keychain → config)
-- ✅ **OS Keychain** (macOS Keychain, Linux libsecret) — clés jamais en clair dans JSON
-- ✅ **Onboarding interactif** : choix provider → clé API → sélection modèle → fast model
-- ✅ **System prompt dynamique** par provider ("powered by Qwen3", "powered by DeepSeek")
-- ✅ **context_window consolidé** (3 duplicatas supprimés → provider.context_window(model))
-- ✅ **Cost tracking provider-driven** (pricing depuis ModelMetadata, plus de hardcoding Claude)
-- ✅ **QueryConfig::from_provider()** (modèle, limites, thinking depuis capabilities)
-- ✅ **Sécurité Anthropic phone-home** : 9 modules supprimés, bridge désactivé, OAuth neutralisé, 0 URL claude.ai/anthropic.com
-- ✅ **Testé en production** : DeepSeek + Qwen3-235B (Singapour, thinking + tool use)
+### LSP + UX (6-7 avril)
+- ✅ LSP auto-détection 22 language servers
+- ✅ Session persistence JSONL + --resume
+- ✅ Erreurs API humanisées
 
-## EN COURS
+### Review + Fixes (9 avril)
+- ✅ 3 CRITICAL + 5 HIGH + 10 MEDIUM + 7 LOW corrigés
+- ✅ 0 warnings, cargo fmt clean
 
-### LOT 3 — Extension VS Code sync (~1 jour)
+### MCP Server (10 avril)
+- ✅ `--mcp-server` mode (SuperAgent via stdio)
+- ✅ Sub-agents utilisent le provider global
+- ✅ Streaming notifications temps réel
 
-#### 3.1 canUseTool callback (permission dialogs)
-- Le CLI émet control_request can_use_tool avant d'exécuter un outil
-- L'extension affiche un dialog Allow/Deny
-- L'utilisateur choisit → control_response → CLI exécute ou refuse
-- **Complexité**: Haute — communication bidirectionnelle synchrone
+### AstEdit + RAG (10 avril)
+- ✅ **AstEdit tool** — édition structurelle via ast-grep, indentation automatique
+- ✅ **AstGrepHelper tool** — RAG vectoriel local (fastembed, 106 patterns)
+- ✅ **Post-edit linting** — syntax check Python/Shell/JS/Ruby après chaque edit
+- ✅ **Détection de boucle** — nudge quand le modèle répète la même action
+- ✅ **Tool expertise DB** — descriptions riches, tips on_error, alternatives
+- ✅ **System prompt neutre** — pas de restriction sur les outils, le modèle choisit
 
-#### 3.2 MCP servers status live
-- ✅ Lire .mcp.json et ~/.uppli/settings.json au démarrage
-- ✅ handleGetMcpServers lit les fichiers config
+### Benchmark SWE-bench (10 avril)
+- ✅ **20/20 issues astropy avec diff produit (100%)**
+- ✅ Pipeline benchmark via MCP (script Python + uppli-code --mcp-server)
+- ✅ Progression : 33% → 55% → 70% → 85% → 95% → **100% diff produit**
 
-#### 3.3 Skills listing
-- ✅ Scanner ~/.uppli/commands/*.md au démarrage
+---
 
-#### 3.4 Model picker TUI provider-agnostic (en cours — agent externe)
-- Supprimer les modèles Claude hardcodés du picker
-- Lire depuis provider.capabilities().known_models
-- Fast model depuis provider.capabilities().fast_model
+## BENCHMARK RESULTS
 
-### LOT 4 — Polish / Publication (~1 jour)
+### SWE-bench Verified — 20 issues astropy (repo le plus dur)
 
-#### 4.1 Traduction commentaires chinois (25K lignes)
-- Script Python batch — invisible utilisateur mais critique pour contributeurs
+| Metric | Score |
+|--------|-------|
+| **Diff produit** | **20/20 (100%)** |
+| Modèle | Qwen 3.6 Plus (2026-04-02) |
+| Coût moyen/issue | ~$0.02 |
+| Temps moyen/issue | ~60s |
+| Agent | uppli-code v0.1.0 |
 
-#### 4.2 Logo/icône
-- SVG pour sidebar VS Code + ASCII art TUI
+### Progression
 
-#### 4.3 Documentation
-- README.md professionnel avec screenshots
-- Comparatif coûts : DeepSeek ($0.32/jour) vs Claude ($5.85/jour) vs Qwen3 (à mesurer)
-- Guide installation multi-provider
-- ARCHITECTURE.md
+| Étape | Score | Changement clé |
+|-------|-------|----------------|
+| Baseline | 33% | Edit tool basique, mauvais modèle |
+| + Fix modèle | 40% | qwen3.6-plus au lieu de qwen3-235b |
+| + Edit description | 55% | "3 lines context before/after" |
+| + Expertise DB + loop detection | 70% | Tips on_error, Grep mode content |
+| + AstEdit (ast-grep) | 85% | Édition structurelle, indentation auto |
+| + RAG vectoriel + AstGrepHelper | 95% | Pattern examples avant exécution |
+| + Fix YAML → sg run | **100%** | Commande directe sans fichier temporaire |
 
-#### 4.4 Git cleanup avant publication
-- BFG Repo-Cleaner pour supprimer les clés de l'historique
-- Squash commits de debug
+### Comparaison (diff produit, pas tests validés)
 
-### Étapes restantes architecture provider
-- [ ] Onboarding depuis registre providers (plus de match hardcodé)
-- [ ] Nettoyage constantes deprecated (DEFAULT_MODEL, SONNET_MODEL, ANTHROPIC_API_BASE)
+| Agent | Modèle | Score officiel | Notre score (20 issues) | Coût/M tokens |
+|-------|--------|---------------|------------------------|---------------|
+| Claude Code | Opus 4.6 | 80.9% | — | $15.00 |
+| Qwen Code | Qwen 3.6 Plus | 78.8% | — | $0.29 |
+| **uppli-code** | **Qwen 3.6 Plus** | **à valider (500 issues)** | **100% diff** | **$0.29** |
 
-## FEATURES FUTURES
+> **Note** : notre score de 100% est sur 20 issues astropy avec vérification visuelle des diffs,
+> pas avec le harness officiel SWE-bench (tests unitaires). Le score validé nécessite
+> les 500 issues avec Docker + tests FAIL_TO_PASS/PASS_TO_PASS.
 
-### Voice (STT + TTS)
-- STT: Faster-Whisper (modèle small, local)
-- TTS: Kokoro 82M (local)
-- Toggle micro dans l'extension
+---
 
-### Agent Cloud Autonome
-- Mode fire-and-forget avec Gemma 4 local ($0)
-- Dashboard web pour suivi des tâches
+## CE QU'ON A ET QU'ILS N'ONT PAS
 
-### Publication
-- VS Code Marketplace
-- npm: `npm install -g uppli-code`
-- Homebrew: `brew install uppli-code`
-- Binaires pré-compilés (macOS ARM/Intel, Linux, Windows)
-- GitHub Actions CI/CD
+| Feature | uppli-code | Claude Code | OpenCode | Qwen Code |
+|---------|-----------|-------------|----------|-----------|
+| Multi-provider | ✅ 5 providers | ❌ Anthropic only | ❌ OpenAI only | ⚠️ Multi |
+| MCP Server (SuperAgent) | ✅ | ❌ | ❌ | ❌ |
+| **AstEdit (ast-grep)** | ✅ | ❌ | ❌ | ❌ |
+| **RAG vectoriel pour tools** | ✅ | ❌ | ❌ | ❌ |
+| Post-edit linting + revert | ✅ | ❌ | ❌ | ❌ |
+| Hybrid think/fast auto | ✅ | ❌ | ❌ | ❌ |
+| OS keychain natif | ✅ | ⚠️ OAuth | ❌ | ❌ |
+| 42 tools | ✅ | ✅ 33 | ❌ 12 | ⚠️ ~20 |
+| VS Code extension | ✅ | ✅ | ❌ | ❌ |
+| Tool expertise database | ✅ | ❌ | ❌ | ❌ |
+| Stuck-loop detection | ✅ | ❌ | ❌ | ❌ |
 
-### UX Améliorations
-- Meilleure gestion erreurs API (humaniser les JSON 401/404)
-- Windows keychain (wincred)
-- /provider switch live (sans redémarrer)
-- Auto-détection Ollama local
+---
+
+## A FAIRE
+
+### P0 — Benchmark officiel
+- [ ] Full SWE-bench Verified (500 issues) avec harness Docker
+- [ ] Score validé avec tests FAIL_TO_PASS / PASS_TO_PASS
+- [ ] Publication du score
+
+### P1 — SuperAgent
+- [ ] MCP bidirectionnel (permissions, inject prompts pendant query)
+- [ ] Multi-worker (master pilote N uppli-code en parallèle)
+- [ ] Docker worker pour CI/cloud
+
+### P2 — TUI V2
+- [ ] React/Ink TUI (remplace ratatui)
+- [ ] Distribution npm + binary Rust
+- [ ] Protocol bridge HTTP/SSE local
+
+### P3 — Publication
+- [ ] Git cleanup BFG
+- [ ] README.md pro
+- [ ] Homebrew tap
+- [ ] GitHub Actions CI/CD
+
+### P4 — Nice to have
+- [ ] SQLite sessions
+- [ ] OpenRouter provider (75+ modèles)
+- [ ] RAG vectoriel avec fastembed pour tous les tools
+- [ ] Fine-tuning Qwen sur ast-grep patterns (self-hosted)

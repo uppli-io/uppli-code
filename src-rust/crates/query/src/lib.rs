@@ -45,9 +45,27 @@ use cc_core::error::ClaudeError;
 use cc_core::types::{ContentBlock, Message, ToolResultContent, UsageInfo};
 use cc_tools::{Tool, ToolContext, ToolResult};
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+
+// ---------------------------------------------------------------------------
+// Global provider — set once at startup, read by sub-agents (agent_tool).
+// This avoids adding LlmProvider to ToolContext (which would create a
+// circular dependency between cc-tools and cc-api).
+// ---------------------------------------------------------------------------
+
+static GLOBAL_PROVIDER: OnceLock<Arc<dyn LlmProvider>> = OnceLock::new();
+
+/// Set the global LLM provider (called once from main.rs at startup).
+pub fn set_global_provider(provider: Arc<dyn LlmProvider>) {
+    let _ = GLOBAL_PROVIDER.set(provider);
+}
+
+/// Get the global LLM provider (for sub-agents).
+pub fn global_provider() -> Option<&'static Arc<dyn LlmProvider>> {
+    GLOBAL_PROVIDER.get()
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -116,8 +134,21 @@ pub struct QueryConfig {
 
 impl Default for QueryConfig {
     fn default() -> Self {
+        // These defaults are used ONLY when from_provider() is not called.
+        // The model/fallback_model come from the global provider if available,
+        // otherwise fall back to compile-time constants (DeepSeek legacy).
+        let (model, fallback) = match global_provider() {
+            Some(p) => {
+                let caps = p.capabilities();
+                (caps.default_model.clone(), caps.fast_model.clone())
+            }
+            None => (
+                cc_core::constants::DEFAULT_MODEL.to_string(),
+                Some(cc_core::constants::SONNET_MODEL.to_string()),
+            ),
+        };
         Self {
-            model: cc_core::constants::DEFAULT_MODEL.to_string(),
+            model,
             max_tokens: cc_core::constants::DEFAULT_MAX_TOKENS,
             max_turns: cc_core::constants::MAX_TURNS_DEFAULT,
             system_prompt: None,
@@ -132,7 +163,7 @@ impl Default for QueryConfig {
             command_queue: None,
             skill_index: None,
             max_budget_usd: None,
-            fallback_model: Some(cc_core::constants::SONNET_MODEL.to_string()),
+            fallback_model: fallback,
         }
     }
 }
@@ -473,6 +504,15 @@ pub async fn run_query_loop(
     let mut max_tokens_recovery_count: u32 = 0;
     // Tracks consecutive overload retries to avoid infinite loops.
     let mut overload_retries: u32 = 0;
+    // Stuck-loop detection: track the last tool call signature to detect
+    // the model repeating the same action. After 3 identical calls, we
+    // inject a nudge to try a different approach.
+    let mut last_tool_sig: Option<String> = None;
+    let mut repeat_count: u32 = 0;
+    // Empty-response retry: when the model returns end_turn with no tools
+    // and no text (likely rate-limit or API glitch), retry with backoff.
+    let mut empty_response_retries: u32 = 0;
+    const MAX_EMPTY_RETRIES: u32 = 3;
     // Active model — user can switch via /model command.
     let effective_model = config.model.clone();
     // Context window resolved from provider metadata (not substring matching).
@@ -575,7 +615,9 @@ pub async fn run_query_loop(
             .map(|m| !m.get_tool_result_blocks().is_empty())
             .unwrap_or(false);
 
-        let fast_override = if has_tool_results {
+        // Use the fast model for tool-result turns ONLY if config allows it.
+        // If fallback_model is None, stay on the main model for all turns.
+        let fast_override = if has_tool_results && config.fallback_model.is_some() {
             client.fast_model_for(&effective_model)
         } else {
             None
@@ -658,8 +700,7 @@ pub async fn run_query_loop(
                             MAX_OVERLOAD_RETRIES
                         );
                         if let Some(ref tx) = event_tx {
-                            let fb_hint =
-                                config.fallback_model.as_deref().unwrap_or("unknown");
+                            let fb_hint = config.fallback_model.as_deref().unwrap_or("unknown");
                             let _ = tx.send(QueryEvent::Status(format!(
                                 "⚠ {} still overloaded after {} retries. Use /model {} to switch.",
                                 effective_model, MAX_OVERLOAD_RETRIES, fb_hint
@@ -941,6 +982,37 @@ pub async fn run_query_loop(
 
         match stop {
             "end_turn" => {
+                // Detect empty responses (likely API rate-limit or glitch):
+                // no tool calls AND no meaningful text content.
+                let has_tools = !assistant_msg.get_tool_use_blocks().is_empty();
+                let has_text = match &assistant_msg.content {
+                    cc_core::types::MessageContent::Text(t) => !t.trim().is_empty(),
+                    cc_core::types::MessageContent::Blocks(blocks) => blocks.iter().any(|b| {
+                        matches!(b, ContentBlock::Text { text } if !text.trim().is_empty())
+                    }),
+                };
+                if !has_tools && !has_text && empty_response_retries < MAX_EMPTY_RETRIES {
+                    empty_response_retries += 1;
+                    let wait = std::time::Duration::from_secs(1 << empty_response_retries);
+                    warn!(
+                        retry = empty_response_retries,
+                        wait_secs = wait.as_secs(),
+                        "Empty response from API (no tools, no text) — retrying"
+                    );
+                    if let Some(ref tx) = event_tx {
+                        let _ = tx.send(QueryEvent::Status(format!(
+                            "Empty API response, retrying in {}s ({}/{})",
+                            wait.as_secs(), empty_response_retries, MAX_EMPTY_RETRIES
+                        )));
+                    }
+                    // Remove the empty assistant message before retrying.
+                    messages.pop();
+                    tokio::time::sleep(wait).await;
+                    continue;
+                }
+                // Valid end_turn — reset the retry counter.
+                empty_response_retries = 0;
+
                 fire_stop_hook!(assistant_msg);
 
                 // T1-3: Fire Stop hooks in background (fire-and-forget).
@@ -1068,6 +1140,16 @@ pub async fn run_query_loop(
 
                 for block in tool_blocks {
                     if let ContentBlock::ToolUse { id, name, input } = block {
+                        // Stuck-loop detection: if the model sends the exact same
+                        // tool call 3+ times, inject a nudge in the result.
+                        let sig = format!("{}:{}", name, input);
+                        if last_tool_sig.as_deref() == Some(&sig) {
+                            repeat_count += 1;
+                        } else {
+                            last_tool_sig = Some(sig);
+                            repeat_count = 1;
+                        }
+
                         if let Some(ref tx) = event_tx {
                             let _ = tx.send(QueryEvent::ToolStart {
                                 tool_name: name.clone(),
@@ -1154,9 +1236,37 @@ pub async fn run_query_loop(
                             });
                         }
 
+                        // Append contextual tips from the tool expertise database.
+                        // On error: suggest alternatives. On success: no extra noise.
+                        let mut enriched_content = if result.is_error {
+                            if let Some(tips) = cc_tools::tool_expertise::on_error_tips(&name) {
+                                format!("{}\n\nTips: {}", result.content, tips)
+                            } else {
+                                result.content.clone()
+                            }
+                        } else {
+                            result.content.clone()
+                        };
+
+                        // Stuck-loop nudge: if the model repeated the same call 3+ times,
+                        // tell it to try something different.
+                        if repeat_count >= 3 {
+                            enriched_content.push_str(
+                                "\n\n⚠️ You've repeated this exact tool call multiple times \
+                                 with the same result. Try a different approach: \
+                                 read the file directly, use a different search pattern, \
+                                 or use Bash to explore the code."
+                            );
+                            warn!(
+                                tool = name.as_str(),
+                                repeat_count,
+                                "Stuck loop detected — nudging model"
+                            );
+                        }
+
                         result_blocks.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
-                            content: ToolResultContent::Text(result.content),
+                            content: ToolResultContent::Text(enriched_content),
                             is_error: if result.is_error { Some(true) } else { None },
                         });
                     }

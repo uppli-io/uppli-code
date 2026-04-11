@@ -44,8 +44,8 @@ pub fn provider_registry() -> &'static [ProviderPreset] {
             aliases: &["dashscope", "qwen"],
             display_name: "Qwen",
             description: "Qwen 3.6 Plus — agentic coding, 1M context",
-            default_model: "qwen3.6-plus",
-            fast_model: Some("qwen3.5-122b-a10b"),
+            default_model: "qwen3.6-plus-2026-04-02",
+            fast_model: Some("qwen-turbo-latest"),
             supports_thinking: true,
             auth: AuthConfig {
                 env_vars: &["DASHSCOPE_API_KEY"],
@@ -274,12 +274,22 @@ fn create_openai_provider(
 }
 
 fn default_model_for(provider_type: &ProviderType) -> String {
-    match provider_type {
-        ProviderType::Ollama => "gemma4".to_string(),
-        ProviderType::Alibaba => "qwen3-235b-a22b".to_string(),
-        ProviderType::OpenAiCompat => "default".to_string(),
-        ProviderType::Deepseek => "deepseek-reasoner".to_string(),
-    }
+    // Use the preset's default_model to stay in sync.
+    // Falls back to hardcoded values only if no preset is found.
+    let preset_name = match provider_type {
+        ProviderType::Ollama => "ollama",
+        ProviderType::Alibaba => "alibaba",
+        ProviderType::OpenAiCompat => "openai",
+        ProviderType::Deepseek => "deepseek",
+    };
+    find_preset(preset_name)
+        .map(|p| p.default_model.to_string())
+        .unwrap_or_else(|| match provider_type {
+            ProviderType::Ollama => "llama3".to_string(),
+            ProviderType::Alibaba => "qwen3.6-plus-2026-04-02".to_string(),
+            ProviderType::OpenAiCompat => "default".to_string(),
+            ProviderType::Deepseek => "deepseek-reasoner".to_string(),
+        })
 }
 
 #[cfg(test)]

@@ -76,27 +76,27 @@ impl Tool for FileWriteTool {
             }
         }
 
-        let existed = path.exists();
-        let before_content = if existed {
-            match tokio::fs::read(&path).await {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    return ToolResult::error(format!(
-                        "Failed to read existing file {}: {}",
-                        path.display(),
-                        e
-                    ))
-                }
+        // Read existing content in one step to avoid TOCTOU race between
+        // exists() and read().  NotFound is fine (new file).
+        let (before_content, is_new) = match tokio::fs::read(&path).await {
+            Ok(bytes) => (bytes, false),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Vec::new(), true),
+            Err(e) => {
+                return ToolResult::error(format!(
+                    "Failed to read existing file {}: {}",
+                    path.display(),
+                    e
+                ))
             }
-        } else {
-            Vec::new()
         };
-        let is_new = !existed;
 
-        // Write the file
+        // Write the file.
         if let Err(e) = tokio::fs::write(&path, &params.content).await {
             return ToolResult::error(format!("Failed to write file {}: {}", path.display(), e));
         }
+
+        // Syntax check — warn but don't revert.
+        let lint = crate::lint::check_syntax(&path).await;
 
         ctx.record_file_change(
             path.clone(),
@@ -109,13 +109,19 @@ impl Tool for FileWriteTool {
         let byte_count = params.content.len();
 
         let action = if is_new { "Created" } else { "Wrote" };
-        ToolResult::success(format!(
+        let mut msg = format!(
             "{} {} ({} lines, {} bytes)",
             action,
             path.display(),
             line_count,
             byte_count
-        ))
+        );
+        if !lint.ok {
+            msg.push_str(&format!("\n\n⚠️ SYNTAX ERROR (file written but code is broken):\n{}", lint.errors));
+        } else if let Some(lang) = lint.language {
+            msg.push_str(&format!(". Syntax check passed ({}).", lang));
+        }
+        ToolResult::success(msg)
         .with_metadata(json!({
             "file_path": path.display().to_string(),
             "is_new": is_new,

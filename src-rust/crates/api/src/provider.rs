@@ -204,13 +204,21 @@ pub trait LlmProvider: Send + Sync {
     }
 
     /// Context window size (tokens) for a specific model.
+    ///
+    /// Falls back to `default_max_tokens * 4` (heuristic) if the model
+    /// is not in `known_models`, rather than a hardcoded 128K which would
+    /// be wrong for small local models (e.g., Ollama tinylama = 2K).
     fn context_window(&self, model: &str) -> u64 {
         self.capabilities()
             .known_models
             .iter()
             .find(|m| m.id == model)
             .map(|m| m.context_window)
-            .unwrap_or(128_000)
+            .unwrap_or_else(|| {
+                // Heuristic: context ≈ 4× max output, floor at 8K.
+                let fallback = (self.capabilities().default_max_tokens as u64) * 4;
+                fallback.max(8_192)
+            })
     }
 
     /// Max output tokens for a specific model.
@@ -230,5 +238,141 @@ pub trait LlmProvider: Send + Sync {
             .iter()
             .find(|m| m.id == model)
             .and_then(|m| m.pricing)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal provider implementation for testing default trait methods.
+    struct TestProvider {
+        caps: ProviderCapabilities,
+    }
+
+    #[async_trait]
+    impl LlmProvider for TestProvider {
+        async fn create_message_stream(
+            &self,
+            _req: CreateMessageRequest,
+            _handler: Arc<dyn StreamHandler>,
+        ) -> Result<mpsc::Receiver<StreamEvent>, ClaudeError> {
+            unimplemented!()
+        }
+
+        async fn create_message(
+            &self,
+            _req: CreateMessageRequest,
+        ) -> Result<CreateMessageResponse, ClaudeError> {
+            unimplemented!()
+        }
+
+        async fn list_models(&self) -> Vec<AvailableModel> {
+            vec![]
+        }
+
+        fn capabilities(&self) -> &ProviderCapabilities {
+            &self.caps
+        }
+    }
+
+    fn make_provider(known_models: Vec<ModelMetadata>, default_max_tokens: u32) -> TestProvider {
+        TestProvider {
+            caps: ProviderCapabilities {
+                name: "test".to_string(),
+                display_name: "Test".to_string(),
+                attribution: "test".to_string(),
+                default_model: "test-model".to_string(),
+                fast_model: None,
+                known_models,
+                default_max_tokens,
+                default_thinking_budget: None,
+                api_format: ApiFormat::OpenAI,
+                default_api_base: String::new(),
+                auth: AuthConfig {
+                    env_vars: &[],
+                    keychain_key: "test",
+                    display_label: "Test",
+                    required: false,
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn context_window_returns_known_model_value() {
+        let p = make_provider(
+            vec![ModelMetadata {
+                id: "test-model".to_string(),
+                display_name: "Test".to_string(),
+                description: String::new(),
+                context_window: 32_000,
+                max_output_tokens: 4096,
+                supports_thinking: false,
+                pricing: None,
+            }],
+            4096,
+        );
+        assert_eq!(p.context_window("test-model"), 32_000);
+    }
+
+    #[test]
+    fn context_window_unknown_model_uses_heuristic() {
+        let p = make_provider(vec![], 4096);
+        // Heuristic: 4096 * 4 = 16384, above 8K floor
+        assert_eq!(p.context_window("unknown"), 16_384);
+    }
+
+    #[test]
+    fn context_window_heuristic_respects_floor() {
+        let p = make_provider(vec![], 1024);
+        // Heuristic: 1024 * 4 = 4096, below 8K floor → returns 8192
+        assert_eq!(p.context_window("unknown"), 8_192);
+    }
+
+    #[test]
+    fn max_output_tokens_known_model() {
+        let p = make_provider(
+            vec![ModelMetadata {
+                id: "m".to_string(),
+                display_name: "M".to_string(),
+                description: String::new(),
+                context_window: 128_000,
+                max_output_tokens: 16_384,
+                supports_thinking: true,
+                pricing: None,
+            }],
+            4096,
+        );
+        assert_eq!(p.max_output_tokens("m"), 16_384);
+    }
+
+    #[test]
+    fn max_output_tokens_unknown_model_falls_back_to_default() {
+        let p = make_provider(vec![], 8192);
+        assert_eq!(p.max_output_tokens("unknown"), 8192);
+    }
+
+    #[test]
+    fn model_supports_thinking_true() {
+        let p = make_provider(
+            vec![ModelMetadata {
+                id: "thinker".to_string(),
+                display_name: "T".to_string(),
+                description: String::new(),
+                context_window: 128_000,
+                max_output_tokens: 8192,
+                supports_thinking: true,
+                pricing: None,
+            }],
+            4096,
+        );
+        assert!(p.model_supports_thinking("thinker"));
+    }
+
+    #[test]
+    fn model_supports_thinking_false_for_unknown() {
+        let p = make_provider(vec![], 4096);
+        assert!(!p.model_supports_thinking("unknown"));
     }
 }

@@ -1648,13 +1648,8 @@ impl App {
     // Event handling
     // -------------------------------------------------------------------
 
-    /// Persist `has_completed_onboarding = true` to the settings file.
-    /// Best-effort: failures are silently ignored to not disrupt the session.
-    fn persist_onboarding_complete() -> anyhow::Result<()> {
-        let mut settings = cc_core::config::Settings::load_sync()?;
-        settings.has_completed_onboarding = true;
-        settings.save_sync()
-    }
+    // persist_onboarding_complete removed — has_completed_onboarding is
+    // now persisted directly in OnboardingDialog::persist_settings().
 
     /// Process a mouse event (scroll, text selection).
     pub fn handle_mouse_event(&mut self, mouse_event: MouseEvent) {
@@ -1708,8 +1703,7 @@ impl App {
             return self.handle_global_search_key(key);
         }
         // Skip keybindings when a modal dialog is open — let the dialog handle keys.
-        let modal_open = self.onboarding_dialog.visible
-            || self.bypass_permissions_dialog.visible;
+        let modal_open = self.onboarding_dialog.visible || self.bypass_permissions_dialog.visible;
         if !modal_open {
             let key_context = self.current_key_context();
             if let Some(keystroke) = key_event_to_keystroke(&key) {
@@ -2233,6 +2227,31 @@ impl App {
                 self.help_overlay.toggle();
             }
 
+            // ---- Toggle last thinking block (t key) -------------------
+            // Must be BEFORE the Char(c) catch-all to avoid being unreachable.
+            KeyCode::Char('t') if !self.is_streaming => {
+                use cc_core::types::ContentBlock;
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                'outer: for msg in self.messages.iter().rev() {
+                    let blocks = msg.content_blocks();
+                    for block in blocks.iter().rev() {
+                        if let ContentBlock::Thinking { thinking, .. } = block {
+                            let mut h = DefaultHasher::new();
+                            thinking.hash(&mut h);
+                            let hash = h.finish();
+                            if self.thinking_expanded.contains(&hash) {
+                                self.thinking_expanded.remove(&hash);
+                            } else {
+                                self.thinking_expanded.insert(hash);
+                            }
+                            self.invalidate_transcript();
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+
             // ---- Text entry (allowed during streaming so user can prepare next message) ---
             KeyCode::Char(c) => {
                 if self.prompt_input.vim_enabled && self.prompt_input.vim_mode != VimMode::Insert {
@@ -2349,31 +2368,6 @@ impl App {
                     // Scrolled all the way back to bottom — re-enable auto-follow.
                     self.auto_scroll = true;
                     self.new_messages_while_scrolled = 0;
-                }
-            }
-
-            // ---- Toggle last thinking block (t key) -------------------
-            KeyCode::Char('t') if !self.is_streaming => {
-                // Find the last thinking block in the message list and toggle it
-                use cc_core::types::ContentBlock;
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                'outer: for msg in self.messages.iter().rev() {
-                    let blocks = msg.content_blocks();
-                    for block in blocks.iter().rev() {
-                        if let ContentBlock::Thinking { thinking, .. } = block {
-                            let mut h = DefaultHasher::new();
-                            thinking.hash(&mut h);
-                            let hash = h.finish();
-                            if self.thinking_expanded.contains(&hash) {
-                                self.thinking_expanded.remove(&hash);
-                            } else {
-                                self.thinking_expanded.insert(hash);
-                            }
-                            self.invalidate_transcript();
-                            break 'outer;
-                        }
-                    }
                 }
             }
 

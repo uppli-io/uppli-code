@@ -48,7 +48,11 @@ struct CreateApiKeyResponse {
 // ---- Public entry point -----------------------------------------------------
 
 /// Outcome of a completed login flow.
+///
+/// Note: This entire module is legacy (Anthropic OAuth) and not currently
+/// called.  Kept for potential future use with providers that support OAuth.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct LoginResult {
     /// The credential to use: either an API key (Console flow) or Bearer token (Claude.ai).
     pub credential: String,

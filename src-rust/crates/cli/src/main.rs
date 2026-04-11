@@ -8,9 +8,9 @@
 //    - Headless (--print / -p) mode: single query, output to stdout
 //    - Interactive REPL mode: full TUI with ratatui
 
+mod mcp_server;
 mod oauth_flow;
 
-use anyhow::Context;
 use async_trait::async_trait;
 use cc_core::types::ToolDefinition;
 use cc_core::{
@@ -99,6 +99,11 @@ struct Cli {
     /// Print mode: send prompt and exit (non-interactive)
     #[arg(short = 'p', long = "print", action = ArgAction::SetTrue)]
     print: bool,
+
+    /// MCP server mode: expose uppli-code as an MCP tool on stdio.
+    /// Enables orchestration by Claude Code, another uppli-code, or any MCP client.
+    #[arg(long = "mcp-server", action = ArgAction::SetTrue)]
+    mcp_server: bool,
 
     /// Model to use (overrides provider default)
     #[arg(short = 'm', long = "model")]
@@ -570,12 +575,21 @@ async fn main() -> anyhow::Result<()> {
     let effective_provider = provider_name
         .map(|s| s.to_string())
         .unwrap_or_else(|| config.provider.to_string());
-    let is_deepseek_provider = effective_provider == "deepseek";
-    let (api_key, use_bearer_auth) = if is_deepseek_provider {
+    let preset = cc_api::find_preset(&effective_provider);
+    // DeepSeek uses a special auth flow (backwards compat with OAuth).
+    // Detect via ProviderType enum rather than hardcoded string comparison.
+    let is_deepseek = preset
+        .map(|p| p.provider_type == cc_core::config::ProviderType::Deepseek)
+        .unwrap_or(false);
+    let (api_key, use_bearer_auth) = if is_deepseek {
         match config.resolve_auth_async().await {
             Some(auth) => auth,
             None if is_headless => {
-                anyhow::bail!("No API key found. Set DEEPSEEK_API_KEY or use --api-key.");
+                let env_hint = preset
+                    .and_then(|p| p.auth.env_vars.first())
+                    .copied()
+                    .unwrap_or("API_KEY");
+                anyhow::bail!("No API key found. Set {} or use --api-key.", env_hint);
             }
             None => {
                 // No key found — in TUI mode the onboarding dialog handles it.
@@ -603,8 +617,8 @@ async fn main() -> anyhow::Result<()> {
                 return Err(e.context("Failed to create LLM provider"));
             }
             // In TUI mode, no provider yet is OK — the onboarding dialog will set it up.
-            // Create a placeholder DeepSeek client that will be replaced after onboarding.
-            // (This requires at least a dummy config so the TUI can start.)
+            // Create a placeholder Ollama provider (needs no key) that will be
+            // replaced after onboarding completes.
             info!("No provider configured — TUI onboarding will handle setup");
             Arc::from(
                 cc_api::create_provider(
@@ -612,15 +626,37 @@ async fn main() -> anyhow::Result<()> {
                     Some("ollama"), // Ollama needs no key, safest placeholder
                 )
                 .unwrap_or_else(|_| {
-                    // Last resort: create Ollama provider with defaults
-                    Box::new(
-                        cc_api::OpenAiProvider::new(cc_api::OpenAiProviderConfig::ollama("gemma4"))
-                            .expect("Ollama provider should always construct"),
-                    )
+                    // Last resort: create Ollama provider with defaults.
+                    // Use the Ollama preset's default model, not a hardcoded name.
+                    let default_model = cc_api::find_preset("ollama")
+                        .map(|p| p.default_model.to_string())
+                        .unwrap_or_else(|| "llama3".to_string());
+                    match cc_api::OpenAiProvider::new(cc_api::OpenAiProviderConfig::ollama(
+                        &default_model,
+                    )) {
+                        Ok(p) => Box::new(p),
+                        Err(e) => {
+                            warn!(error = %e, "Failed to create fallback Ollama provider");
+                            // Absolute last resort — will fail on first API call
+                            // but at least won't panic at startup.
+                            Box::new(
+                                cc_api::OpenAiProvider::new(cc_api::OpenAiProviderConfig::ollama(
+                                    "llama3",
+                                ))
+                                .unwrap_or_else(|_| unreachable!("static config")),
+                            )
+                        }
+                    }
                 }),
             )
         }
     };
+
+    // Store provider globally so sub-agents (AgentTool) can reuse it.
+    cc_query::set_global_provider(Arc::clone(&client));
+
+    // Initialize the RAG embedding model (22MB, ~1s load).
+    cc_rag::Embedder::init();
 
     // Log active provider.
     info!(
@@ -756,12 +792,15 @@ async fn main() -> anyhow::Result<()> {
         if !lsp_configs.is_empty() {
             let lsp_mgr = cc_core::lsp::global_lsp_manager();
             let cwd_clone = cwd.clone();
+            let n_servers = lsp_configs.len();
+            info!(count = n_servers, "Starting LSP servers in background");
             tokio::spawn(async move {
                 let mut mgr = lsp_mgr.lock().await;
                 for cfg in lsp_configs {
                     mgr.register_server(cfg);
                 }
                 mgr.start_servers(&cwd_clone).await;
+                debug!("LSP background startup finished");
             });
         }
     }
@@ -815,7 +854,23 @@ async fn main() -> anyhow::Result<()> {
         cron_cancel.clone(),
     );
 
-    let result = if is_sdk_piped {
+    // MCP server mode: expose uppli-code as an MCP tool on stdio.
+    // Launched with `uppli-code --mcp-server`, used by Claude Code, another
+    // uppli-code master, CI pipelines, or any MCP client.
+    let result = if cli.mcp_server {
+        let mcp_state = mcp_server::McpServerState {
+            provider: client,
+            working_dir: cwd.clone(),
+            config: config.clone(),
+            cost_tracker: cost_tracker.clone(),
+            permission_mode: config.permission_mode.clone(),
+            max_turns: cli.max_turns,
+            model_override: cli.model.clone(),
+            stdout: std::sync::Arc::new(tokio::sync::Mutex::new(tokio::io::stdout())),
+            busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        mcp_server::run_mcp_server(mcp_state).await
+    } else if is_sdk_piped {
         run_sdk_headless(&cli, client, tools, tool_ctx, query_config, cost_tracker).await
     } else if is_headless {
         run_headless(&cli, client, tools, tool_ctx, query_config, cost_tracker).await
@@ -1591,13 +1646,15 @@ async fn run_sdk_headless(
         // Persist the latest messages to the session JSONL transcript.
         // This enables --resume and /resume to reload the conversation.
         {
-            let transcript_path = cc_core::session_storage::transcript_path(
-                &tool_ctx.working_dir,
-                &session_id,
-            );
+            let transcript_path =
+                cc_core::session_storage::transcript_path(&tool_ctx.working_dir, &session_id);
             // Write the last user message + all new assistant/tool messages.
             // We write the user message we pushed earlier and the assistant response.
-            if let Some(last_user) = messages.iter().rev().find(|m| m.role == cc_core::types::Role::User) {
+            if let Some(last_user) = messages
+                .iter()
+                .rev()
+                .find(|m| m.role == cc_core::types::Role::User)
+            {
                 let entry = cc_core::session_storage::TranscriptEntry::User(
                     cc_core::session_storage::TranscriptMessage {
                         uuid: Some(uuid::Uuid::new_v4().to_string()),
@@ -1613,9 +1670,14 @@ async fn run_sdk_headless(
                         extra: Default::default(),
                     },
                 );
-                let _ = cc_core::session_storage::write_transcript_entry(&transcript_path, &entry).await;
+                let _ = cc_core::session_storage::write_transcript_entry(&transcript_path, &entry)
+                    .await;
             }
-            if let Some(last_asst) = messages.iter().rev().find(|m| m.role == cc_core::types::Role::Assistant) {
+            if let Some(last_asst) = messages
+                .iter()
+                .rev()
+                .find(|m| m.role == cc_core::types::Role::Assistant)
+            {
                 let entry = cc_core::session_storage::TranscriptEntry::Assistant(
                     cc_core::session_storage::TranscriptMessage {
                         uuid: Some(msg_uuid.clone()),
@@ -1631,7 +1693,8 @@ async fn run_sdk_headless(
                         extra: Default::default(),
                     },
                 );
-                let _ = cc_core::session_storage::write_transcript_entry(&transcript_path, &entry).await;
+                let _ = cc_core::session_storage::write_transcript_entry(&transcript_path, &entry)
+                    .await;
             }
         }
 
@@ -1730,23 +1793,24 @@ async fn run_headless(
     use tokio_util::sync::CancellationToken;
 
     // If --resume is set, load prior messages from the session JSONL.
+    //
+    // Messages are loaded in their original format and prepended to the
+    // conversation. The provider's translate_message() handles format
+    // conversion (thinking blocks, tool_use/tool_result) for the API.
+    // In TUI mode these messages also appear in the scrollable history.
     let mut prior_messages: Vec<cc_core::types::Message> = Vec::new();
     if let Some(ref session_id) = cli.resume {
         let tp = cc_core::session_storage::transcript_path(&tool_ctx.working_dir, session_id);
         if let Ok(entries) = cc_core::session_storage::load_transcript(&tp).await {
-            for entry in entries {
-                match entry {
-                    cc_core::session_storage::TranscriptEntry::User(m) => {
-                        prior_messages.push(m.message);
-                    }
-                    cc_core::session_storage::TranscriptEntry::Assistant(m) => {
-                        prior_messages.push(m.message);
-                    }
-                    _ => {}
-                }
-            }
-            if !prior_messages.is_empty() {
-                eprintln!("Resumed session '{}' ({} messages)", session_id, prior_messages.len());
+            let loaded =
+                cc_core::session_storage::messages_from_transcript(&entries);
+            if !loaded.is_empty() {
+                eprintln!(
+                    "Resumed session '{}' ({} messages)",
+                    session_id,
+                    loaded.len()
+                );
+                prior_messages = loaded;
             }
         }
     }
@@ -1958,8 +2022,7 @@ async fn run_headless(
                 extra: Default::default(),
             },
         );
-        let _ = cc_core::session_storage::write_transcript_entry(&tp, &entry)
-        .await;
+        let _ = cc_core::session_storage::write_transcript_entry(&tp, &entry).await;
     }
 
     // Final output
@@ -2090,17 +2153,15 @@ async fn run_interactive(
             }
             Err(e) => {
                 eprintln!("Warning: could not load session {}: {}", id, e);
-                let mut session = cc_core::history::ConversationSession::new(
-                    query_config.model.clone(),
-                );
+                let mut session =
+                    cc_core::history::ConversationSession::new(query_config.model.clone());
                 session.id = tool_ctx.session_id.clone();
                 session.working_dir = Some(tool_ctx.working_dir.display().to_string());
                 session
             }
         }
     } else {
-        let mut session =
-            cc_core::history::ConversationSession::new(query_config.model.clone());
+        let mut session = cc_core::history::ConversationSession::new(query_config.model.clone());
         session.id = tool_ctx.session_id.clone();
         session.working_dir = Some(tool_ctx.working_dir.display().to_string());
         session
@@ -2203,29 +2264,38 @@ async fn run_interactive(
     let status_cmd_str = std::env::var("CLAUDE_STATUS_COMMAND").ok();
     let (status_cmd_tx, mut status_cmd_rx) = mpsc::channel::<String>(4);
     if let Some(ref cmd_str) = status_cmd_str {
-        let cmd_str = cmd_str.clone();
-        let tx = status_cmd_tx.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                // Run via shell so pipes/redirects in the command string work.
-                let output = if cfg!(target_os = "windows") {
-                    tokio::process::Command::new("cmd")
-                        .args(["/C", &cmd_str])
-                        .output()
-                        .await
-                } else {
-                    tokio::process::Command::new("sh")
-                        .args(["-c", &cmd_str])
-                        .output()
-                        .await
-                };
-                if let Ok(out) = output {
-                    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    let _ = tx.try_send(text);
-                }
+        // Security: split the command into program + args using shell-word
+        // parsing rules (respects quotes and escapes) instead of passing the
+        // raw string through `sh -c` which is an injection vector.
+        // Pipes/redirects are NOT supported — use a wrapper script for those.
+        match shell_words::split(cmd_str) {
+            Ok(parts) if !parts.is_empty() => {
+                let program = parts[0].clone();
+                let args: Vec<String> = parts[1..].to_vec();
+                let tx = status_cmd_tx.clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        let output = tokio::process::Command::new(&program)
+                            .args(&args)
+                            .output()
+                            .await;
+                        if let Ok(out) = output {
+                            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                            let _ = tx.try_send(text);
+                        }
+                    }
+                });
             }
-        });
+            Ok(_) => {} // empty command string — ignore
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    cmd = cmd_str,
+                    "CLAUDE_STATUS_COMMAND has invalid quoting — ignoring"
+                );
+            }
+        }
     }
 
     // Bridge runtime channels — Some when bridge is configured and started.
@@ -2992,8 +3062,12 @@ async fn run_interactive(
                     // Write last user + assistant messages
                     for msg in messages.iter().rev().take(2) {
                         let entry_type = match msg.role {
-                            cc_core::types::Role::User => cc_core::session_storage::TranscriptEntry::User,
-                            cc_core::types::Role::Assistant => cc_core::session_storage::TranscriptEntry::Assistant,
+                            cc_core::types::Role::User => {
+                                cc_core::session_storage::TranscriptEntry::User
+                            }
+                            cc_core::types::Role::Assistant => {
+                                cc_core::session_storage::TranscriptEntry::Assistant
+                            }
                         };
                         let entry = entry_type(cc_core::session_storage::TranscriptMessage {
                             uuid: Some(uuid::Uuid::new_v4().to_string()),

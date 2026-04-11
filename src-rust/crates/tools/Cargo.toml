@@ -7,6 +7,7 @@ edition.workspace = true
 cc-core = { workspace = true }
 cc-api = { workspace = true }
 cc-mcp = { workspace = true }
+cc-rag = { path = "../rag" }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }

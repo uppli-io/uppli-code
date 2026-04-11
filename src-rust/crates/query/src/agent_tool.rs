@@ -10,8 +10,7 @@
 //   - Returns its final output as the tool result
 
 use async_trait::async_trait;
-use cc_api::client::ClientConfig;
-use cc_api::{AnthropicClient, LlmProvider};
+use cc_api::LlmProvider;
 use cc_core::types::Message;
 use cc_tools::{PermissionLevel, Tool, ToolContext, ToolResult};
 use serde::Deserialize;
@@ -20,7 +19,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use crate::{run_query_loop, QueryConfig, QueryOutcome};
+use crate::{global_provider, run_query_loop, QueryConfig, QueryOutcome};
 
 pub struct AgentTool;
 
@@ -104,26 +103,15 @@ impl Tool for AgentTool {
 
         info!(description = %params.description, "Spawning sub-agent");
 
-        // Resolve API key from environment.
-        let api_key = match std::env::var("ANTHROPIC_API_KEY")
-            .ok()
-            .filter(|k| !k.is_empty())
-        {
-            Some(k) => k,
+        // Reuse the parent's provider — sub-agents should talk to the same
+        // LLM endpoint with the same auth, not hardcode a specific provider.
+        let client: Arc<dyn LlmProvider> = match global_provider() {
+            Some(p) => Arc::clone(p),
             None => {
                 return ToolResult::error(
-                    "ANTHROPIC_API_KEY not set – cannot spawn sub-agent".to_string(),
+                    "No LLM provider configured — cannot spawn sub-agent".to_string(),
                 )
             }
-        };
-
-        // Dedicated client for the sub-agent (same provider as parent).
-        let client: Arc<dyn LlmProvider> = match AnthropicClient::new(ClientConfig {
-            api_key,
-            ..Default::default()
-        }) {
-            Ok(c) => Arc::new(c),
-            Err(e) => return ToolResult::error(format!("Failed to create client: {}", e)),
         };
 
         // Build the tool list for the sub-agent.
@@ -139,11 +127,12 @@ impl Tool for AgentTool {
                 .collect()
         };
 
-        // Resolve model: explicit override > parent context model > default.
+        // Resolve model: explicit override > provider default.
+        let caps = client.capabilities();
         let model = params
             .model
             .filter(|m| !m.is_empty())
-            .unwrap_or_else(|| cc_core::constants::DEFAULT_MODEL.to_string());
+            .unwrap_or_else(|| caps.default_model.clone());
 
         let system_prompt = params.system_prompt.unwrap_or_else(|| {
             // Build the default system prompt, optionally augmented with
@@ -185,7 +174,7 @@ impl Tool for AgentTool {
 
         let query_config = QueryConfig {
             model,
-            max_tokens: cc_core::constants::DEFAULT_MAX_TOKENS,
+            max_tokens: caps.default_max_tokens,
             max_turns: params
                 .max_turns
                 .unwrap_or(cc_core::constants::MAX_TURNS_DEFAULT),
@@ -194,14 +183,14 @@ impl Tool for AgentTool {
             output_style: ctx.config.effective_output_style(),
             output_style_prompt: ctx.config.resolve_output_style_prompt(),
             working_directory: Some(ctx.working_dir.display().to_string()),
-            thinking_budget: Some(cc_core::constants::DEFAULT_THINKING_BUDGET),
+            thinking_budget: caps.default_thinking_budget,
             temperature: None,
             tool_result_budget: cc_core::constants::DEFAULT_TOOL_RESULT_BUDGET,
             effort_level: Some(cc_core::effort::EffortLevel::High),
             command_queue: None,
             skill_index: None,
             max_budget_usd: None,
-            fallback_model: Some(cc_core::constants::SONNET_MODEL.to_string()),
+            fallback_model: caps.fast_model.clone(),
         };
 
         // Run the sub-agent loop.

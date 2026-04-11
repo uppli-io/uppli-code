@@ -34,4 +34,6 @@ crossterm = { workspace = true }
 parking_lot = { workspace = true }
 dirs = { workspace = true }
 nix = { workspace = true }
+shell-words = "1"
+cc-rag = { path = "../rag" }
 

@@ -1,0 +1,22 @@
+[package]
+name = "cc-rag"
+version.workspace = true
+edition.workspace = true
+description = "Local vector RAG for uppli-code tools (ast-grep patterns, etc.)"
+
+[dependencies]
+fastembed = "5"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs = { workspace = true }
+tokio = { workspace = true }
+
+[[bin]]
+name = "embed_patterns"
+path = "src/bin/embed_patterns.rs"
+
+[[bin]]
+name = "test_rag"
+path = "src/bin/test_rag.rs"

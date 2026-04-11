@@ -292,7 +292,9 @@ impl ModelPickerState {
         // active, the caller should turn off fast mode (mirrors TS behaviour).
         self.close();
 
-        // Persist selection to ~/.uppli/settings.json (best-effort; ignore I/O errors).
+        // Persist selection to ~/.uppli/settings.json (best-effort).
+        // Write to a temp file first, then atomically rename to avoid
+        // corruption if another process reads mid-write.
         let settings_path = cc_core::config::Settings::global_settings_path();
         let existing = std::fs::read_to_string(&settings_path).unwrap_or_default();
         let mut json: serde_json::Value =
@@ -312,7 +314,11 @@ impl ModelPickerState {
             if let Some(parent) = settings_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let _ = std::fs::write(&settings_path, serialized);
+            // Atomic write: temp file → rename.
+            let tmp_path = settings_path.with_extension("json.tmp");
+            if std::fs::write(&tmp_path, &serialized).is_ok() {
+                let _ = std::fs::rename(&tmp_path, &settings_path);
+            }
         }
 
         Some((id, effort))

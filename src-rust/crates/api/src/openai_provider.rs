@@ -100,7 +100,10 @@ impl OpenAiProviderConfig {
             api_base: "https://dashscope-intl.aliyuncs.com/compatible-mode".to_string(),
             api_key: api_key.to_string(),
             default_model: model.to_string(),
-            fast_model: Some("qwen3.5-122b-a10b".to_string()),
+            // qwen-turbo-latest: 1M context, $0.05/M in, $0.20/M out.
+            // Note: Alibaba recommends qwen-flash as replacement, but turbo
+            // has generous free tier and works well for tool-result turns.
+            fast_model: Some("qwen-turbo-latest".to_string()),
             supports_thinking: true,
             api_format: ApiFormat::OpenAI,
             max_retries: 5,
@@ -108,11 +111,11 @@ impl OpenAiProviderConfig {
             attribution: "powered by Qwen (Alibaba Cloud)".to_string(),
             known_models: vec![
                 ModelMetadata {
-                    id: "qwen3.6-plus".to_string(),
+                    id: "qwen3.6-plus-2026-04-02".to_string(),
                     display_name: "Qwen 3.6 Plus".to_string(),
                     description: "Agentic coding model, 1M context".to_string(),
                     context_window: 1_000_000,
-                    max_output_tokens: 16_384,
+                    max_output_tokens: 32_768,
                     supports_thinking: true,
                     pricing: Some(ModelPricing {
                         input_per_mtk: 0.29,
@@ -121,15 +124,15 @@ impl OpenAiProviderConfig {
                     }),
                 },
                 ModelMetadata {
-                    id: "qwen3.5-122b-a10b".to_string(),
-                    display_name: "Qwen 3.5 122B".to_string(),
-                    description: "MoE 122B (10B active) — fast".to_string(),
-                    context_window: 131_072,
+                    id: "qwen-turbo-latest".to_string(),
+                    display_name: "Qwen Turbo".to_string(),
+                    description: "Fast model for tool-result turns".to_string(),
+                    context_window: 1_000_000,
                     max_output_tokens: 16_384,
-                    supports_thinking: true,
+                    supports_thinking: false,
                     pricing: Some(ModelPricing {
-                        input_per_mtk: 0.14,
-                        output_per_mtk: 0.57,
+                        input_per_mtk: 0.05,
+                        output_per_mtk: 0.20,
                         ..Default::default()
                     }),
                 },
@@ -565,16 +568,20 @@ impl OpenAiProvider {
                             .get("input")
                             .cloned()
                             .unwrap_or(Value::Object(Default::default()));
+                        let arguments = match serde_json::to_string(&input) {
+                            Ok(a) => a,
+                            Err(e) => {
+                                warn!(error = %e, tool = %name, "Failed to serialize tool arguments — sending raw Debug repr");
+                                // Use Debug repr ("{:?}") NOT Display ("{}") because
+                                // Display on serde_json::Value calls to_string() again
+                                // which would hit the same error.
+                                format!("{:?}", input)
+                            }
+                        };
                         tool_calls.push(OpenAiToolCall {
                             id,
                             call_type: "function".to_string(),
-                            function: OpenAiFunction {
-                                name,
-                                arguments: serde_json::to_string(&input).unwrap_or_else(|e| {
-                                    warn!(error = %e, "Failed to serialize tool arguments");
-                                    "{}".to_string()
-                                }),
-                            },
+                            function: OpenAiFunction { name, arguments },
                         });
                     }
                     "tool_result" => {
@@ -605,15 +612,20 @@ impl OpenAiProvider {
 
             // Emit assistant message (with optional tool_calls)
             if role == "assistant" {
-                let content = if text_parts.is_empty() {
-                    None
-                } else {
-                    Some(Value::String(text_parts.join("")))
-                };
                 let tc = if tool_calls.is_empty() {
                     None
                 } else {
                     Some(tool_calls)
+                };
+                // OpenAI API requires either content or tool_calls on assistant
+                // messages. If thinking blocks were the only content (no text,
+                // no tool_calls), emit an empty string so the API accepts it.
+                let content = if !text_parts.is_empty() {
+                    Some(Value::String(text_parts.join("")))
+                } else if tc.is_some() {
+                    None // tool_calls present, content can be null
+                } else {
+                    Some(Value::String(String::new())) // empty placeholder
                 };
                 result.push(OpenAiMessage {
                     role: "assistant".to_string(),
@@ -687,7 +699,8 @@ impl OpenAiProvider {
         let mut thinking_open = false; // is a Thinking block currently open?
         let mut text_open = false; // is a Text block currently open?
         let mut text_block_idx: usize = 0; // index of the open Text block
-                                           // tool_call OpenAI index → (block_index, id, name, args_buf)
+        let mut message_stopped = false; // guard against double MessageStop
+                                         // tool_call OpenAI index → (block_index, id, name, args_buf)
         let mut tool_blocks: std::collections::HashMap<usize, (usize, String, String, String)> =
             std::collections::HashMap::new();
 
@@ -720,14 +733,24 @@ impl OpenAiProvider {
                 };
 
                 if data == "[DONE]" {
-                    emit!(StreamEvent::MessageStop);
+                    if !message_stopped {
+                        emit!(StreamEvent::MessageStop);
+                        // Not strictly needed (we return below) but keeps
+                        // the invariant clean for anyone reading this code.
+                        #[allow(unused_assignments)]
+                        {
+                            message_stopped = true;
+                        }
+                    }
                     return Ok(());
                 }
 
                 let chunk: OpenAiStreamChunk = match serde_json::from_str(data) {
                     Ok(c) => c,
                     Err(e) => {
-                        debug!(error = %e, data = data, "Failed to parse SSE chunk");
+                        // Log at warn level so SSE corruption is visible in logs.
+                        // debug was too quiet — parsing failures silently dropped data.
+                        warn!(error = %e, data = data, "Failed to parse SSE chunk — skipping");
                         continue;
                     }
                 };
@@ -848,7 +871,9 @@ impl OpenAiProvider {
                                     // fall through to argument accumulation below.
                                 }
 
-                                // Accumulate function arguments.
+                                // Accumulate function arguments — guard against
+                                // phantom deltas that arrive before any real
+                                // tool_call block was opened (Qwen3 edge case).
                                 if let Some(ref func) = tc_delta.function {
                                     if let Some(ref args) = func.arguments {
                                         if let Some(tb) = tool_blocks.get_mut(&tc_idx) {
@@ -859,6 +884,12 @@ impl OpenAiProvider {
                                                     partial_json: args.clone(),
                                                 },
                                             });
+                                        } else {
+                                            debug!(
+                                                tc_idx = tc_idx,
+                                                "Ignoring tool_call args for unknown block index \
+                                                 (likely phantom delta)"
+                                            );
                                         }
                                     }
                                 }
@@ -902,9 +933,12 @@ impl OpenAiProvider {
                         });
 
                         // Some APIs send finish_reason without a [DONE] line.
-                        // Emit MessageStop here as a safety net — the [DONE]
-                        // handler will return early if we already emitted it.
-                        emit!(StreamEvent::MessageStop);
+                        // Emit MessageStop as a safety net — guarded by flag
+                        // so we never emit it twice.
+                        if !message_stopped {
+                            emit!(StreamEvent::MessageStop);
+                            message_stopped = true;
+                        }
                     }
                 }
             }
@@ -1081,7 +1115,10 @@ impl OpenAiProvider {
                 continue;
             }
 
-            let text = resp.text().await.unwrap_or_default();
+            let text = resp.text().await.unwrap_or_else(|e| {
+                warn!(error = %e, "Failed to read error response body");
+                String::new()
+            });
             // Extract human-readable message from JSON error body
             let message = serde_json::from_str::<Value>(&text)
                 .ok()
@@ -1267,16 +1304,23 @@ impl LlmProvider for OpenAiProvider {
 
         let resp = match req.send().await {
             Ok(r) => r,
-            Err(_) => return vec![],
+            Err(e) => {
+                warn!(url = %url, error = %e, "list_models request failed");
+                return vec![];
+            }
         };
 
         if !resp.status().is_success() {
+            warn!(url = %url, status = %resp.status(), "list_models returned non-success");
             return vec![];
         }
 
         let body: Value = match resp.json().await {
             Ok(v) => v,
-            Err(_) => return vec![],
+            Err(e) => {
+                warn!(error = %e, "list_models: failed to parse JSON response");
+                return vec![];
+            }
         };
 
         // OpenAI format: { "data": [{ "id": "...", "created": ... }] }
