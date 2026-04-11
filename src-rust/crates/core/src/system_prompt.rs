@@ -473,6 +473,7 @@ For any non-trivial task:
 5. Report what you did concisely
 
 Do NOT skip steps. Do NOT guess file content. Do NOT use Write to modify existing files.
+Do NOT use `git stash` — if you need to compare with the original code, use `git diff` or `git show` instead. Using `git stash` risks losing your changes.
 "#;
 
 const SAFETY_GUIDELINES: &str = r#"

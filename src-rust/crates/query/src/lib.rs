@@ -512,7 +512,7 @@ pub async fn run_query_loop(
     // Empty-response retry: when the model returns end_turn with no tools
     // and no text (likely rate-limit or API glitch), retry with backoff.
     let mut empty_response_retries: u32 = 0;
-    const MAX_EMPTY_RETRIES: u32 = 3;
+    const MAX_EMPTY_RETRIES: u32 = 5;
     // Active model — user can switch via /model command.
     let effective_model = config.model.clone();
     // Context window resolved from provider metadata (not substring matching).
