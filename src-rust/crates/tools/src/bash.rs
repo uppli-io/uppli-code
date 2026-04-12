@@ -454,9 +454,17 @@ impl Tool for BashTool {
                 }
 
                 if exit_code != 0 {
+                    // Detect test environment issues and add actionable hints
+                    let hint = if (output.contains("ModuleNotFoundError") || output.contains("ImportError"))
+                        && (params.command.contains("pytest") || params.command.contains("unittest"))
+                    {
+                        "\n\nHint: Tests failed to import. Try `pip install -e .` in the repo root to install the project, then re-run."
+                    } else {
+                        ""
+                    };
                     ToolResult::error(format!(
-                        "Command exited with code {}\n{}",
-                        exit_code, output
+                        "Command exited with code {}\n{}{}",
+                        exit_code, output, hint
                     ))
                 } else {
                     ToolResult::success(output)
