@@ -114,44 +114,15 @@ test_modified = any(re.search(r'^\+\+\+.*test', l) for l in diff.split('\n') if 
 if test_modified:
     print("⚠️  WARNING: Agent modified test files!")
 
-# Run harness INLINE (blocking) to get the real result before writing to results.md
-print(f"\nRunning harness...")
-harness_timeout = False
-report_path = Path("logs/run_evaluation/uppli-code/uppli-code") / iid / "report.json"
-try:
-    h = subprocess.run(
-        [sys.executable, "-m", "swebench.harness.run_evaluation",
-         "-d", "princeton-nlp/SWE-bench_Verified", "-p", str(pred),
-         "-id", "uppli-code", "-i", iid, "--timeout", "600"],
-        capture_output=True, text=True, timeout=1200
-    )
-except subprocess.TimeoutExpired:
-    harness_timeout = True
-    h = None
-
-# Read the REAL result from report.json
-if harness_timeout:
-    passed = False
-    harness_icon = "⏰"
-elif report_path.exists():
-    data = json.loads(report_path.read_text())
-    passed = data.get(iid, {}).get("resolved", False) if iid in data else False
-    harness_icon = "✅" if passed else "❌"
-else:
-    # Fallback: parse stdout properly
-    m = re.search(r'Instances resolved:\s*(\d+)', h.stdout if h else "")
-    passed = m is not None and int(m.group(1)) > 0
-    harness_icon = "✅" if passed else "❌"
-
-print(f"\n{'='*60}")
-if harness_timeout:
-    print(f"HARNESS: ⏰ TIMEOUT (1200s)")
-else:
-    print(f"HARNESS: {'✅ PASS' if passed else '❌ FAIL'}")
-    if not passed and h:
-        print(h.stdout[-500:] if h.stdout else "")
+# Launch harness in background (non-blocking, with corrected report path)
+print(f"\nLaunching harness in background...")
+subprocess.Popen(
+    [sys.executable, str(Path(__file__).parent / "run_harness_one.py"), str(idx), iid, str(pred), str(elapsed), str(tools), str(errors)],
+    stdout=open(REPOS / f"../logs/harness_{idx}.log", "w"),
+    stderr=subprocess.STDOUT,
+)
 
 with open(REPOS / "../results.md", "a") as f:
-    f.write(f"| {idx} | {iid} | ✅ | {elapsed:.0f}s | {tools} | {errors} | {harness_icon} | |\n")
+    f.write(f"| {idx} | {iid} | ✅ | {elapsed:.0f}s | {tools} | {errors} | ⏳ | |\n")
 
-print(f"\nResult written to benchmark/results.md")
+print(f"Result written to benchmark/results.md (harness in background)")
