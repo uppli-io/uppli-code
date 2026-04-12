@@ -298,6 +298,14 @@ impl Tool for BashTool {
             ));
         }
 
+        // Block git stash — agents lose changes by stashing without popping
+        if params.command.contains("git stash") {
+            return ToolResult::error(
+                "git stash is blocked — it risks losing your changes. \
+                 Use `git diff` or `git show HEAD:path/to/file` to compare with the original code instead."
+            );
+        }
+
         let timeout_ms = params.timeout.min(600_000);
 
         // Retrieve the persistent shell state for this session.
