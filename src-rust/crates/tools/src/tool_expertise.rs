@@ -342,6 +342,37 @@ pub static EXPERTISE: &[ToolExpertise] = &[
         alternatives: &[],
         tags: &["search", "tool", "find", "help", "recommend", "which"],
     },
+    // ---- Code analysis ----
+    ToolExpertise {
+        name: "CodeAudit",
+        brief: "Audit a file for structural anomalies before fixing bugs",
+        detail: "Runs 5 static analyzers (AST patterns, data flow, control flow, \
+                 symbol table, consistency) on a source file. Returns a report of \
+                 ALL anomalies found — inconsistent patterns, lossy error messages, \
+                 unnormalized variables, etc. Call this BEFORE editing to ensure \
+                 your fix is complete.",
+        when_to_use: &[
+            "BEFORE fixing any bug — always audit the target file first",
+            "When a bug report mentions behavior that spans multiple code paths",
+            "When you suspect the reported symptom might have related issues elsewhere in the file",
+        ],
+        when_not_to_use: &[
+            "After fixing — use lint/LSP for post-edit validation",
+            "For files you are only reading, not modifying",
+        ],
+        tips: &[
+            "Pass focus_symbols extracted from the bug report for targeted analysis.",
+            "Cross-reference the audit report with the bug description to find ALL violations.",
+            "Fix ALL anomalies related to the bug, not just the reported one.",
+        ],
+        on_error_tips: &[
+            "Requires Python 3 installed.",
+            "The script is at scripts/code_audit/code_audit.py.",
+        ],
+        alternatives: &["Grep (for manual symbol search)", "LSP (for type errors only)"],
+        tags: &["audit", "bug", "fix", "analyze", "static", "consistency",
+                 "invariant", "verify", "check", "review", "pattern"],
+    },
 ];
 
 // ---------------------------------------------------------------------------

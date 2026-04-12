@@ -93,6 +93,45 @@ impl OpenAiProviderConfig {
         }
     }
 
+    /// Preset for OpenRouter (any model, OpenAI-compatible proxy).
+    pub fn openrouter(api_key: &str, model: &str) -> Self {
+        Self {
+            name: "OpenRouter".to_string(),
+            api_base: "https://openrouter.ai/api".to_string(),
+            api_key: api_key.to_string(),
+            default_model: model.to_string(),
+            fast_model: None,
+            supports_thinking: true,
+            api_format: ApiFormat::OpenAI,
+            max_retries: 5,
+            request_timeout: Duration::from_secs(600),
+            attribution: "powered by OpenRouter".to_string(),
+            known_models: vec![
+                ModelMetadata {
+                    id: "qwen/qwen3.6-plus".to_string(),
+                    display_name: "Qwen 3.6 Plus".to_string(),
+                    description: "Agentic coding model, 1M context".to_string(),
+                    context_window: 1_000_000,
+                    max_output_tokens: 32_768,
+                    supports_thinking: true,
+                    pricing: Some(ModelPricing {
+                        input_per_mtk: 0.325,
+                        output_per_mtk: 1.95,
+                        ..Default::default()
+                    }),
+                },
+            ],
+            default_max_tokens: 16_384,
+            default_thinking_budget: Some(16_000),
+            auth: AuthConfig {
+                env_vars: &["OPENROUTER_API_KEY"],
+                keychain_key: "openrouter",
+                display_label: "OpenRouter",
+                required: true,
+            },
+        }
+    }
+
     /// Preset for Alibaba Cloud DashScope (Qwen).
     pub fn alibaba(api_key: &str, model: &str) -> Self {
         Self {

@@ -1264,6 +1264,26 @@ pub async fn run_query_loop(
                             );
                         }
 
+                        // CodeAudit nudge: after Read on a source file,
+                        // remind the model that CodeAudit is available.
+                        if name == "Read" && !result.is_error {
+                            // Only nudge for source files (not READMEs, configs, etc.)
+                            if let Some(input_obj) = input.as_object() {
+                                let path = input_obj.get("file_path")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let is_source = path.ends_with(".py") || path.ends_with(".rs")
+                                    || path.ends_with(".js") || path.ends_with(".ts")
+                                    || path.ends_with(".go") || path.ends_with(".java");
+                                if is_source {
+                                    enriched_content.push_str(
+                                        "\n\nTip: Call CodeAudit(file_path) before editing \
+                                         to surface structural anomalies you might miss."
+                                    );
+                                }
+                            }
+                        }
+
                         result_blocks.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
                             content: ToolResultContent::Text(enriched_content),

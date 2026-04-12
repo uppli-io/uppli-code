@@ -56,6 +56,22 @@ pub fn provider_registry() -> &'static [ProviderPreset] {
             provider_type: ProviderType::Alibaba,
         },
         ProviderPreset {
+            name: "openrouter",
+            aliases: &[],
+            display_name: "OpenRouter",
+            description: "Any model via OpenRouter proxy (Qwen, Claude, etc.)",
+            default_model: "qwen/qwen3.6-plus",
+            fast_model: None,
+            supports_thinking: true,
+            auth: AuthConfig {
+                env_vars: &["OPENROUTER_API_KEY"],
+                keychain_key: "openrouter",
+                display_label: "OpenRouter",
+                required: true,
+            },
+            provider_type: ProviderType::OpenAiCompat,
+        },
+        ProviderPreset {
             name: "mistral",
             aliases: &[],
             display_name: "Mistral",
@@ -126,7 +142,7 @@ pub fn create_provider(
     config: &Config,
     provider_override: Option<&str>,
 ) -> anyhow::Result<Box<dyn LlmProvider>> {
-    let provider_type = if let Some(name) = provider_override {
+    let (provider_type, preset_name) = if let Some(name) = provider_override {
         let preset = find_preset(name).ok_or_else(|| {
             let names: Vec<&str> = provider_registry().iter().map(|p| p.name).collect();
             anyhow::anyhow!(
@@ -135,9 +151,9 @@ pub fn create_provider(
                 names.join(", ")
             )
         })?;
-        preset.provider_type.clone()
+        (preset.provider_type.clone(), Some(preset.name))
     } else {
-        config.provider.clone()
+        (config.provider.clone(), None)
     };
 
     let provider_key = provider_type.to_string();
@@ -145,7 +161,7 @@ pub fn create_provider(
 
     match provider_type {
         ProviderType::Deepseek => create_deepseek_provider(config, provider_settings),
-        _ => create_openai_provider(&provider_type, config, provider_settings),
+        _ => create_openai_provider(&provider_type, config, provider_settings, preset_name),
     }
 }
 
@@ -224,16 +240,24 @@ fn create_openai_provider(
     provider_type: &ProviderType,
     config: &Config,
     settings: Option<&ProviderSettings>,
+    preset_name: Option<&str>,
 ) -> anyhow::Result<Box<dyn LlmProvider>> {
     // Step 1: Build preset config.
     let model = settings
         .and_then(|s| s.model.clone())
-        .unwrap_or_else(|| default_model_for(provider_type));
+        .unwrap_or_else(|| {
+            // Use preset name directly if available, fall back to provider_type lookup
+            preset_name
+                .and_then(find_preset)
+                .map(|p| p.default_model.to_string())
+                .unwrap_or_else(|| default_model_for(provider_type))
+        });
 
-    let mut cfg = match provider_type {
-        ProviderType::Ollama => crate::OpenAiProviderConfig::ollama(&model),
-        ProviderType::Alibaba => crate::OpenAiProviderConfig::alibaba("", &model), // key filled below
-        ProviderType::OpenAiCompat => {
+    let mut cfg = match (provider_type, preset_name) {
+        (ProviderType::Ollama, _) => crate::OpenAiProviderConfig::ollama(&model),
+        (ProviderType::Alibaba, _) => crate::OpenAiProviderConfig::alibaba("", &model),
+        (_, Some("openrouter")) => crate::OpenAiProviderConfig::openrouter("", &model),
+        (ProviderType::OpenAiCompat, _) => {
             let api_base = settings
                 .and_then(|s| s.api_base.clone())
                 .unwrap_or_else(|| "http://localhost:8080/v1".to_string());
@@ -255,8 +279,19 @@ fn create_openai_provider(
         }
     }
 
+    // Step 2b: CLI --api-base (passed via UPPLI_API_BASE env) overrides everything.
+    if let Ok(base) = std::env::var("UPPLI_API_BASE") {
+        cfg.api_base = base;
+    }
+
     // Step 3: Resolve API key via the preset's AuthConfig.
-    if cfg.auth.required {
+    // Always check config.api_key first (from --api-key flag).
+    if let Some(ref key) = config.api_key {
+        if key.len() > 8 {
+            cfg.api_key = key.clone();
+        }
+    }
+    if cfg.api_key.is_empty() && cfg.auth.required {
         let api_key = resolve_key(&cfg.auth)
             .or_else(|| config.api_key.clone().filter(|k| k.len() > 8))
             .ok_or_else(|| {

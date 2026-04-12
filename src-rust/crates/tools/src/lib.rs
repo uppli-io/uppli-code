@@ -31,6 +31,7 @@ pub mod glob_tool;
 pub mod grep_tool;
 pub mod ast_edit;
 pub mod ast_grep_helper;
+pub mod code_audit;
 pub mod ast_grep_rag;
 pub mod lint;
 pub mod tool_expertise;
@@ -65,6 +66,7 @@ pub use enter_plan_mode::EnterPlanModeTool;
 pub use exit_plan_mode::ExitPlanModeTool;
 pub use ast_edit::AstEditTool;
 pub use ast_grep_helper::AstGrepHelperTool;
+pub use code_audit::CodeAuditTool;
 pub use file_edit::FileEditTool;
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
@@ -329,6 +331,7 @@ pub fn all_tools() -> Vec<Box<dyn Tool>> {
         Box::new(SendMessageTool),
         Box::new(SkillTool),
         Box::new(LspTool),
+        Box::new(CodeAuditTool),
         Box::new(ReplTool),
         Box::new(TeamCreateTool),
         Box::new(TeamDeleteTool),

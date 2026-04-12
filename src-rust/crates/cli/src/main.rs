@@ -145,6 +145,10 @@ struct Cli {
     #[arg(long = "api-key")]
     api_key: Option<String>,
 
+    /// API base URL (overrides provider default, e.g. https://openrouter.ai/api)
+    #[arg(long = "api-base")]
+    api_base: Option<String>,
+
     /// Maximum tokens per response
     #[arg(long = "max-tokens")]
     max_tokens: Option<u32>,
@@ -245,7 +249,7 @@ struct Cli {
     #[arg(long = "fallback-model")]
     fallback_model: Option<String>,
 
-    /// LLM provider to use (deepseek, ollama, alibaba, openai)
+    /// LLM provider to use (deepseek, ollama, alibaba, openrouter, openai)
     #[arg(long = "provider")]
     provider: Option<String>,
 
@@ -500,6 +504,9 @@ async fn main() -> anyhow::Result<()> {
     let mut config = settings.config.clone();
     if let Some(ref key) = cli.api_key {
         config.api_key = Some(key.clone());
+    }
+    if let Some(ref base) = cli.api_base {
+        std::env::set_var("UPPLI_API_BASE", base);
     }
     if cli.model.is_some() {
         config.model = cli.model.clone();
@@ -1349,7 +1356,7 @@ async fn run_sdk_headless(
                         Default model: {}\n\
                         Fast model: {}\n\
                         Thinking: {}\n\n\
-                        Available providers: deepseek, ollama, alibaba, openai\n\
+                        Available providers: deepseek, ollama, alibaba, openrouter, openai\n\
                         Switch: uppli-code --provider <name>",
                         caps.name,
                         caps.api_format,
