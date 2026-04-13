@@ -133,8 +133,29 @@ def _check_collection_in_format_string(tree, source_lines):
             continue
         if node.func.attr != "format":
             continue
-        # Check each argument to .format()
+        # Check each argument to .format() — including .join() calls
         for arg in node.args:
+            # Detect "', '".join(collection) — renders without brackets
+            if isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute):
+                if arg.func.attr == "join" and arg.args:
+                    inner = arg.args[0]
+                    inner_desc = ""
+                    if isinstance(inner, ast.Subscript) and isinstance(inner.slice, ast.Slice):
+                        inner_desc = f"slice {_get_base_name(inner.value)}[:]"
+                    elif isinstance(inner, ast.Name):
+                        inner_desc = f"variable '{inner.id}'"
+                    if inner_desc:
+                        anomalies.append({
+                            "analyzer": "ast",
+                            "severity": "medium",
+                            "title": "join() on collection in format string",
+                            "lines": [node.lineno],
+                            "detail": (f"Format uses .join({inner_desc}) at L{node.lineno}. "
+                                      f"For 1 element this renders without quotes/brackets. "
+                                      f"Use a helper: repr(x[0]) for 1 element, str(x) for multiple. "
+                                      f"Code: {_get_line(source_lines, node.lineno)}"),
+                        })
+                    continue
             is_collection = False
             desc = ""
             # Direct list/tuple literal
@@ -161,8 +182,10 @@ def _check_collection_in_format_string(tree, source_lines):
                     "title": "Collection displayed directly in format string",
                     "lines": [node.lineno],
                     "detail": (f"Format argument at L{node.lineno} is a {desc}. "
-                              f"str() on a list gives \"['x']\" with brackets for single items. "
-                              f"Use a helper: show 'x' for 1 element, ['x', 'y'] for multiple. "
+                              f"Neither str(list) nor ', '.join(list) renders well for both "
+                              f"1 and N elements. Use a helper that returns 'x' for single "
+                              f"items and ['x', 'y'] for multiple (matching Python list repr). "
+                              f"Example: str(x) if len(x) > 1 else repr(x[0]). "
                               f"Code: {_get_line(source_lines, node.lineno)}"),
                 })
     return anomalies

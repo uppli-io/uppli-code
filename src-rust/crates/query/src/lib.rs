@@ -1362,10 +1362,9 @@ pub async fn run_query_loop(
                             );
                         }
 
-                        // CodeAudit nudge: after Read on a source file,
-                        // remind the model that CodeAudit is available.
+                        // CodeAudit auto-run: after Read on a source file,
+                        // automatically run CodeAudit and append the report.
                         if name == "Read" && !result.is_error {
-                            // Only nudge for source files (not READMEs, configs, etc.)
                             if let Some(input_obj) = input.as_object() {
                                 let path = input_obj.get("file_path")
                                     .and_then(|v| v.as_str())
@@ -1373,11 +1372,30 @@ pub async fn run_query_loop(
                                 let is_source = path.ends_with(".py") || path.ends_with(".rs")
                                     || path.ends_with(".js") || path.ends_with(".ts")
                                     || path.ends_with(".go") || path.ends_with(".java");
-                                if is_source {
-                                    enriched_content.push_str(
-                                        "\n\nTip: Call CodeAudit(file_path) before editing \
-                                         to surface structural anomalies you might miss."
-                                    );
+                                let is_test = path.contains("test_") || path.contains("/tests/");
+                                if is_source && !is_test && !audited_files.contains(path) {
+                                    // Run CodeAudit automatically
+                                    let audit_input = serde_json::json!({
+                                        "file_path": path,
+                                        "language": "auto"
+                                    });
+                                    let audit_result = execute_tool(
+                                        &"CodeAudit".to_string(),
+                                        &audit_input,
+                                        tools,
+                                        tool_ctx,
+                                    ).await;
+                                    if !audit_result.is_error && !audit_result.content.contains("No anomalies") {
+                                        audited_files.insert(path.to_string());
+                                        pre_edit_audits.insert(path.to_string(), audit_result.content.clone());
+                                        enriched_content.push_str(&format!(
+                                            "\n\n--- CodeAudit Report (auto) ---\n{}\n--- End Report ---\n\
+                                             Review these anomalies before making changes.",
+                                            audit_result.content
+                                        ));
+                                    } else {
+                                        audited_files.insert(path.to_string());
+                                    }
                                 }
                             }
                         }
