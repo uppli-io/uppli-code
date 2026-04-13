@@ -1272,7 +1272,8 @@ pub async fn run_query_loop(
                                         .and_then(|o| o.get("file_path"))
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("");
-                                    if let Some(pre_report) = pre_edit_audits.get(path) {
+                                    if let Some(pre_report) = pre_edit_audits.get(path).cloned() {
+                                        let pre_report = &pre_report;
                                         // Re-run CodeAudit
                                         let audit_input = serde_json::json!({
                                             "file_path": path,
@@ -1285,6 +1286,9 @@ pub async fn run_query_loop(
                                             tool_ctx,
                                         ).await;
                                         if !post_audit.is_error {
+                                            // Update hash and report after edit
+                                            audited_files.insert(path.to_string(), file_hash(path));
+                                            pre_edit_audits.insert(path.to_string(), post_audit.content.clone());
                                             // Check if HIGH anomalies from pre-edit are still present
                                             let pre_has_high = pre_report.contains("[HIGH]");
                                             let post_has_high = post_audit.content.contains("[HIGH]");
@@ -1294,9 +1298,7 @@ pub async fn run_query_loop(
                                                      \n**BEFORE your edit:**\n{}\n\
                                                      \n**AFTER your edit:**\n{}\n\
                                                      \nYour edit did not resolve the structural anomaly. \
-                                                     Instead of adding new branches, try modifying the EXISTING \
-                                                     format string to show the full list instead of [0]. \
-                                                     The condition compares slices — the error message should too.",
+                                                     Review the anomaly details and try a different approach.",
                                                     pre_report.lines()
                                                         .filter(|l| l.contains("[HIGH]") || l.starts_with("Lines") || l.starts_with("Condition"))
                                                         .collect::<Vec<_>>().join("\n"),
