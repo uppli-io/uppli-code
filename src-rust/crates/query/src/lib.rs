@@ -511,7 +511,24 @@ pub async fn run_query_loop(
     let mut repeat_count: u32 = 0;
     // CodeAudit gate: track files that have been audited.
     // Edit/Write on source files is blocked until CodeAudit has been called.
-    let mut audited_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Map file path → content hash at time of audit. Re-audit only if hash changed.
+    let mut audited_files: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    // Quick file hash for change detection.
+    let file_hash = |path: &str| -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        if let Ok(content) = std::fs::read(path) {
+            content.hash(&mut hasher);
+        }
+        hasher.finish()
+    };
+    // Check if a file needs (re-)auditing: never audited or content changed.
+    let needs_audit = |path: &str, audited: &std::collections::HashMap<String, u64>, hash_fn: &dyn Fn(&str) -> u64| -> bool {
+        match audited.get(path) {
+            None => true,
+            Some(&old_hash) => hash_fn(path) != old_hash,
+        }
+    };
     // Store pre-edit audit reports for post-edit comparison.
     let mut pre_edit_audits: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     // Empty-response retry: when the model returns end_turn with no tools
@@ -1208,7 +1225,7 @@ pub async fn run_query_loop(
                                     let is_source = path.ends_with(".py") || path.ends_with(".rs")
                                         || path.ends_with(".js") || path.ends_with(".ts")
                                         || path.ends_with(".go") || path.ends_with(".java");
-                                    is_source && !audited_files.contains(path)
+                                    is_source && needs_audit(path, &audited_files, &file_hash)
                                         && !path.contains("test_") && !path.contains("/tests/")
                                 } else {
                                     false
@@ -1243,7 +1260,7 @@ pub async fn run_query_loop(
                                         .and_then(|o| o.get("file_path"))
                                         .and_then(|v| v.as_str())
                                     {
-                                        audited_files.insert(path.to_string());
+                                        audited_files.insert(path.to_string(), file_hash(path));
                                         pre_edit_audits.insert(path.to_string(), result.content.clone());
                                     }
                                 }
@@ -1373,7 +1390,7 @@ pub async fn run_query_loop(
                                     || path.ends_with(".js") || path.ends_with(".ts")
                                     || path.ends_with(".go") || path.ends_with(".java");
                                 let is_test = path.contains("test_") || path.contains("/tests/");
-                                if is_source && !is_test && !audited_files.contains(path) {
+                                if is_source && !is_test && needs_audit(path, &audited_files, &file_hash) {
                                     // Run CodeAudit automatically
                                     let audit_input = serde_json::json!({
                                         "file_path": path,
@@ -1385,8 +1402,9 @@ pub async fn run_query_loop(
                                         tools,
                                         tool_ctx,
                                     ).await;
+                                    let h = file_hash(path);
                                     if !audit_result.is_error && !audit_result.content.contains("No anomalies") {
-                                        audited_files.insert(path.to_string());
+                                        audited_files.insert(path.to_string(), h);
                                         pre_edit_audits.insert(path.to_string(), audit_result.content.clone());
                                         enriched_content.push_str(&format!(
                                             "\n\n--- CodeAudit Report (auto) ---\n{}\n--- End Report ---\n\
@@ -1394,7 +1412,7 @@ pub async fn run_query_loop(
                                             audit_result.content
                                         ));
                                     } else {
-                                        audited_files.insert(path.to_string());
+                                        audited_files.insert(path.to_string(), h);
                                     }
                                 }
                             }

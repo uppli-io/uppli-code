@@ -18,7 +18,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from analyzers import ast_analyzer, consistency, controlflow, dataflow, symbols
+from analyzers import ast_analyzer, consistency, controlflow, dataflow, symbols, predicates, semgrep_runner
 
 
 def run_analyzer(name, func, source, source_lines, **kwargs):
@@ -42,6 +42,7 @@ def audit_file(file_path, focus_symbols=None, language="python"):
         "consistency": consistency.analyze,
         "controlflow": controlflow.analyze,
         "dataflow": dataflow.analyze,
+        "predicates": predicates.analyze,
     }
 
     all_anomalies = []
@@ -60,6 +61,11 @@ def audit_file(file_path, focus_symbols=None, language="python"):
         f = pool.submit(run_analyzer, "symbols", symbols.analyze, source, source_lines,
                        focus_symbols=focus_symbols)
         futures[f] = "symbols"
+
+        # Semgrep needs file_path
+        f = pool.submit(run_analyzer, "semgrep", semgrep_runner.analyze, source, source_lines,
+                       file_path=str(file_path))
+        futures[f] = "semgrep"
 
         for future in as_completed(futures):
             name, result, elapsed, error = future.result()
