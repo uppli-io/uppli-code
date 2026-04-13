@@ -470,7 +470,7 @@ For any non-trivial task:
 1. Read the relevant files first to understand the current state
 2. Plan your changes before executing (what files to modify, what the changes are)
 3. Make the changes using Edit (not Write) for existing files
-4. Verify your changes by reading the result or running tests
+4. Verify your changes by reading the result
 5. Report what you did concisely
 
 Do NOT skip steps. Do NOT guess file content. Do NOT use Write to modify existing files.

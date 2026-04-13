@@ -509,6 +509,11 @@ pub async fn run_query_loop(
     // inject a nudge to try a different approach.
     let mut last_tool_sig: Option<String> = None;
     let mut repeat_count: u32 = 0;
+    // CodeAudit gate: track files that have been audited.
+    // Edit/Write on source files is blocked until CodeAudit has been called.
+    let mut audited_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Store pre-edit audit reports for post-edit comparison.
+    let mut pre_edit_audits: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     // Empty-response retry: when the model returns end_turn with no tools
     // and no text (likely rate-limit or API glitch), retry with backoff.
     let mut empty_response_retries: u32 = 0;
@@ -1191,14 +1196,107 @@ pub async fn run_query_loop(
                                 reason
                             ))
                         } else {
-                            // Race tool execution against the cancel token so ESC
-                            // can interrupt long-running tools (e.g. bash scripts).
-                            tokio::select! {
-                                result = execute_tool(name, input, tools, tool_ctx) => result,
-                                _ = cancel_token.cancelled() => {
-                                    warn!(tool = name, "Tool execution interrupted by cancel");
-                                    cc_tools::ToolResult::error("Interrupted by user".to_string())
+                            // CodeAudit gate: block Edit/Write on source files
+                            // unless CodeAudit was called first.
+                            let gate_blocked = {
+                                let is_edit = name == "Edit" || name == "Write";
+                                if is_edit {
+                                    let path = input.as_object()
+                                        .and_then(|o| o.get("file_path"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let is_source = path.ends_with(".py") || path.ends_with(".rs")
+                                        || path.ends_with(".js") || path.ends_with(".ts")
+                                        || path.ends_with(".go") || path.ends_with(".java");
+                                    is_source && !audited_files.contains(path)
+                                        && !path.contains("test_") && !path.contains("/tests/")
+                                } else {
+                                    false
                                 }
+                            };
+
+                            if gate_blocked {
+                                let path = input.as_object()
+                                    .and_then(|o| o.get("file_path"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("?");
+                                cc_tools::ToolResult::error(format!(
+                                    "CodeAudit gate: You must call CodeAudit(\"{}\") before editing this file. \
+                                     CodeAudit surfaces structural anomalies you might miss. \
+                                     After reviewing the audit report, you can edit the file.",
+                                    path
+                                ))
+                            } else {
+                                // Race tool execution against the cancel token so ESC
+                                // can interrupt long-running tools (e.g. bash scripts).
+                                let mut result = tokio::select! {
+                                    result = execute_tool(name, input, tools, tool_ctx) => result,
+                                    _ = cancel_token.cancelled() => {
+                                        warn!(tool = name, "Tool execution interrupted by cancel");
+                                        cc_tools::ToolResult::error("Interrupted by user".to_string())
+                                    }
+                                };
+
+                                // Track CodeAudit calls: store report for post-edit comparison
+                                if name == "CodeAudit" && !result.is_error {
+                                    if let Some(path) = input.as_object()
+                                        .and_then(|o| o.get("file_path"))
+                                        .and_then(|v| v.as_str())
+                                    {
+                                        audited_files.insert(path.to_string());
+                                        pre_edit_audits.insert(path.to_string(), result.content.clone());
+                                    }
+                                }
+
+                                // Post-edit audit: after Edit/Write on an audited source file,
+                                // re-run CodeAudit and check if HIGH anomalies were resolved.
+                                if (name == "Edit" || name == "Write") && !result.is_error {
+                                    let path = input.as_object()
+                                        .and_then(|o| o.get("file_path"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    if let Some(pre_report) = pre_edit_audits.get(path) {
+                                        // Re-run CodeAudit
+                                        let audit_input = serde_json::json!({
+                                            "file_path": path,
+                                            "language": "auto"
+                                        });
+                                        let post_audit = execute_tool(
+                                            &"CodeAudit".to_string(),
+                                            &audit_input,
+                                            tools,
+                                            tool_ctx,
+                                        ).await;
+                                        if !post_audit.is_error {
+                                            // Check if HIGH anomalies from pre-edit are still present
+                                            let pre_has_high = pre_report.contains("[HIGH]");
+                                            let post_has_high = post_audit.content.contains("[HIGH]");
+                                            if pre_has_high && post_has_high {
+                                                result.content.push_str(&format!(
+                                                    "\n\n⚠️ CodeAudit post-edit check: HIGH anomalies are still present after your edit.\n\
+                                                     \n**BEFORE your edit:**\n{}\n\
+                                                     \n**AFTER your edit:**\n{}\n\
+                                                     \nYour edit did not resolve the structural anomaly. \
+                                                     Instead of adding new branches, try modifying the EXISTING \
+                                                     format string to show the full list instead of [0]. \
+                                                     The condition compares slices — the error message should too.",
+                                                    pre_report.lines()
+                                                        .filter(|l| l.contains("[HIGH]") || l.starts_with("Lines") || l.starts_with("Condition"))
+                                                        .collect::<Vec<_>>().join("\n"),
+                                                    post_audit.content.lines()
+                                                        .filter(|l| l.contains("[HIGH]") || l.starts_with("Lines") || l.starts_with("Condition"))
+                                                        .collect::<Vec<_>>().join("\n"),
+                                                ));
+                                            } else if pre_has_high && !post_has_high {
+                                                result.content.push_str(
+                                                    "\n\n✓ CodeAudit post-edit check: HIGH anomalies resolved."
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+
+                                result
                             }
                         };
 

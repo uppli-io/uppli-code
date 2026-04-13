@@ -170,10 +170,20 @@ impl Tool for CodeAuditTool {
 
 /// Find the code_audit.py script by searching common locations.
 fn find_audit_script() -> Option<PathBuf> {
-    // 1. Relative to current working directory
+    // 0. Environment variable override
+    if let Ok(p) = std::env::var("UPPLI_CODE_AUDIT_SCRIPT") {
+        let p = PathBuf::from(p);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    // 1. Relative to current working directory (and ancestors)
     let candidates = [
         "scripts/code_audit/code_audit.py",
         "../scripts/code_audit/code_audit.py",
+        "../../scripts/code_audit/code_audit.py",
+        "../../../scripts/code_audit/code_audit.py",
     ];
 
     for c in &candidates {

@@ -26,6 +26,7 @@ def analyze(source, source_lines, **kwargs):
     anomalies = []
 
     anomalies.extend(_check_lossy_error_messages(tree, source_lines))
+    anomalies.extend(_check_collection_in_format_string(tree, source_lines))
     anomalies.extend(_check_mutable_defaults(tree, source_lines))
     anomalies.extend(_check_bare_except(tree, source_lines))
     anomalies.extend(_check_none_comparison(tree, source_lines))
@@ -75,6 +76,9 @@ def _check_if_branch(node, source_lines, anomalies):
                     "detail": (f"Condition compares slice(s) of {slice_names} "
                               f"but error message uses {idx0_names}[0] — "
                               f"shows only first element instead of full list. "
+                              f"FIX: replace [0] with the full list/slice in the format string. "
+                              f"Do NOT add new branches or new logic — just change the existing "
+                              f"format() arguments to show all elements, not just the first. "
                               f"Code: {_get_line(source_lines, child.lineno)}"),
                 })
 
@@ -112,6 +116,56 @@ def _get_base_name(node):
     if isinstance(node, ast.Attribute):
         return node.attr
     return "?"
+
+
+def _check_collection_in_format_string(tree, source_lines):
+    """Detect format strings that display a list/slice directly.
+
+    str(['time']) renders as "['time']" with brackets, which looks ugly
+    in error messages. Should use a helper that formats single items
+    without brackets and multiple items with brackets.
+    """
+    anomalies = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr != "format":
+            continue
+        # Check each argument to .format()
+        for arg in node.args:
+            is_collection = False
+            desc = ""
+            # Direct list/tuple literal
+            if isinstance(arg, (ast.List, ast.Tuple)):
+                is_collection = True
+                desc = "list literal"
+            # Slice subscript: x[:n]
+            elif isinstance(arg, ast.Subscript) and isinstance(arg.slice, ast.Slice):
+                is_collection = True
+                desc = f"slice {_get_base_name(arg.value)}[:]"
+            # Variable that is a known list (Name reference)
+            elif isinstance(arg, ast.Name):
+                # Check if the name was assigned from a list or is plural-named
+                name = arg.id
+                if any(hint in name.lower() for hint in
+                       ("columns", "names", "items", "keys", "values", "list", "cols")):
+                    is_collection = True
+                    desc = f"variable '{name}' (likely a collection)"
+
+            if is_collection:
+                anomalies.append({
+                    "analyzer": "ast",
+                    "severity": "medium",
+                    "title": "Collection displayed directly in format string",
+                    "lines": [node.lineno],
+                    "detail": (f"Format argument at L{node.lineno} is a {desc}. "
+                              f"str() on a list gives \"['x']\" with brackets for single items. "
+                              f"Use a helper: show 'x' for 1 element, ['x', 'y'] for multiple. "
+                              f"Code: {_get_line(source_lines, node.lineno)}"),
+                })
+    return anomalies
 
 
 def _check_mutable_defaults(tree, source_lines):
