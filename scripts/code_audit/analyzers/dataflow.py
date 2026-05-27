@@ -32,13 +32,19 @@ def analyze(source, source_lines, **kwargs):
     tree = ast.parse(source)
     anomalies = []
 
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            visitor = _DataFlowVisitor(source_lines)
-            visitor.visit(node)
-            anomalies.extend(visitor.check_inconsistent_transforms())
-            anomalies.extend(visitor.check_pipeline_ordering())
-            anomalies.extend(visitor.check_early_transformation(node))
+    # Only visit top-level functions (direct children of the Module).
+    # ast.walk yields nested functions both as children of their parent
+    # function AND when it recurses into them, causing duplicate reports.
+    top_level_funcs = [
+        node for node in ast.iter_child_nodes(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    for node in top_level_funcs:
+        visitor = _DataFlowVisitor(source_lines)
+        visitor.visit(node)
+        anomalies.extend(visitor.check_inconsistent_transforms())
+        anomalies.extend(visitor.check_pipeline_ordering())
+        anomalies.extend(visitor.check_early_transformation(node))
 
     anomalies.extend(_check_cross_function_flow(tree, source_lines))
 
@@ -244,7 +250,10 @@ def _check_cross_function_flow(tree, source_lines):
     Severity is kept at "low" for this reason.
     """
     anomalies = []
-    func_transforms = {}
+    # Map function name -> list of transforms (one per return statement).
+    # A function with multiple returns may apply different transforms;
+    # keeping them all avoids the last-return-overwrites-previous bug.
+    func_transforms = defaultdict(list)
     call_sites = []
 
     for node in ast.walk(tree):
@@ -254,10 +263,10 @@ def _check_cross_function_flow(tree, source_lines):
                 if isinstance(child, ast.Return) and child.value:
                     transform = _detect_transform(child.value)
                     if transform:
-                        func_transforms[node.name] = {
+                        func_transforms[node.name].append({
                             "transform": transform,
                             "line": child.lineno,
-                        }
+                        })
 
         # Collect call sites.
         if isinstance(node, ast.Call):
@@ -274,19 +283,25 @@ def _check_cross_function_flow(tree, source_lines):
         if func_name not in func_transforms:
             continue
         parent_transform = _detect_transform(node)
-        if parent_transform and parent_transform == func_transforms[func_name]["transform"]:
-            anomalies.append({
-                "analyzer": "dataflow",
-                "severity": "low",
-                "title": f"Double transformation: {func_name}() already applies {parent_transform}",
-                "lines": [node.lineno],
-                "detail": (
-                    f"Call to '{func_name}()' at L{node.lineno} is followed by "
-                    f"{parent_transform}, but '{func_name}()' already applies "
-                    f"{parent_transform} at L{func_transforms[func_name]['line']}. "
-                    f"This may be a double-transformation bug."
-                ),
-            })
+        if not parent_transform:
+            continue
+        # Check if at least one return path in the callee applies the
+        # same transform the caller is re-applying.
+        for ft in func_transforms[func_name]:
+            if parent_transform == ft["transform"]:
+                anomalies.append({
+                    "analyzer": "dataflow",
+                    "severity": "low",
+                    "title": f"Double transformation: {func_name}() already applies {parent_transform}",
+                    "lines": [node.lineno],
+                    "detail": (
+                        f"Call to '{func_name}()' at L{node.lineno} is followed by "
+                        f"{parent_transform}, but '{func_name}()' already applies "
+                        f"{parent_transform} at L{ft['line']}. "
+                        f"This may be a double-transformation bug."
+                    ),
+                })
+                break  # one report per call site is enough
 
     return anomalies
 
@@ -294,7 +309,11 @@ def _check_cross_function_flow(tree, source_lines):
 # --- Helpers ---
 
 def _extract_method_chain(node):
-    """Extract a chain of method calls: x.a().b().c() -> [c, b, a]."""
+    """Extract a chain of method calls: x.a().b().c() -> [a, b, c].
+
+    The AST nests outermost calls at the top, so we unwind from the
+    outside in and then reverse to get source-order (innermost first).
+    """
     chain = []
     current = node
     while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
@@ -303,6 +322,7 @@ def _extract_method_chain(node):
             "line": current.lineno,
         })
         current = current.func.value
+    chain.reverse()
     return chain
 
 
