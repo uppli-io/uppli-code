@@ -96,6 +96,22 @@ AstEdit(
 
 Local vector store (fastembed, 106 ast-grep patterns) helps the model choose the right pattern syntax before writing code. The model calls `AstGrepHelper` and gets relevant examples.
 
+### CodeAudit — pre-fix structural analysis
+
+7 analyzers run in parallel on a source file before the model touches it: AST patterns, consistency (outlier detection), control flow, data flow tracing, predicate logic (associativity, boundary conditions, completeness), symbol table, and semgrep community rules. The model gets a full picture of every structural anomaly so it fixes the root cause, not just the symptom.
+
+### Patch — git-native diff application
+
+Accepts standard unified diffs and applies them via `git apply` with 3-way merge fallback. Tolerant to whitespace and line offset. Multi-file patches in a single call. LLMs are trained on this format (millions of GitHub diffs), so they produce better patches than exact string replacements.
+
+### Post-edit linting
+
+Every file modification is syntax-checked immediately (5s timeout, auto language detection). Broken edits are caught before the model moves on. Unknown file types pass silently.
+
+### ToolExpertise — intelligent tool selection
+
+Knowledge base per tool: when to use it, when not to, tips, error recovery hints, alternatives. The model picks the right tool for the job instead of defaulting to Edit for everything.
+
 ### MCP Server (SuperAgent)
 
 Run `uppli-code --mcp-server` to expose it as an MCP tool. Orchestrate from Claude Code, another uppli-code, or any MCP client. The SuperAgent pattern: a master agent pilots multiple workers.
