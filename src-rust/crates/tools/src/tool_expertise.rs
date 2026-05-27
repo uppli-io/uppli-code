@@ -444,7 +444,7 @@ pub fn search(query: &str, max_results: usize) -> Vec<(&'static ToolExpertise, u
         })
         .collect();
 
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|s| std::cmp::Reverse(s.1));
     scored.truncate(max_results);
     scored
 }
