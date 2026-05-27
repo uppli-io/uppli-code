@@ -193,18 +193,20 @@ where
     // closes the sender but the `.await` on writer_task is skipped, so a
     // panicked writer disappears silently.
     //
-    // Uses `Option<JoinHandle>` — on Drop the handle is aborted (early
-    // return / panic). On the happy path, `.take()` extracts it for a clean
-    // `.await`.
-    struct WriterGuard(Option<tokio::task::JoinHandle<()>>);
+    // Uses ManuallyDrop so we can take the handle back on the happy path
+    // without triggering the Drop impl. We use ManuallyDrop instead of
+    // tokio::scopeguard because we need ownership of the JoinHandle on the
+    // happy path (to .await it), and scopeguard only gives &mut in its
+    // closure which can't move out.
+    struct WriterGuard(std::mem::ManuallyDrop<tokio::task::JoinHandle<()>>);
     impl Drop for WriterGuard {
         fn drop(&mut self) {
-            if let Some(h) = self.0.take() {
-                h.abort();
-            }
+            // SAFETY: only called once — either here on early-return (Drop),
+            // or never (happy path calls take() + mem::forget before Drop runs).
+            unsafe { std::mem::ManuallyDrop::take(&mut self.0) }.abort();
         }
     }
-    let mut guard = WriterGuard(Some(writer_task));
+    let mut guard = WriterGuard(std::mem::ManuallyDrop::new(writer_task));
 
     let conn = Conn {
         state,
@@ -248,7 +250,9 @@ where
     drop(conn);
 
     // Take the handle out of the guard so Drop does NOT abort it.
-    let writer_handle = guard.0.take().expect("writer handle already taken");
+    // SAFETY: we only call take() once, and guard is not used after this.
+    let writer_handle = unsafe { std::mem::ManuallyDrop::take(&mut guard.0) };
+    std::mem::forget(guard);
 
     match writer_handle.await {
         Ok(()) => {}
@@ -386,16 +390,6 @@ async fn handle_tool_call(conn: &Conn, params: Option<&Value>) -> Result<Value, 
 // uppli_query — the main tool
 // ---------------------------------------------------------------------------
 
-/// RAII guard that clears the busy flag on drop — prevents the flag from
-/// staying stuck `true` if the function returns early via `?` or panics.
-struct BusyGuard<'a>(&'a std::sync::atomic::AtomicBool);
-
-impl Drop for BusyGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
 async fn tool_query(conn: &Conn, args: &Value) -> Result<Value, JsonRpcError> {
     let state = &conn.state;
     let prompt = args
@@ -406,7 +400,6 @@ async fn tool_query(conn: &Conn, args: &Value) -> Result<Value, JsonRpcError> {
     if state.busy.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return Err(rpc_err(-32000, "Agent is busy with another query"));
     }
-    let _busy_guard = BusyGuard(&state.busy);
 
     let max_turns = args
         .get("max_turns")
@@ -546,7 +539,7 @@ async fn tool_query(conn: &Conn, args: &Value) -> Result<Value, JsonRpcError> {
 
     let _ = notif_handle.await;
 
-    // busy flag is cleared automatically when `_busy_guard` drops.
+    state.busy.store(false, std::sync::atomic::Ordering::SeqCst);
 
     let response_text = messages
         .iter()

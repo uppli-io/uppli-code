@@ -1151,10 +1151,8 @@ pub async fn run_query_loop(
             }
             "tool_use" => {
                 // A completed tool-use turn counts as a successful recovery
-                // boundary; reset the retry counters so transient empty
-                // streaks don't carry over across turns.
+                // boundary; reset the max_tokens retry counter.
                 max_tokens_recovery_count = 0;
-                empty_response_retries = 0;
                 // Extract tool calls and execute them
                 let tool_blocks = assistant_msg.get_tool_use_blocks();
                 if tool_blocks.is_empty() {
