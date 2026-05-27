@@ -445,6 +445,7 @@ Key guidelines:
 - Warning: exact text matching in code often fails due to indentation differences.
 - Before using AstEdit, call AstGrepHelper to get the right pattern syntax.
 - Before fixing a bug, call CodeAudit on the target file to surface ALL structural anomalies. Cross-reference the audit report with the bug description to ensure your fix is complete — don't just fix the reported symptom, fix every violation of the same invariant.
+- When you need to fetch web page content, prefer using Bash with `curl -s https://r.jina.ai/{url}` which returns clean markdown. The native WebFetch tool does basic HTML stripping which loses structure.
 "#;
 
 const ACTIONS_SECTION: &str = r#"

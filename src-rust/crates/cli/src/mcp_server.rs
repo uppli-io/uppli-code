@@ -19,6 +19,46 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+/// Capacity of the bounded per-connection write channel. 1024 messages is
+/// generous for any realistic MCP session; if the writer falls this far
+/// behind, notifications are dropped with a warning rather than OOMing.
+const CONN_CHANNEL_CAPACITY: usize = 1024;
+
+// ---------------------------------------------------------------------------
+// NotificationSender — typed wrapper around the bounded channel
+// ---------------------------------------------------------------------------
+
+/// Mediates all writes to the per-connection channel. Handlers receive a
+/// `&NotificationSender` instead of the raw `mpsc::Sender`, which
+/// restricts them to the two intended send patterns:
+///
+/// * **Notifications** — best-effort via `try_send`; dropped with a warning
+///   if the channel is full (a slow reader must not block the handler).
+/// * **Responses** — use the blocking `.send().await` path (a response
+///   *must* be delivered; back-pressure from a slow reader is acceptable).
+#[derive(Clone)]
+struct NotificationSender {
+    tx: mpsc::Sender<String>,
+}
+
+impl NotificationSender {
+    /// Send a notification (best-effort). If the channel is full, the
+    /// message is dropped and a warning is logged.
+    fn send_notification(&self, line: String) {
+        if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(line) {
+            warn!("MCP notification dropped (channel full)");
+        }
+        // Closed channel → peer is gone, silently ignore.
+    }
+
+    /// Send a response. Blocks if the channel is full (responses must not
+    /// be silently dropped). If the channel is closed, the error is
+    /// ignored — the peer is already gone.
+    async fn send_response(&self, line: String) {
+        let _ = self.tx.send(line).await;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -41,19 +81,17 @@ pub struct McpServerState {
     pub busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// Per-connection context. Bundles the shared state with a writer channel
-/// so responses and streaming notifications can be emitted from anywhere
-/// in the call chain without threading the raw writer through every
-/// signature.
+/// Per-connection context. Bundles the shared state with a
+/// [`NotificationSender`] so responses and streaming notifications can be
+/// emitted from anywhere in the call chain without threading the raw
+/// writer through every signature.
 #[derive(Clone)]
 struct Conn {
     state: Arc<McpServerState>,
-    /// Pre-framed JSON lines (each already terminated with `\n`) are pushed
-    /// here and drained by a dedicated writer task. Using a channel rather
-    /// than a shared `Mutex<W>` means responses and notifications never
-    /// contend on a lock, and the writer task owns the `AsyncWrite` for the
-    /// entire connection lifetime.
-    tx: mpsc::UnboundedSender<String>,
+    /// Typed wrapper around the bounded channel. Handlers use
+    /// `sender.send_notification()` for best-effort notifications and
+    /// `sender.send_response()` for must-deliver responses.
+    sender: NotificationSender,
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +171,7 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let (tx, mut rx) = mpsc::channel::<String>(CONN_CHANNEL_CAPACITY);
 
     // Writer task — owns the AsyncWrite for the lifetime of the connection.
     // Exits when `tx` is dropped (reader loop completes) or when a write
@@ -150,7 +188,27 @@ where
         }
     });
 
-    let conn = Conn { state, tx };
+    // Guard that aborts the writer task on early return (e.g. `?`
+    // propagation from handle_request). Without this, an early `drop(conn)`
+    // closes the sender but the `.await` on writer_task is skipped, so a
+    // panicked writer disappears silently.
+    //
+    // Uses ManuallyDrop so we can take the handle back on the happy path
+    // without triggering the Drop impl.
+    struct WriterGuard(std::mem::ManuallyDrop<tokio::task::JoinHandle<()>>);
+    impl Drop for WriterGuard {
+        fn drop(&mut self) {
+            // SAFETY: only called once (either here on early return, or
+            // never if we take() on the happy path).
+            unsafe { std::mem::ManuallyDrop::take(&mut self.0) }.abort();
+        }
+    }
+    let mut guard = WriterGuard(std::mem::ManuallyDrop::new(writer_task));
+
+    let conn = Conn {
+        state,
+        sender: NotificationSender { tx },
+    };
     let mut lines = BufReader::new(reader).lines();
 
     while let Ok(Some(line)) = lines.next_line().await {
@@ -174,19 +232,34 @@ where
                             data: None,
                         }),
                     },
-                );
+                )
+                .await;
                 continue;
             }
         };
 
         debug!(method = %request.method, "MCP request");
         let response = handle_request(&conn, &request).await;
-        send_response(&conn, &response);
+        send_response(&conn, &response).await;
     }
 
-    // Drop the sender so the writer task exits cleanly.
+    // Drop the sender so the writer task exits cleanly, then await it.
     drop(conn);
-    let _ = writer_task.await;
+
+    // Take the handle out of the guard so Drop does NOT abort it.
+    // SAFETY: we only call take() once, and guard is not used after this.
+    let writer_handle = unsafe { std::mem::ManuallyDrop::take(&mut guard.0) };
+    std::mem::forget(guard);
+
+    match writer_handle.await {
+        Ok(()) => {}
+        Err(e) if e.is_cancelled() => {
+            debug!("MCP writer task cancelled");
+        }
+        Err(e) => {
+            warn!(error = %e, "MCP writer task panicked");
+        }
+    }
     Ok(())
 }
 
@@ -395,7 +468,7 @@ async fn tool_query(conn: &Conn, args: &Value) -> Result<Value, JsonRpcError> {
     let cancel = tokio_util::sync::CancellationToken::new();
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<cc_query::QueryEvent>();
-    let notif_tx = conn.tx.clone();
+    let notif_sender = conn.sender.clone();
 
     let notif_handle = tokio::spawn(async move {
         use cc_api::streaming::{ContentDelta, StreamEvent};
@@ -439,7 +512,11 @@ async fn tool_query(conn: &Conn, args: &Value) -> Result<Value, JsonRpcError> {
                 _ => None,
             };
             if let Some(p) = params {
-                send_notification(&notif_tx, "notifications/progress", p);
+                let notif = JsonRpcRequest::notification("notifications/progress", Some(p));
+                if let Ok(mut line) = serde_json::to_string(&notif) {
+                    line.push('\n');
+                    notif_sender.send_notification(line);
+                }
             }
         }
     });
@@ -598,18 +675,9 @@ fn rpc_err(code: i64, msg: impl Into<String>) -> JsonRpcError {
     }
 }
 
-fn send_response(conn: &Conn, resp: &JsonRpcResponse) {
+async fn send_response(conn: &Conn, resp: &JsonRpcResponse) {
     if let Ok(mut line) = serde_json::to_string(resp) {
         line.push('\n');
-        // Receiver dropped means the peer is gone — nothing useful to do.
-        let _ = conn.tx.send(line);
-    }
-}
-
-fn send_notification(tx: &mpsc::UnboundedSender<String>, method: &str, params: Value) {
-    let notif = JsonRpcRequest::notification(method, Some(params));
-    if let Ok(mut line) = serde_json::to_string(&notif) {
-        line.push('\n');
-        let _ = tx.send(line);
+        conn.sender.send_response(line).await;
     }
 }

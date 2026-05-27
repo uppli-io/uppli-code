@@ -971,25 +971,54 @@ async fn main() -> anyhow::Result<()> {
         cron_cancel.clone(),
     );
 
-    // MCP server mode: expose uppli-code as an MCP tool on stdio.
-    // Launched with `uppli-code --mcp-server`, used by Claude Code, another
-    // uppli-code master, CI pipelines, or any MCP client.
-    let result = if cli.mcp_server {
-        let mcp_state = build_mcp_state(
-            client,
-            &cwd,
-            &config,
-            &cost_tracker,
-            cli.max_turns,
-            cli.model.clone(),
-        );
-        mcp_server::run_mcp_server(mcp_state).await
-    } else if let Some(sock) = cli.peer_socket.clone() {
-        // --peer: MCP server on a Unix socket. The parent --groom process
-        // is our sole client. `config.permission_mode` has already been
-        // forced to Plan above.
+    // ── Resolve run mode once from CLI flags ─────────────────────────────
+    // Eliminates nested if/else with interleaved #[cfg(unix)] blocks.
+    enum RunMode {
+        McpServer,
+        #[cfg(unix)]
+        Peer(PathBuf),
+        Binome,
+        SdkHeadless,
+        Print,
+        Interactive,
+    }
+
+    let run_mode = if cli.mcp_server {
+        RunMode::McpServer
+    } else if let Some(ref sock) = cli.peer_socket {
         #[cfg(unix)]
         {
+            RunMode::Peer(sock.clone())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = sock;
+            anyhow::bail!("--peer is only supported on Unix platforms");
+        }
+    } else if cli.groom {
+        RunMode::Binome
+    } else if is_sdk_piped {
+        RunMode::SdkHeadless
+    } else if is_headless {
+        RunMode::Print
+    } else {
+        RunMode::Interactive
+    };
+
+    let result = match run_mode {
+        RunMode::McpServer => {
+            let mcp_state = build_mcp_state(
+                client,
+                &cwd,
+                &config,
+                &cost_tracker,
+                cli.max_turns,
+                cli.model.clone(),
+            );
+            mcp_server::run_mcp_server(mcp_state).await
+        }
+        #[cfg(unix)]
+        RunMode::Peer(sock) => {
             let mcp_state = build_mcp_state(
                 client,
                 &cwd,
@@ -1000,66 +1029,58 @@ async fn main() -> anyhow::Result<()> {
             );
             mcp_server::run_mcp_server_unix(mcp_state, sock).await
         }
-        #[cfg(not(unix))]
-        {
-            let _ = sock;
-            anyhow::bail!("--peer is only supported on Unix platforms");
+        RunMode::Binome => {
+            let user_prompt = cli
+                .prompt
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("--groom requires a prompt (-p \"...\")"))?;
+
+            let worker_addendum = cc_core::system_prompt::groom_worker_addendum();
+            let peer_addendum = cc_core::system_prompt::groom_peer_addendum();
+            let peer_system_prompt = query_config
+                .system_prompt
+                .as_ref()
+                .map(|s| s.replace(&worker_addendum, &peer_addendum))
+                .unwrap_or_else(|| peer_addendum.clone());
+
+            let mut peer_query_config = query_config.clone();
+            peer_query_config.system_prompt = Some(peer_system_prompt);
+
+            let mut peer_tool_ctx = tool_ctx.clone();
+            peer_tool_ctx.permission_mode = cc_core::config::PermissionMode::Plan;
+
+            binome::run_binome(
+                client,
+                tools,
+                tool_ctx,
+                peer_tool_ctx,
+                query_config,
+                peer_query_config,
+                cost_tracker,
+                user_prompt,
+            )
+            .await
         }
-    } else if cli.groom {
-        // In-process binome: one worker (Edit perms), one peer (Plan).
-        // We already baked the worker addendum into `system_prompt` above
-        // (see the `if cli.groom` block ~line 569). For the peer we build
-        // a second system prompt with the peer addendum and a Plan-mode
-        // ToolContext so its tool calls can't mutate state.
-        let user_prompt = cli
-            .prompt
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("--groom requires a prompt (-p \"...\")"))?;
-
-        // Peer system prompt: swap the worker addendum for the peer
-        // addendum in the already-assembled system prompt.
-        let worker_addendum = cc_core::system_prompt::groom_worker_addendum();
-        let peer_addendum = cc_core::system_prompt::groom_peer_addendum();
-        let peer_system_prompt = query_config
-            .system_prompt
-            .as_ref()
-            .map(|s| s.replace(&worker_addendum, &peer_addendum))
-            .unwrap_or_else(|| peer_addendum.clone());
-
-        let mut peer_query_config = query_config.clone();
-        peer_query_config.system_prompt = Some(peer_system_prompt);
-
-        let mut peer_tool_ctx = tool_ctx.clone();
-        peer_tool_ctx.permission_mode = cc_core::config::PermissionMode::Plan;
-
-        binome::run_binome(
-            client,
-            tools,
-            tool_ctx,
-            peer_tool_ctx,
-            query_config,
-            peer_query_config,
-            cost_tracker,
-            user_prompt,
-        )
-        .await
-    } else if is_sdk_piped {
-        run_sdk_headless(&cli, client, tools, tool_ctx, query_config, cost_tracker).await
-    } else if is_headless {
-        run_headless(&cli, client, tools, tool_ctx, query_config, cost_tracker).await
-    } else {
-        run_interactive(
-            config,
-            settings,
-            client,
-            tools,
-            tool_ctx,
-            query_config,
-            cost_tracker,
-            cli.resume,
-            bridge_config,
-        )
-        .await
+        RunMode::SdkHeadless => {
+            run_sdk_headless(&cli, client, tools, tool_ctx, query_config, cost_tracker).await
+        }
+        RunMode::Print => {
+            run_headless(&cli, client, tools, tool_ctx, query_config, cost_tracker).await
+        }
+        RunMode::Interactive => {
+            run_interactive(
+                config,
+                settings,
+                client,
+                tools,
+                tool_ctx,
+                query_config,
+                cost_tracker,
+                cli.resume,
+                bridge_config,
+            )
+            .await
+        }
     };
 
     cron_cancel.cancel();
@@ -1083,8 +1104,7 @@ async fn main() -> anyhow::Result<()> {
 ///   the child re-reads them in its own startup. We pass `--cwd`
 ///   explicitly so the peer sees the same working directory even if
 ///   env-driven cwd differs.
-#[cfg(unix)]
-#[allow(dead_code)]
+#[cfg(all(unix, feature = "ipc-peer"))]
 async fn spawn_peer_child(
     cli: &Cli,
     cwd: &std::path::Path,
@@ -1118,6 +1138,10 @@ async fn spawn_peer_child(
     // Wait for the listener to be ready. The peer binds immediately after
     // startup so ~200ms is typically enough; we give 5s to tolerate cold
     // starts on slow machines.
+    //
+    // TOCTOU: socket may vanish between exists() check and connect().
+    // Acceptable here because the server is local and we retry on connect
+    // failure (the MCP manager's connect_unix retries internally).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !socket.exists() {
         if std::time::Instant::now() > deadline {

@@ -1035,6 +1035,12 @@ impl OpenAiProvider {
     /// - `done: true` on final line
     /// - Tool calls are objects with pre-parsed `arguments` (not JSON strings)
     /// - No incremental tool_call deltas — full tool call arrives in a single chunk
+    ///
+    /// Allocation strategy: raw bytes are appended into a persistent
+    /// `leftover` buffer. We find the last newline, process all complete
+    /// lines in-place (via `split('\n')`), and keep the incomplete
+    /// trailing fragment for the next iteration. This avoids a Vec
+    /// allocation per chunk.
     async fn process_ollama_stream(
         resp: reqwest::Response,
         handler: Arc<dyn StreamHandler>,
@@ -1049,7 +1055,7 @@ impl OpenAiProvider {
         }
 
         let mut byte_stream = resp.bytes_stream();
-        let mut leftover = String::new();
+        let mut leftover = Vec::<u8>::new();
         let mut sent_start = false;
 
         // Block tracking — lazily opened so tool-only responses get no spurious text block.
@@ -1062,22 +1068,22 @@ impl OpenAiProvider {
 
         while let Some(chunk_result) = byte_stream.next().await {
             let chunk = chunk_result.map_err(ClaudeError::Http)?;
-            let text = String::from_utf8_lossy(&chunk);
+            leftover.extend_from_slice(&chunk);
 
-            let combined = if leftover.is_empty() {
-                text.to_string()
-            } else {
-                let mut s = std::mem::take(&mut leftover);
-                s.push_str(&text);
-                s
+            // Find the last newline — everything before it is complete
+            // lines; everything after stays in the buffer.
+            let split_pos = match leftover.iter().rposition(|&b| b == b'\n') {
+                Some(pos) => pos + 1,
+                None => continue, // no complete line yet
             };
 
-            let mut lines: Vec<&str> = combined.split('\n').collect();
-            if !combined.ends_with('\n') {
-                leftover = lines.pop().unwrap_or("").to_string();
-            }
+            // Safety: we only feed UTF-8 JSON from the server. Lossy
+            // conversion keeps us resilient to stray bytes without panicking.
+            let complete = String::from_utf8_lossy(&leftover[..split_pos]).to_string();
+            let tail = leftover[split_pos..].to_vec();
+            leftover = tail;
 
-            for line in lines {
+            for line in complete.split('\n') {
                 let line = line.trim();
                 if line.is_empty() {
                     continue;

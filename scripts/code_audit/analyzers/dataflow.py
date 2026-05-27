@@ -10,6 +10,18 @@ Detects:
 import ast
 from collections import defaultdict
 
+# Order-sensitive method pairs — frozenset at module level so the set is
+# built once, not per-function.  Each tuple is (before, after) where
+# calling `before` then `after` can silently lose data.
+_ORDER_SENSITIVE_PAIRS = frozenset([
+    ("replace", "rstrip"),
+    ("replace", "lstrip"),
+    ("replace", "strip"),
+    ("replace", "split"),
+    ("lower", "replace"),
+    ("upper", "replace"),
+])
+
 
 def analyze(source, source_lines, **kwargs):
     """Run data flow analysis.
@@ -22,144 +34,175 @@ def analyze(source, source_lines, **kwargs):
 
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            anomalies.extend(_check_inconsistent_transforms(node, source_lines))
-            anomalies.extend(_check_pipeline_ordering(node, source_lines))
-            anomalies.extend(_check_early_transformation(node, source_lines))
+            visitor = _DataFlowVisitor(source_lines)
+            visitor.visit(node)
+            anomalies.extend(visitor.check_inconsistent_transforms())
+            anomalies.extend(visitor.check_pipeline_ordering())
+            anomalies.extend(visitor.check_early_transformation(node))
 
     anomalies.extend(_check_cross_function_flow(tree, source_lines))
 
     return anomalies
 
 
-# --- Pattern 1: Inconsistent transforms across paths ---
+class _DataFlowVisitor(ast.NodeVisitor):
+    """Single-pass visitor that collects all data needed by the four checks.
 
-def _check_inconsistent_transforms(func_node, source_lines):
-    """Variable transformed in some paths but used raw in others."""
-    anomalies = []
-    assignments = _collect_assignments(func_node)
-    comparisons = _collect_comparisons(func_node)
-
-    for var_name, comp_usages in comparisons.items():
-        transforms = assignments.get(var_name, [])
-        if not transforms:
-            continue
-
-        has_transform = any(t["transform"] for t in transforms)
-        has_raw_comparison = any(not c["normalized"] for c in comp_usages)
-
-        if has_transform and has_raw_comparison:
-            raw_lines = [c["line"] for c in comp_usages if not c["normalized"]]
-            transform_lines = [t["line"] for t in transforms if t["transform"]]
-            anomalies.append({
-                "analyzer": "dataflow",
-                "severity": "medium",
-                "title": f"Variable '{var_name}' transformed in some paths but used raw in others",
-                "lines": raw_lines,
-                "detail": (f"'{var_name}' is transformed ({transforms[0]['transform']}) at "
-                          f"L{transform_lines[0] if transform_lines else '?'} "
-                          f"but compared without transformation at L{raw_lines[0]}. "
-                          f"Code: {_get_line(source_lines, raw_lines[0])}"),
-            })
-
-    return anomalies
-
-
-# --- Pattern 2: Pipeline ordering ---
-
-def _check_pipeline_ordering(func_node, source_lines):
-    """Detect string method chains where order might matter.
-
-    E.g., .rstrip().replace("''", "'") vs .replace("''", "'").rstrip()
-    When replace removes chars that rstrip would have stripped, order matters.
+    Instead of walking the AST four times (once per check), this visitor
+    collects assignments, comparisons, method chains, and loop/append
+    information in a single traversal.
     """
-    anomalies = []
 
-    for node in ast.walk(func_node):
-        if not isinstance(node, ast.Call):
-            continue
-        if not isinstance(node.func, ast.Attribute):
-            continue
+    def __init__(self, source_lines):
+        self.source_lines = source_lines
+        self.assignments = defaultdict(list)
+        self.comparisons = defaultdict(list)
+        self.method_chains = []        # list of (node, chain)
+        self.loop_contexts = []        # list of (loop_node, appends, transforms)
+        # Stack tracking the innermost loop we are inside (for early-transform detection).
+        self._loop_stack = []
 
-        # Detect chained calls: x.method1().method2()
-        chain = _extract_method_chain(node)
-        if len(chain) < 2:
-            continue
+    # ── Generic visiting ──────────────────────────────────────────────
 
-        methods = [c["method"] for c in chain]
+    def visit_Assign(self, node):
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                transform = _detect_transform(node.value)
+                self.assignments[target.id].append({
+                    "line": node.lineno,
+                    "transform": transform,
+                })
+        self.generic_visit(node)
 
-        # Check for order-sensitive combinations.
-        # Only one direction per pair: the "risky" order where applying m1
-        # before m2 can silently lose data (e.g., replace before rstrip).
-        # The double-enumerate + i<j filter already fires regardless of
-        # which order the methods appear in, so listing both directions
-        # would cause every co-occurrence to match.
-        order_sensitive_pairs = [
-            ("replace", "rstrip"),
-            ("replace", "lstrip"),
-            ("replace", "strip"),
-            ("replace", "split"),
-            ("lower", "replace"),
-            ("upper", "replace"),
-        ]
+    def visit_AugAssign(self, node):
+        if isinstance(node.target, ast.Name):
+            transform = _detect_transform(node.value)
+            self.assignments[node.target.id].append({
+                "line": node.lineno,
+                "transform": transform,
+            })
+        self.generic_visit(node)
 
-        for i, m1 in enumerate(methods):
-            for j, m2 in enumerate(methods):
-                if i < j and (m1, m2) in order_sensitive_pairs:
-                    anomalies.append({
-                        "analyzer": "dataflow",
-                        "severity": "low",
-                        "title": f"Order-sensitive method chain: .{m1}() before .{m2}()",
-                        "lines": [node.lineno],
-                        "detail": (f"Method chain at L{node.lineno} calls .{m1}() before .{m2}(). "
-                                  f"The order of these operations can affect the result. "
-                                  f"Verify that this ordering is intentional. "
-                                  f"Code: {_get_line(source_lines, node.lineno)}"),
+    def visit_Compare(self, node):
+        for op, comparator in zip(node.ops, node.comparators):
+            if not isinstance(op, (ast.Eq, ast.NotEq)):
+                continue
+            if isinstance(node.left, ast.Name):
+                self.comparisons[node.left.id].append({
+                    "line": node.lineno,
+                    "normalized": _has_normalization(node.left),
+                })
+            elif isinstance(node.left, ast.Call) and isinstance(node.left.func, ast.Attribute):
+                if isinstance(node.left.func.value, ast.Name):
+                    self.comparisons[node.left.func.value.id].append({
+                        "line": node.lineno,
+                        "normalized": _has_normalization(node.left),
+                    })
+            if isinstance(comparator, ast.Name):
+                self.comparisons[comparator.id].append({
+                    "line": node.lineno,
+                    "normalized": _has_normalization(comparator),
+                })
+        self.generic_visit(node)
+
+    def visit_Call(self, node):
+        # Collect method chains for pipeline-ordering check.
+        if isinstance(node.func, ast.Attribute):
+            chain = _extract_method_chain(node)
+            if len(chain) >= 2:
+                self.method_chains.append((node, chain))
+
+        # Track append / transform inside loops for early-transform check.
+        if self._loop_stack:
+            ctx = self._loop_stack[-1]
+            if isinstance(node.func, ast.Attribute):
+                if node.func.attr == "append":
+                    ctx["appends"].append({"line": node.lineno})
+                elif node.func.attr in (
+                    "replace", "translate", "encode", "decode",
+                    "strip", "lstrip", "rstrip",
+                ):
+                    ctx["transforms"].append({
+                        "line": node.lineno,
+                        "method": node.func.attr,
+                        "code": _get_line(self.source_lines, node.lineno),
                     })
 
-    return anomalies
+        self.generic_visit(node)
 
+    def _visit_loop(self, node):
+        ctx = {"node": node, "appends": [], "transforms": []}
+        self._loop_stack.append(ctx)
+        self.generic_visit(node)
+        self._loop_stack.pop()
+        self.loop_contexts.append((node, ctx["appends"], ctx["transforms"]))
 
-# --- Pattern 3: Early transformation in a loop/accumulator ---
+    def visit_For(self, node):
+        self._visit_loop(node)
 
-def _check_early_transformation(func_node, source_lines):
-    """Detect transformations inside a loop that should be done after.
+    def visit_While(self, node):
+        self._visit_loop(node)
 
-    Pattern: accumulate pieces in a loop, transform each piece,
-    then join — but the transform should be done on the joined result.
-    E.g., replacing quotes in each CONTINUE card piece instead of
-    after reconstructing the full string.
-    """
-    anomalies = []
+    # ── Checks (read collected state, no further walks) ───────────────
 
-    for node in ast.walk(func_node):
-        if not isinstance(node, (ast.For, ast.While)):
-            continue
+    def check_inconsistent_transforms(self):
+        """Variable transformed in some paths but used raw in others."""
+        anomalies = []
+        for var_name, comp_usages in self.comparisons.items():
+            transforms = self.assignments.get(var_name, [])
+            if not transforms:
+                continue
 
-        # Find .append() calls in the loop body
-        appends = []
-        transforms_in_loop = []
+            has_transform = any(t["transform"] for t in transforms)
+            has_raw_comparison = any(not c["normalized"] for c in comp_usages)
 
-        for child in ast.walk(node):
-            # Track appends to a list
-            if (isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
-                    and child.func.attr == "append"):
-                appends.append({"line": child.lineno})
-
-            # Track string transformations in the loop
-            if (isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
-                    and child.func.attr in ("replace", "translate", "encode", "decode",
-                                            "strip", "lstrip", "rstrip")):
-                transforms_in_loop.append({
-                    "line": child.lineno,
-                    "method": child.func.attr,
-                    "code": _get_line(source_lines, child.lineno),
+            if has_transform and has_raw_comparison:
+                raw_lines = [c["line"] for c in comp_usages if not c["normalized"]]
+                transform_lines = [t["line"] for t in transforms if t["transform"]]
+                anomalies.append({
+                    "analyzer": "dataflow",
+                    "severity": "medium",
+                    "title": f"Variable '{var_name}' transformed in some paths but used raw in others",
+                    "lines": raw_lines,
+                    "detail": (
+                        f"'{var_name}' is transformed ({transforms[0]['transform']}) at "
+                        f"L{transform_lines[0] if transform_lines else '?'} "
+                        f"but compared without transformation at L{raw_lines[0]}. "
+                        f"Code: {_get_line(self.source_lines, raw_lines[0])}"
+                    ),
                 })
+        return anomalies
 
-        # If we have both appends and transforms, the transform might be premature
-        if appends and transforms_in_loop:
-            # Check if there's a join after the loop
-            # (look at the next few lines after the loop)
-            loop_end = node.end_lineno if hasattr(node, 'end_lineno') else node.lineno + 20
+    def check_pipeline_ordering(self):
+        """Detect string method chains where order might matter."""
+        anomalies = []
+        for node, chain in self.method_chains:
+            methods = [c["method"] for c in chain]
+            for i, m1 in enumerate(methods):
+                for j, m2 in enumerate(methods):
+                    if i < j and (m1, m2) in _ORDER_SENSITIVE_PAIRS:
+                        anomalies.append({
+                            "analyzer": "dataflow",
+                            "severity": "low",
+                            "title": f"Order-sensitive method chain: .{m1}() before .{m2}()",
+                            "lines": [node.lineno],
+                            "detail": (
+                                f"Method chain at L{node.lineno} calls .{m1}() before .{m2}(). "
+                                f"The order of these operations can affect the result. "
+                                f"Verify that this ordering is intentional. "
+                                f"Code: {_get_line(self.source_lines, node.lineno)}"
+                            ),
+                        })
+        return anomalies
+
+    def check_early_transformation(self, func_node):
+        """Detect transformations inside a loop that should be done after."""
+        anomalies = []
+        for loop_node, appends, transforms_in_loop in self.loop_contexts:
+            if not appends or not transforms_in_loop:
+                continue
+
+            loop_end = loop_node.end_lineno if hasattr(loop_node, 'end_lineno') else loop_node.lineno + 20
             has_join_after = False
             for sibling in ast.walk(func_node):
                 if (isinstance(sibling, ast.Call) and isinstance(sibling.func, ast.Attribute)
@@ -175,15 +218,16 @@ def _check_early_transformation(func_node, source_lines):
                         "severity": "medium",
                         "title": f"Transformation .{t['method']}() inside accumulation loop",
                         "lines": [t["line"]],
-                        "detail": (f".{t['method']}() at L{t['line']} is inside a loop that "
-                                  f"accumulates values (append). The accumulated values are "
-                                  f"joined later. If .{t['method']}() depends on the complete "
-                                  f"string (not individual pieces), it should be applied AFTER "
-                                  f"the join, not inside the loop. "
-                                  f"Code: {t['code']}"),
+                        "detail": (
+                            f".{t['method']}() at L{t['line']} is inside a loop that "
+                            f"accumulates values (append). The accumulated values are "
+                            f"joined later. If .{t['method']}() depends on the complete "
+                            f"string (not individual pieces), it should be applied AFTER "
+                            f"the join, not inside the loop. "
+                            f"Code: {t['code']}"
+                        ),
                     })
-
-    return anomalies
+        return anomalies
 
 
 # --- Pattern 4: Cross-function data flow ---
@@ -191,54 +235,58 @@ def _check_early_transformation(func_node, source_lines):
 def _check_cross_function_flow(tree, source_lines):
     """Check if a function returns transformed data that callers might misuse.
 
+    Uses a single walk to collect both function return transforms and call
+    sites, then cross-references them.
+
     Limitation / known false positives: call-site matching uses bare
     ``ast.Name.id`` or ``ast.Attribute.attr`` without scope resolution, so
     identically-named functions in different modules or classes will collide.
     Severity is kept at "low" for this reason.
     """
     anomalies = []
-
-    # Collect all functions and their return transformations
     func_transforms = {}
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for child in ast.walk(node):
-            if isinstance(child, ast.Return) and child.value:
-                transform = _detect_transform(child.value)
-                if transform:
-                    func_transforms[node.name] = {
-                        "transform": transform,
-                        "line": child.lineno,
-                    }
+    call_sites = []
 
-    # Check if callers re-apply the same transformation.
-    # NOTE: Matches by bare name/attr without scope — may produce false
-    # positives when different functions share a name across scopes.
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func_name = None
-        if isinstance(node.func, ast.Name):
-            func_name = node.func.id
-        elif isinstance(node.func, ast.Attribute):
-            func_name = node.func.attr
+        # Collect function return transformations.
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for child in ast.walk(node):
+                if isinstance(child, ast.Return) and child.value:
+                    transform = _detect_transform(child.value)
+                    if transform:
+                        func_transforms[node.name] = {
+                            "transform": transform,
+                            "line": child.lineno,
+                        }
 
-        if func_name and func_name in func_transforms:
-            # Check if the result of this call is transformed again with the same method
-            # Look at the parent — is it x = func().transform()?
-            parent_transform = _detect_transform(node)
-            if parent_transform and parent_transform == func_transforms[func_name]["transform"]:
-                anomalies.append({
-                    "analyzer": "dataflow",
-                    "severity": "low",
-                    "title": f"Double transformation: {func_name}() already applies {parent_transform}",
-                    "lines": [node.lineno],
-                    "detail": (f"Call to '{func_name}()' at L{node.lineno} is followed by "
-                              f"{parent_transform}, but '{func_name}()' already applies "
-                              f"{parent_transform} at L{func_transforms[func_name]['line']}. "
-                              f"This may be a double-transformation bug."),
-                })
+        # Collect call sites.
+        if isinstance(node, ast.Call):
+            func_name = None
+            if isinstance(node.func, ast.Name):
+                func_name = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                func_name = node.func.attr
+            if func_name is not None:
+                call_sites.append((func_name, node))
+
+    # Cross-reference: does a caller re-apply the same transform?
+    for func_name, node in call_sites:
+        if func_name not in func_transforms:
+            continue
+        parent_transform = _detect_transform(node)
+        if parent_transform and parent_transform == func_transforms[func_name]["transform"]:
+            anomalies.append({
+                "analyzer": "dataflow",
+                "severity": "low",
+                "title": f"Double transformation: {func_name}() already applies {parent_transform}",
+                "lines": [node.lineno],
+                "detail": (
+                    f"Call to '{func_name}()' at L{node.lineno} is followed by "
+                    f"{parent_transform}, but '{func_name}()' already applies "
+                    f"{parent_transform} at L{func_transforms[func_name]['line']}. "
+                    f"This may be a double-transformation bug."
+                ),
+            })
 
     return anomalies
 
@@ -246,7 +294,7 @@ def _check_cross_function_flow(tree, source_lines):
 # --- Helpers ---
 
 def _extract_method_chain(node):
-    """Extract a chain of method calls: x.a().b().c() → [c, b, a]."""
+    """Extract a chain of method calls: x.a().b().c() -> [c, b, a]."""
     chain = []
     current = node
     while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
@@ -256,56 +304,6 @@ def _extract_method_chain(node):
         })
         current = current.func.value
     return chain
-
-
-def _collect_assignments(func_node):
-    """Collect variable assignments and detect transformations."""
-    assignments = defaultdict(list)
-    for node in ast.walk(func_node):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    transform = _detect_transform(node.value)
-                    assignments[target.id].append({
-                        "line": node.lineno,
-                        "transform": transform,
-                    })
-        elif isinstance(node, ast.AugAssign):
-            if isinstance(node.target, ast.Name):
-                transform = _detect_transform(node.value)
-                assignments[node.target.id].append({
-                    "line": node.lineno,
-                    "transform": transform,
-                })
-    return assignments
-
-
-def _collect_comparisons(func_node):
-    """Collect all variable comparisons."""
-    comparisons = defaultdict(list)
-    for node in ast.walk(func_node):
-        if not isinstance(node, ast.Compare):
-            continue
-        for op, comparator in zip(node.ops, node.comparators):
-            if not isinstance(op, (ast.Eq, ast.NotEq)):
-                continue
-            if isinstance(node.left, ast.Name):
-                comparisons[node.left.id].append({
-                    "line": node.lineno,
-                    "normalized": _has_normalization(node.left),
-                })
-            elif isinstance(node.left, ast.Call) and isinstance(node.left.func, ast.Attribute):
-                if isinstance(node.left.func.value, ast.Name):
-                    comparisons[node.left.func.value.id].append({
-                        "line": node.lineno,
-                        "normalized": _has_normalization(node.left),
-                    })
-            if isinstance(comparator, ast.Name):
-                comparisons[comparator.id].append({
-                    "line": node.lineno,
-                    "normalized": _has_normalization(comparator),
-                })
-    return comparisons
 
 
 def _detect_transform(node):
