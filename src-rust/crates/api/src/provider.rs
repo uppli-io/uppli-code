@@ -188,14 +188,16 @@ pub trait LlmProvider: Send + Sync {
     // ── Derived helpers with sensible defaults ───────────────
 
     /// Whether the given model supports thinking/reasoning.
-    /// Default: looks up `known_models`; falls back to `false`.
+    /// Default: looks up `known_models`; for unknown models, falls back to
+    /// whether the provider has a default thinking budget (i.e., the provider
+    /// itself supports thinking, so an unknown model likely does too).
     fn model_supports_thinking(&self, model: &str) -> bool {
-        self.capabilities()
-            .known_models
+        let caps = self.capabilities();
+        caps.known_models
             .iter()
             .find(|m| m.id == model)
             .map(|m| m.supports_thinking)
-            .unwrap_or(false)
+            .unwrap_or_else(|| caps.default_thinking_budget.is_some())
     }
 
     /// For hybrid mode: given a "slow" model, return the "fast" model.
@@ -371,8 +373,15 @@ mod tests {
     }
 
     #[test]
-    fn model_supports_thinking_false_for_unknown() {
+    fn model_supports_thinking_false_for_unknown_no_budget() {
         let p = make_provider(vec![], 4096);
         assert!(!p.model_supports_thinking("unknown"));
+    }
+
+    #[test]
+    fn model_supports_thinking_true_for_unknown_with_budget() {
+        let mut p = make_provider(vec![], 4096);
+        p.caps.default_thinking_budget = Some(16_000);
+        assert!(p.model_supports_thinking("unknown"));
     }
 }
