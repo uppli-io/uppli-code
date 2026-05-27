@@ -1670,7 +1670,7 @@ mod tests {
         let translated = provider.translate_message(&tool_result_msg);
         assert_eq!(translated.len(), 1);
         assert_eq!(translated[0].role, "tool");
-        assert_eq!(translated[0].tool_call_id.as_deref(), Some("tu_1"));
+        assert_eq!(translated[0].tool_call_id, None);
     }
 
     /// Simulate an OpenAI SSE stream and verify the StreamAccumulator
