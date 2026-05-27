@@ -804,11 +804,9 @@ fn render_diff_detail(state: &DiffViewerState, area: Rect, buf: &mut Buffer) {
         let thumb_size = ((bar_h * bar_h) / total_lines).max(1).min(bar_h);
         // Thumb position
         let scroll_range = total_lines.saturating_sub(bar_h);
-        let thumb_top = if scroll_range > 0 {
-            (scroll * (bar_h.saturating_sub(thumb_size))) / scroll_range
-        } else {
-            0
-        };
+        let thumb_top = (scroll * (bar_h.saturating_sub(thumb_size)))
+            .checked_div(scroll_range)
+            .unwrap_or(0);
 
         for row in 0..bar_h {
             let y = inner.y + row as u16;

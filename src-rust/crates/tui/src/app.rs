@@ -1654,43 +1654,39 @@ impl App {
     /// Process a mouse event (scroll, text selection).
     pub fn handle_mouse_event(&mut self, mouse_event: MouseEvent) {
         match mouse_event.kind {
-            MouseEventKind::ScrollUp => {
-                if !mouse_event.modifiers.contains(KeyModifiers::CONTROL) {
-                    let step = self.scroll_step();
-                    self.scroll_offset = self.scroll_offset.saturating_add(step);
-                    self.auto_scroll = false;
-                    self.selection_anchor = None;
-                    self.selection_focus = None;
-                }
+            MouseEventKind::ScrollUp if !mouse_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                let step = self.scroll_step();
+                self.scroll_offset = self.scroll_offset.saturating_add(step);
+                self.auto_scroll = false;
+                self.selection_anchor = None;
+                self.selection_focus = None;
             }
-            MouseEventKind::ScrollDown => {
-                if !mouse_event.modifiers.contains(KeyModifiers::CONTROL) {
-                    let step = self.scroll_step();
-                    let new_off = self.scroll_offset.saturating_sub(step);
-                    self.scroll_offset = new_off;
-                    if new_off == 0 {
-                        self.auto_scroll = true;
-                        self.new_messages_while_scrolled = 0;
-                    }
-                    self.selection_anchor = None;
-                    self.selection_focus = None;
+            MouseEventKind::ScrollDown
+                if !mouse_event.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                let step = self.scroll_step();
+                let new_off = self.scroll_offset.saturating_sub(step);
+                self.scroll_offset = new_off;
+                if new_off == 0 {
+                    self.auto_scroll = true;
+                    self.new_messages_while_scrolled = 0;
                 }
+                self.selection_anchor = None;
+                self.selection_focus = None;
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.selection_anchor = Some((mouse_event.column, mouse_event.row));
                 self.selection_focus = Some((mouse_event.column, mouse_event.row));
                 *self.selection_text.borrow_mut() = String::new();
             }
-            MouseEventKind::Drag(MouseButton::Left) => {
-                if self.selection_anchor.is_some() {
-                    self.selection_focus = Some((mouse_event.column, mouse_event.row));
-                }
+            MouseEventKind::Drag(MouseButton::Left) if self.selection_anchor.is_some() => {
+                self.selection_focus = Some((mouse_event.column, mouse_event.row));
             }
-            MouseEventKind::Up(MouseButton::Left) => {
-                if self.selection_anchor == self.selection_focus {
-                    self.selection_anchor = None;
-                    self.selection_focus = None;
-                }
+            MouseEventKind::Up(MouseButton::Left)
+                if self.selection_anchor == self.selection_focus =>
+            {
+                self.selection_anchor = None;
+                self.selection_focus = None;
             }
             _ => {}
         }
@@ -2196,10 +2192,11 @@ impl App {
                     self.should_quit = true;
                 }
             }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.prompt_input.is_empty() {
-                    self.should_quit = true;
-                }
+            KeyCode::Char('d')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && self.prompt_input.is_empty() =>
+            {
+                self.should_quit = true;
             }
 
             // ---- History search ----------------------------------------
@@ -2285,14 +2282,12 @@ impl App {
                 self.prompt_input.cursor = self.prompt_input.text.len();
                 self.sync_legacy_prompt_fields();
             }
-            KeyCode::Tab if !self.is_streaming => {
-                if !self.prompt_input.suggestions.is_empty() {
-                    if self.prompt_input.suggestion_index.is_none() {
-                        self.prompt_input.suggestion_index = Some(0);
-                    }
-                    self.prompt_input.accept_suggestion();
-                    self.refresh_prompt_input();
+            KeyCode::Tab if !self.is_streaming && !self.prompt_input.suggestions.is_empty() => {
+                if self.prompt_input.suggestion_index.is_none() {
+                    self.prompt_input.suggestion_index = Some(0);
                 }
+                self.prompt_input.accept_suggestion();
+                self.refresh_prompt_input();
             }
 
             // ---- Shift+Tab: cycle permission mode ----------------------
@@ -2428,10 +2423,11 @@ impl App {
                 self.pending_mcp_reconnect = true;
                 self.status_message = Some("Reconnecting MCP runtime...".to_string());
             }
-            KeyCode::Char(c) if key.modifiers.is_empty() => {
-                if self.mcp_view.active_pane != crate::mcp_view::McpViewPane::ServerList {
-                    self.mcp_view.push_search_char(c);
-                }
+            KeyCode::Char(c)
+                if key.modifiers.is_empty()
+                    && self.mcp_view.active_pane != crate::mcp_view::McpViewPane::ServerList =>
+            {
+                self.mcp_view.push_search_char(c);
             }
             _ => {}
         }
@@ -2497,10 +2493,8 @@ impl App {
             }
             KeyCode::PageUp => self.diff_viewer.scroll_detail_up(),
             KeyCode::PageDown => self.diff_viewer.scroll_detail_down(),
-            KeyCode::Char(' ') => {
-                if self.diff_viewer.active_pane == DiffPane::FileList {
-                    self.diff_viewer.toggle_file_collapse();
-                }
+            KeyCode::Char(' ') if self.diff_viewer.active_pane == DiffPane::FileList => {
+                self.diff_viewer.toggle_file_collapse();
             }
             _ => {}
         }
@@ -2825,16 +2819,11 @@ impl App {
                 self.history_search = None;
                 self.history_search_overlay.close();
             }
-            KeyCode::Up => {
-                if hs.selected > 0 {
-                    hs.selected -= 1;
-                }
+            KeyCode::Up if hs.selected > 0 => {
+                hs.selected -= 1;
             }
-            KeyCode::Down => {
-                let max = hs.matches.len().saturating_sub(1);
-                if hs.selected < max {
-                    hs.selected += 1;
-                }
+            KeyCode::Down if hs.selected < hs.matches.len().saturating_sub(1) => {
+                hs.selected += 1;
             }
             KeyCode::Backspace => {
                 hs.query.pop();

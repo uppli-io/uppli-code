@@ -1354,10 +1354,8 @@ pub fn apply_vim_command(
         "h" if *mode == VimMode::Normal => {
             *cursor = cursor.saturating_sub(1);
         }
-        "l" if *mode == VimMode::Normal => {
-            if *cursor < text.len() {
-                *cursor += 1;
-            }
+        "l" if *mode == VimMode::Normal && *cursor < text.len() => {
+            *cursor += 1;
         }
         "0" if *mode == VimMode::Normal => {
             *cursor = 0;
@@ -1393,14 +1391,12 @@ pub fn apply_vim_command(
                 .count();
             *cursor = cursor.saturating_sub(skip_space + skip_word);
         }
-        "x" if *mode == VimMode::Normal => {
+        "x" if *mode == VimMode::Normal && *cursor < text.len() => {
             // Delete char under cursor
-            if *cursor < text.len() {
-                *yank_buf = text.chars().nth(*cursor).unwrap_or_default().to_string();
-                text.remove(*cursor);
-                if *cursor > 0 && *cursor >= text.len() {
-                    *cursor = text.len().saturating_sub(1);
-                }
+            *yank_buf = text.chars().nth(*cursor).unwrap_or_default().to_string();
+            text.remove(*cursor);
+            if *cursor > 0 && *cursor >= text.len() {
+                *cursor = text.len().saturating_sub(1);
             }
         }
         "dd" if *mode == VimMode::Normal => {

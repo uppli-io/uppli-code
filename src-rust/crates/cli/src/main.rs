@@ -3099,10 +3099,8 @@ async fn run_interactive(
                 Event::Mouse(mouse_event) => {
                     app.handle_mouse_event(mouse_event);
                 }
-                Event::Paste(data) => {
-                    if !app.is_streaming {
-                        app.prompt_input.paste(&data);
-                    }
+                Event::Paste(data) if !app.is_streaming => {
+                    app.prompt_input.paste(&data);
                 }
                 Event::Resize(_, _) => {
                     // Terminal resize - will be handled on next draw
