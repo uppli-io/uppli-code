@@ -68,7 +68,7 @@ impl OpenAiProviderConfig {
             api_key: String::new(),
             default_model: model.to_string(),
             fast_model: None,
-            supports_thinking: false,
+            supports_thinking: true,
             api_format: ApiFormat::Ollama,
             max_retries: 3,
             request_timeout: Duration::from_secs(600),
@@ -79,7 +79,7 @@ impl OpenAiProviderConfig {
                 description: "Local model via Ollama".to_string(),
                 context_window: 128_000,
                 max_output_tokens: 8_192,
-                supports_thinking: false,
+                supports_thinking: true,
                 pricing: None, // Local = free
             }],
             default_max_tokens: 8_192,
@@ -1610,7 +1610,7 @@ mod tests {
         assert_eq!(openai_req.messages[0].role, "system");
         assert_eq!(openai_req.messages[1].role, "user");
         assert_eq!(openai_req.temperature, Some(0.7));
-        assert!(openai_req.enable_thinking.is_none()); // Ollama doesn't support thinking
+        assert_eq!(openai_req.think, Some(false)); // Ollama supports thinking, but this request has thinking: None → explicitly disable
     }
 
     #[test]
