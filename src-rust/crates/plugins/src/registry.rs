@@ -194,7 +194,7 @@ impl PluginRegistry {
                     args: mcp.args.clone(),
                     env: mcp.env.clone(),
                     url: mcp.url.clone(),
-                    server_type: mcp.server_type.clone(),
+                    server_type: mcp.server_type,
                 });
             }
         }

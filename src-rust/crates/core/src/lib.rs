@@ -698,8 +698,40 @@ pub mod config {
         StreamJson,
     }
 
+    /// Transport type for MCP server connections.
+    #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+    #[serde(rename_all = "lowercase")]
+    pub enum McpTransportType {
+        #[default]
+        Stdio,
+        Unix,
+        Http,
+        Sse,
+    }
+
+    impl McpTransportType {
+        /// Returns the string representation used in match arms and logs.
+        pub fn as_str(&self) -> &'static str {
+            match self {
+                Self::Stdio => "stdio",
+                Self::Unix => "unix",
+                Self::Http => "http",
+                Self::Sse => "sse",
+            }
+        }
+    }
+
+    impl std::fmt::Display for McpTransportType {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.as_str())
+        }
+    }
+
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct McpServerConfig {
+        /// Server name. Defaults to empty when deserializing from a map value
+        /// (the caller sets it from the map key).
+        #[serde(default)]
         pub name: String,
         pub command: Option<String>,
         #[serde(default)]
@@ -707,12 +739,8 @@ pub mod config {
         #[serde(default)]
         pub env: HashMap<String, String>,
         pub url: Option<String>,
-        #[serde(rename = "type", default = "default_mcp_type")]
-        pub server_type: String,
-    }
-
-    fn default_mcp_type() -> String {
-        "stdio".to_string()
+        #[serde(rename = "type", default)]
+        pub server_type: McpTransportType,
     }
 
     // ---- Settings --------------------------------------------------------

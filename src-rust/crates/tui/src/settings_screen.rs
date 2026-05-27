@@ -901,7 +901,7 @@ fn build_advanced_lines(screen: &SettingsScreen) -> Vec<Line<'static>> {
             let kind = if srv.url.is_some() {
                 "http"
             } else {
-                &srv.server_type
+                srv.server_type.as_str()
             };
             lines.push(Line::from(vec![
                 Span::styled(

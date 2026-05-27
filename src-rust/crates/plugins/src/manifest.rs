@@ -45,12 +45,8 @@ pub struct PluginMcpServer {
     pub env: HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    #[serde(rename = "type", default = "default_mcp_type")]
-    pub server_type: String,
-}
-
-fn default_mcp_type() -> String {
-    "stdio".to_string()
+    #[serde(rename = "type", default)]
+    pub server_type: cc_core::config::McpTransportType,
 }
 
 // ---------------------------------------------------------------------------

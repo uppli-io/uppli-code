@@ -2149,10 +2149,11 @@ impl SlashCommand for McpCommand {
         if sub == "status" {
             let mut output = String::from("MCP Server Status\n─────────────────\n");
             for srv in &ctx.config.mcp_servers {
-                let kind = match srv.server_type.as_str() {
-                    "stdio" => "stdio",
-                    "sse" | "http" => "HTTP/SSE",
-                    other => other,
+                let kind = match srv.server_type {
+                    cc_core::config::McpTransportType::Stdio => "stdio",
+                    cc_core::config::McpTransportType::Sse
+                    | cc_core::config::McpTransportType::Http => "HTTP/SSE",
+                    _ => srv.server_type.as_str(),
                 };
                 let endpoint = srv
                     .url
@@ -2284,7 +2285,10 @@ impl McpCommand {
             }
         }
 
-        let is_http = matches!(srv.server_type.as_str(), "sse" | "http" | "sse+oauth");
+        let is_http = matches!(
+            srv.server_type,
+            cc_core::config::McpTransportType::Sse | cc_core::config::McpTransportType::Http
+        );
 
         if !is_http {
             // stdio — env-var / API-key auth

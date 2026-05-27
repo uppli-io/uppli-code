@@ -87,14 +87,16 @@ def _check_pipeline_ordering(func_node, source_lines):
 
         methods = [c["method"] for c in chain]
 
-        # Check for order-sensitive combinations
+        # Check for order-sensitive combinations.
+        # Only one direction per pair: the "risky" order where applying m1
+        # before m2 can silently lose data (e.g., replace before rstrip).
+        # The double-enumerate + i<j filter already fires regardless of
+        # which order the methods appear in, so listing both directions
+        # would cause every co-occurrence to match.
         order_sensitive_pairs = [
             ("replace", "rstrip"),
             ("replace", "lstrip"),
             ("replace", "strip"),
-            ("rstrip", "replace"),
-            ("lstrip", "replace"),
-            ("strip", "replace"),
             ("replace", "split"),
             ("lower", "replace"),
             ("upper", "replace"),
@@ -187,7 +189,13 @@ def _check_early_transformation(func_node, source_lines):
 # --- Pattern 4: Cross-function data flow ---
 
 def _check_cross_function_flow(tree, source_lines):
-    """Check if a function returns transformed data that callers might misuse."""
+    """Check if a function returns transformed data that callers might misuse.
+
+    Limitation / known false positives: call-site matching uses bare
+    ``ast.Name.id`` or ``ast.Attribute.attr`` without scope resolution, so
+    identically-named functions in different modules or classes will collide.
+    Severity is kept at "low" for this reason.
+    """
     anomalies = []
 
     # Collect all functions and their return transformations
@@ -204,7 +212,9 @@ def _check_cross_function_flow(tree, source_lines):
                         "line": child.lineno,
                     }
 
-    # Check if callers re-apply the same transformation
+    # Check if callers re-apply the same transformation.
+    # NOTE: Matches by bare name/attr without scope — may produce false
+    # positives when different functions share a name across scopes.
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue

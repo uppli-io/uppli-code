@@ -14,7 +14,7 @@
 // - Connection manager with exponential-backoff reconnection
 
 use async_trait::async_trait;
-use cc_core::config::McpServerConfig;
+use cc_core::config::{McpServerConfig, McpTransportType};
 use cc_core::types::ToolDefinition;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -101,7 +101,7 @@ pub fn expand_server_config(config: &McpServerConfig) -> McpServerConfig {
             .map(|(k, v)| (k.clone(), expand_env_vars(v)))
             .collect(),
         url: config.url.as_deref().map(expand_env_vars),
-        server_type: config.server_type.clone(),
+        server_type: config.server_type,
     }
 }
 
@@ -948,8 +948,8 @@ impl McpManager {
             // Expand env vars before using the config
             let expanded = expand_server_config(config);
 
-            match expanded.server_type.as_str() {
-                "stdio" => {
+            match expanded.server_type {
+                McpTransportType::Stdio => {
                     debug!(
                         server = %expanded.name,
                         command = ?expanded.command,
@@ -978,7 +978,7 @@ impl McpManager {
                     }
                 }
                 #[cfg(unix)]
-                "unix" => {
+                McpTransportType::Unix => {
                     // Unix-socket transport: we *connect* to an already-running
                     // listener rather than spawning it. The socket path lives
                     // in `command` (no separate field — keeps the config
@@ -1012,10 +1012,22 @@ impl McpManager {
                         }
                     }
                 }
+                // Non-unix McpTransportType::Unix falls through here on non-unix platforms
+                #[cfg(not(unix))]
+                McpTransportType::Unix => {
+                    warn!(
+                        server = %expanded.name,
+                        "Unix transport not supported on this platform; skipping server"
+                    );
+                    manager.failed_servers.push((
+                        expanded.name.clone(),
+                        "unix transport not supported on this platform".to_string(),
+                    ));
+                }
                 other => {
                     warn!(
                         server = %expanded.name,
-                        transport = other,
+                        transport = %other,
                         "Unsupported MCP transport type; skipping server"
                     );
                     manager.failed_servers.push((
@@ -1267,8 +1279,8 @@ impl McpManager {
             None => return McpAuthState::NotRequired,
         };
 
-        match config.server_type.as_str() {
-            "http" | "sse" => McpAuthState::Required {
+        match config.server_type {
+            McpTransportType::Http | McpTransportType::Sse => McpAuthState::Required {
                 auth_url: config
                     .url
                     .clone()
@@ -1518,7 +1530,7 @@ mod tests {
                 m
             },
             url: None,
-            server_type: "stdio".to_string(),
+            server_type: McpTransportType::Stdio,
         };
         let expanded = expand_server_config(&cfg);
         assert_eq!(expanded.command.as_deref(), Some("/home/user/bin/server"));

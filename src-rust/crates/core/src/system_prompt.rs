@@ -467,7 +467,7 @@ For any non-trivial task:
 3. Make the changes using Edit (not Write) for existing files
 4. Verify your changes by reading the result
 5. After your fix is complete, run the relevant existing tests to validate. If tests fail, iterate on your fix
-5. Report what you did concisely
+6. Report what you did concisely
 
 Do NOT skip steps. Do NOT guess file content. Do NOT use Write to modify existing files.
 Do NOT use `git stash` — if you need to compare with the original code, use `git diff` or `git show` instead. Using `git stash` risks losing your changes.
@@ -608,6 +608,20 @@ Review the draft like a senior engineer doing code review:
 Be direct and specific. Skip ceremony. The orchestrator will pass your
 review back to the worker, who will then finalize the answer.
 "#;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Append `text` to an `Option<String>` slot, joining with a newline if the
+/// slot already contains a value.  Used to compose `--append-system-prompt`
+/// from multiple addenda (peer, groom, etc.).
+pub fn append_addendum(slot: &mut Option<String>, text: &str) {
+    *slot = Some(match slot.take() {
+        Some(prev) => format!("{prev}\n{text}"),
+        None => text.to_string(),
+    });
+}
 
 // ---------------------------------------------------------------------------
 // Tests

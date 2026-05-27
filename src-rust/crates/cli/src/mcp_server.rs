@@ -380,7 +380,8 @@ async fn tool_query(conn: &Conn, args: &Value) -> Result<Value, JsonRpcError> {
             .provider
             .capabilities()
             .default_thinking_budget
-            .map(|_| 64_000),
+            .is_some()
+            .then_some(64_000),
         temperature: None,
         tool_result_budget: 0,
         effort_level: Some(cc_core::effort::EffortLevel::Max),

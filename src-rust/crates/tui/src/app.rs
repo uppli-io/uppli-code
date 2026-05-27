@@ -1227,9 +1227,9 @@ impl App {
                     let transport = server
                         .url
                         .as_ref()
-                        .map(|_| server.server_type.clone())
+                        .map(|_| server.server_type.to_string())
                         .or_else(|| server.command.as_ref().map(|_| "stdio".to_string()))
-                        .unwrap_or_else(|| server.server_type.clone());
+                        .unwrap_or_else(|| server.server_type.to_string());
 
                     let tools: Vec<McpToolView> = tool_defs
                         .iter()
@@ -1302,9 +1302,9 @@ impl App {
                 let transport = server
                     .url
                     .as_ref()
-                    .map(|_| server.server_type.clone())
+                    .map(|_| server.server_type.to_string())
                     .or_else(|| server.command.as_ref().map(|_| "stdio".to_string()))
-                    .unwrap_or_else(|| server.server_type.clone());
+                    .unwrap_or_else(|| server.server_type.to_string());
                 let description = if let Some(url) = &server.url {
                     format!("Endpoint: {}", url)
                 } else if let Some(command) = &server.command {

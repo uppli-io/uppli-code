@@ -559,20 +559,14 @@ async fn main() -> anyhow::Result<()> {
         // Append the peer role addendum to whatever system prompt override
         // the user may already have set, so custom prompts still compose.
         let addendum = cc_core::system_prompt::groom_peer_addendum();
-        config.append_system_prompt = Some(match config.append_system_prompt.take() {
-            Some(prev) => format!("{prev}\n{addendum}"),
-            None => addendum,
-        });
+        cc_core::system_prompt::append_addendum(&mut config.append_system_prompt, &addendum);
     }
     // --groom appends the worker addendum and injects a synthetic "peer"
     // MCP server pointing at the socket we will spawn the child on. The
     // child itself is spawned just below, before we connect the manager.
     if cli.groom {
         let addendum = cc_core::system_prompt::groom_worker_addendum();
-        config.append_system_prompt = Some(match config.append_system_prompt.take() {
-            Some(prev) => format!("{prev}\n{addendum}"),
-            None => addendum,
-        });
+        cc_core::system_prompt::append_addendum(&mut config.append_system_prompt, &addendum);
     }
     config.additional_dirs = cli.add_dir.clone();
     if cli.no_auto_compact {
@@ -598,61 +592,41 @@ async fn main() -> anyhow::Result<()> {
                     if let Some(servers_obj) = data.get("mcpServers").and_then(|s| s.as_object()) {
                         let existing_names: std::collections::HashSet<String> =
                             config.mcp_servers.iter().map(|s| s.name.clone()).collect();
+                        let mut new_servers: Vec<cc_core::McpServerConfig> = Vec::new();
+                        let mut override_names: std::collections::HashSet<String> =
+                            std::collections::HashSet::new();
                         let mut added = 0usize;
                         let mut overridden = 0usize;
                         for (name, server_val) in servers_obj {
-                            let command = server_val
-                                .get("command")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string());
-                            let args: Vec<String> = server_val
-                                .get("args")
-                                .and_then(|v| v.as_array())
-                                .map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|v| v.as_str().map(String::from))
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            let env: std::collections::HashMap<String, String> = server_val
-                                .get("env")
-                                .and_then(|v| v.as_object())
-                                .map(|obj| {
-                                    obj.iter()
-                                        .filter_map(|(k, v)| {
-                                            v.as_str().map(|s| (k.clone(), s.to_string()))
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            let url = server_val
-                                .get("url")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string());
-                            let server_type = server_val
-                                .get("type")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("stdio")
-                                .to_string();
-
-                            let mcp_cfg = cc_core::McpServerConfig {
-                                name: name.clone(),
-                                command,
-                                args,
-                                env,
-                                url,
-                                server_type,
-                            };
+                            let mut mcp_cfg: cc_core::McpServerConfig =
+                                match serde_json::from_value(server_val.clone()) {
+                                    Ok(cfg) => cfg,
+                                    Err(e) => {
+                                        warn!(
+                                            server = %name,
+                                            error = %e,
+                                            "Failed to parse MCP server config; skipping"
+                                        );
+                                        continue;
+                                    }
+                                };
+                            mcp_cfg.name = name.clone();
 
                             if existing_names.contains(name) {
-                                // Override: remove existing entry, then push new one.
-                                config.mcp_servers.retain(|s| s.name != *name);
+                                override_names.insert(name.clone());
                                 overridden += 1;
                             } else {
                                 added += 1;
                             }
-                            config.mcp_servers.push(mcp_cfg);
+                            new_servers.push(mcp_cfg);
                         }
+                        // Single O(N) pass to remove overridden entries
+                        if !override_names.is_empty() {
+                            config
+                                .mcp_servers
+                                .retain(|s| !override_names.contains(&s.name));
+                        }
+                        config.mcp_servers.extend(new_servers);
                         info!(
                             added,
                             overridden,
@@ -1001,16 +975,14 @@ async fn main() -> anyhow::Result<()> {
     // Launched with `uppli-code --mcp-server`, used by Claude Code, another
     // uppli-code master, CI pipelines, or any MCP client.
     let result = if cli.mcp_server {
-        let mcp_state = mcp_server::McpServerState {
-            provider: client,
-            working_dir: cwd.clone(),
-            config: config.clone(),
-            cost_tracker: cost_tracker.clone(),
-            permission_mode: config.permission_mode.clone(),
-            max_turns: cli.max_turns,
-            model_override: cli.model.clone(),
-            busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        };
+        let mcp_state = build_mcp_state(
+            client,
+            &cwd,
+            &config,
+            &cost_tracker,
+            cli.max_turns,
+            cli.model.clone(),
+        );
         mcp_server::run_mcp_server(mcp_state).await
     } else if let Some(sock) = cli.peer_socket.clone() {
         // --peer: MCP server on a Unix socket. The parent --groom process
@@ -1018,16 +990,14 @@ async fn main() -> anyhow::Result<()> {
         // forced to Plan above.
         #[cfg(unix)]
         {
-            let mcp_state = mcp_server::McpServerState {
-                provider: client,
-                working_dir: cwd.clone(),
-                config: config.clone(),
-                cost_tracker: cost_tracker.clone(),
-                permission_mode: config.permission_mode.clone(),
-                max_turns: cli.max_turns,
-                model_override: cli.model.clone(),
-                busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            };
+            let mcp_state = build_mcp_state(
+                client,
+                &cwd,
+                &config,
+                &cost_tracker,
+                cli.max_turns,
+                cli.model.clone(),
+            );
             mcp_server::run_mcp_server_unix(mcp_state, sock).await
         }
         #[cfg(not(unix))]
@@ -1165,10 +1135,33 @@ async fn spawn_peer_child(
         args: Vec::new(),
         env: std::collections::HashMap::new(),
         url: None,
-        server_type: "unix".to_string(),
+        server_type: cc_core::config::McpTransportType::Unix,
     };
 
     Ok((child, peer_cfg))
+}
+
+/// Build an [`McpServerState`] from the shared session state. Factored out
+/// to avoid duplicating the struct literal in the `--mcp-server` and `--peer`
+/// arms.
+fn build_mcp_state(
+    provider: Arc<dyn cc_api::LlmProvider>,
+    cwd: &std::path::Path,
+    config: &Config,
+    cost_tracker: &Arc<CostTracker>,
+    max_turns: u32,
+    model_override: Option<String>,
+) -> mcp_server::McpServerState {
+    mcp_server::McpServerState {
+        provider,
+        working_dir: cwd.to_path_buf(),
+        config: config.clone(),
+        cost_tracker: cost_tracker.clone(),
+        permission_mode: config.permission_mode.clone(),
+        max_turns,
+        model_override,
+        busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    }
 }
 
 async fn connect_mcp_manager_arc(config: &Config) -> Option<Arc<cc_mcp::McpManager>> {
