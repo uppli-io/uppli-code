@@ -12,7 +12,7 @@
 use crate::embed::{cosine_similarity, Embedder};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// A single chunk of knowledge in the vector store.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +39,12 @@ pub struct Chunk {
 /// In-memory vector store.
 pub struct VectorStore {
     chunks: Vec<Chunk>,
+}
+
+impl Default for VectorStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl VectorStore {
@@ -106,8 +112,7 @@ impl VectorStore {
     /// Save the store to a JSON file (with embeddings for fast reload).
     pub fn save_to_file(&self, path: &PathBuf) -> Result<(), String> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create dir: {}", e))?;
+            std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {}", e))?;
         }
         let json = serde_json::to_string_pretty(&self.chunks)
             .map_err(|e| format!("Failed to serialize: {}", e))?;
@@ -133,7 +138,7 @@ impl VectorStore {
         language: Option<&str>,
         category: Option<&str>,
         max_results: usize,
-    ) -> Vec<SearchResult> {
+    ) -> Vec<SearchResult<'_>> {
         if self.chunks.is_empty() || !Embedder::is_ready() {
             return Vec::new();
         }
@@ -161,14 +166,15 @@ impl VectorStore {
             })
             .map(|chunk| {
                 let score = cosine_similarity(&query_embedding, &chunk.embedding);
-                SearchResult {
-                    chunk,
-                    score,
-                }
+                SearchResult { chunk, score }
             })
             .collect();
 
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(max_results);
 
         // Filter out low-relevance results (below 0.3 similarity)
@@ -259,9 +265,7 @@ mod tests {
     #[test]
     fn add_chunks_increases_count() {
         let mut store = VectorStore::new();
-        store.add_chunks(vec![
-            sample_chunk("1", "test query", "test content"),
-        ]);
+        store.add_chunks(vec![sample_chunk("1", "test query", "test content")]);
         assert_eq!(store.len(), 1);
     }
 }

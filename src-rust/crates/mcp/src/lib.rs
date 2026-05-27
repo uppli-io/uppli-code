@@ -14,7 +14,7 @@
 // - Connection manager with exponential-backoff reconnection
 
 use async_trait::async_trait;
-use cc_core::config::McpServerConfig;
+use cc_core::config::{McpServerConfig, McpTransportType};
 use cc_core::types::ToolDefinition;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -101,7 +101,7 @@ pub fn expand_server_config(config: &McpServerConfig) -> McpServerConfig {
             .map(|(k, v)| (k.clone(), expand_env_vars(v)))
             .collect(),
         url: config.url.as_deref().map(expand_env_vars),
-        server_type: config.server_type.clone(),
+        server_type: config.server_type,
     }
 }
 
@@ -116,7 +116,9 @@ pub mod types {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct JsonRpcRequest {
         pub jsonrpc: String,
-        pub id: Value,
+        /// None for notifications (no `id` field in the JSON).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub id: Option<Value>,
         pub method: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub params: Option<Value>,
@@ -126,7 +128,7 @@ pub mod types {
         pub fn new(id: impl Into<Value>, method: impl Into<String>, params: Option<Value>) -> Self {
             Self {
                 jsonrpc: "2.0".to_string(),
-                id: id.into(),
+                id: Some(id.into()),
                 method: method.into(),
                 params,
             }
@@ -135,7 +137,7 @@ pub mod types {
         pub fn notification(method: impl Into<String>, params: Option<Value>) -> Self {
             Self {
                 jsonrpc: "2.0".to_string(),
-                id: Value::Null,
+                id: None,
                 method: method.into(),
                 params,
             }
@@ -490,6 +492,124 @@ pub mod transport {
             Ok(())
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Unix socket transport
+    // -----------------------------------------------------------------------
+
+    /// Unix domain socket transport for MCP clients.
+    ///
+    /// Unlike [`StdioTransport`] which spawns a subprocess and owns its
+    /// lifecycle, [`UnixSocketTransport`] connects to an *already running*
+    /// MCP server listening on a filesystem socket path. This is what lets
+    /// two peer processes address each other symmetrically: each side runs
+    /// its own listener and connects to the other's socket.
+    ///
+    /// Framing is identical to [`StdioTransport`] — one JSON-RPC message per
+    /// line, LF-terminated.
+    ///
+    /// The transport is Unix-only; Windows callers must use TCP loopback or
+    /// named pipes via a different transport (not implemented here).
+    #[cfg(unix)]
+    pub struct UnixSocketTransport {
+        /// Write half of the socket. Behind a mutex because `send` may be
+        /// called concurrently from different tasks.
+        writer: Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
+        /// Inbound line channel fed by a background reader task.
+        stdout_rx: Arc<Mutex<mpsc::UnboundedReceiver<String>>>,
+        /// Stable path used for logging (the kernel does not let us read it
+        /// back from a connected socket in a portable way).
+        peer_path: std::path::PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl UnixSocketTransport {
+        /// Connect to an MCP server listening on `path`.
+        ///
+        /// Spawns a background task that forwards every inbound line into a
+        /// channel consumed by [`McpTransport::recv`]. The task exits
+        /// cleanly when the peer closes the connection (the `recv` side then
+        /// observes `Ok(None)`).
+        pub async fn connect(path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+            let path = path.as_ref().to_path_buf();
+            let stream = tokio::net::UnixStream::connect(&path).await.map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to connect to MCP Unix socket at {}: {}",
+                    path.display(),
+                    e
+                )
+            })?;
+
+            let (read_half, write_half) = stream.into_split();
+            let (tx, rx) = mpsc::unbounded_channel::<String>();
+
+            tokio::spawn(async move {
+                let reader = BufReader::new(read_half);
+                let mut lines = reader.lines();
+                loop {
+                    match lines.next_line().await {
+                        Ok(Some(line)) => {
+                            if tx.send(line).is_err() {
+                                break; // receiver dropped — transport closed
+                            }
+                        }
+                        Ok(None) => break, // peer closed the socket
+                        Err(e) => {
+                            warn!(error = %e, "Unix MCP transport read error");
+                            break;
+                        }
+                    }
+                }
+            });
+
+            Ok(Self {
+                writer: Arc::new(Mutex::new(write_half)),
+                stdout_rx: Arc::new(Mutex::new(rx)),
+                peer_path: path,
+            })
+        }
+
+        /// Path of the peer socket this transport is connected to. Useful
+        /// for logs and diagnostics.
+        pub fn peer_path(&self) -> &std::path::Path {
+            &self.peer_path
+        }
+    }
+
+    #[cfg(unix)]
+    #[async_trait]
+    impl McpTransport for UnixSocketTransport {
+        async fn send(&self, message: &JsonRpcRequest) -> anyhow::Result<()> {
+            let json = serde_json::to_string(message)? + "\n";
+            let mut w = self.writer.lock().await;
+            w.write_all(json.as_bytes()).await?;
+            w.flush().await?;
+            Ok(())
+        }
+
+        async fn recv(&self) -> anyhow::Result<Option<JsonRpcResponse>> {
+            let mut rx = self.stdout_rx.lock().await;
+            match rx.recv().await {
+                Some(s) => {
+                    let resp: JsonRpcResponse = serde_json::from_str(&s).map_err(|e| {
+                        anyhow::anyhow!("MCP response parse error: {} (raw: {})", e, s)
+                    })?;
+                    Ok(Some(resp))
+                }
+                None => Ok(None),
+            }
+        }
+
+        async fn close(&self) -> anyhow::Result<()> {
+            // Dropping the writer half closes our side; the background reader
+            // task will then observe EOF and exit. We do not need to touch the
+            // socket file itself — the peer (the process that called `bind`)
+            // owns it.
+            let mut w = self.writer.lock().await;
+            let _ = w.shutdown().await;
+            Ok(())
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -523,6 +643,35 @@ pub mod client {
             let transport = transport::StdioTransport::spawn(config).await?;
             let client = Self {
                 server_name: config.name.clone(),
+                server_info: None,
+                capabilities: ServerCapabilities::default(),
+                tools: vec![],
+                resources: vec![],
+                prompts: vec![],
+                instructions: None,
+                transport: Arc::new(transport),
+                next_id: AtomicU64::new(1),
+                pending: Arc::new(Mutex::new(HashMap::new())),
+            };
+
+            client.initialize().await
+        }
+
+        /// Connect to an MCP server already listening on a Unix socket and
+        /// complete the initialize handshake.
+        ///
+        /// Unlike [`connect_stdio`], this does not spawn the remote — the
+        /// caller is responsible for ensuring the server is up on `path`.
+        /// Used by the `--groom` peer-to-peer mode where each CLI owns its
+        /// own listener and only clients one hop away.
+        #[cfg(unix)]
+        pub async fn connect_unix(
+            server_name: impl Into<String>,
+            path: impl AsRef<std::path::Path>,
+        ) -> anyhow::Result<Self> {
+            let transport = transport::UnixSocketTransport::connect(path).await?;
+            let client = Self {
+                server_name: server_name.into(),
                 server_info: None,
                 capabilities: ServerCapabilities::default(),
                 tools: vec![],
@@ -799,8 +948,8 @@ impl McpManager {
             // Expand env vars before using the config
             let expanded = expand_server_config(config);
 
-            match expanded.server_type.as_str() {
-                "stdio" => {
+            match expanded.server_type {
+                McpTransportType::Stdio => {
                     debug!(
                         server = %expanded.name,
                         command = ?expanded.command,
@@ -828,10 +977,57 @@ impl McpManager {
                         }
                     }
                 }
+                #[cfg(unix)]
+                McpTransportType::Unix => {
+                    // Unix-socket transport: we *connect* to an already-running
+                    // listener rather than spawning it. The socket path lives
+                    // in `command` (no separate field — keeps the config
+                    // schema small and matches how stdio stores its command).
+                    let path = match expanded.command.as_deref() {
+                        Some(p) if !p.is_empty() => p,
+                        _ => {
+                            manager.failed_servers.push((
+                                expanded.name.clone(),
+                                "unix transport requires `command` to be the socket path"
+                                    .to_string(),
+                            ));
+                            continue;
+                        }
+                    };
+                    debug!(server = %expanded.name, path, "Connecting to MCP server via unix socket");
+                    match McpClient::connect_unix(&expanded.name, path).await {
+                        Ok(client) => {
+                            info!(
+                                server = %expanded.name,
+                                tools = client.tools.len(),
+                                "MCP server connected (unix)"
+                            );
+                            manager.clients.insert(expanded.name.clone(), client);
+                        }
+                        Err(e) => {
+                            error!(server = %expanded.name, error = %e, "Failed to connect to MCP server (unix)");
+                            manager
+                                .failed_servers
+                                .push((expanded.name.clone(), e.to_string()));
+                        }
+                    }
+                }
+                // Non-unix McpTransportType::Unix falls through here on non-unix platforms
+                #[cfg(not(unix))]
+                McpTransportType::Unix => {
+                    warn!(
+                        server = %expanded.name,
+                        "Unix transport not supported on this platform; skipping server"
+                    );
+                    manager.failed_servers.push((
+                        expanded.name.clone(),
+                        "unix transport not supported on this platform".to_string(),
+                    ));
+                }
                 other => {
                     warn!(
                         server = %expanded.name,
-                        transport = other,
+                        transport = %other,
                         "Unsupported MCP transport type; skipping server"
                     );
                     manager.failed_servers.push((
@@ -1083,8 +1279,8 @@ impl McpManager {
             None => return McpAuthState::NotRequired,
         };
 
-        match config.server_type.as_str() {
-            "http" | "sse" => McpAuthState::Required {
+        match config.server_type {
+            McpTransportType::Http | McpTransportType::Sse => McpAuthState::Required {
                 auth_url: config
                     .url
                     .clone()
@@ -1334,7 +1530,7 @@ mod tests {
                 m
             },
             url: None,
-            server_type: "stdio".to_string(),
+            server_type: McpTransportType::Stdio,
         };
         let expanded = expand_server_config(&cfg);
         assert_eq!(expanded.command.as_deref(), Some("/home/user/bin/server"));
@@ -1471,6 +1667,60 @@ mod tests {
     fn test_manager_failed_servers_empty() {
         let mgr = McpManager::new();
         assert!(mgr.failed_servers().is_empty());
+    }
+
+    // ---- UnixSocketTransport -----------------------------------------------
+
+    /// Round-trip a JSON-RPC message through a pair of connected Unix sockets
+    /// to exercise the transport's framing and reader task. The test stands
+    /// in for the real MCP server — it just echoes one request back as a
+    /// response.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_transport_round_trip() {
+        use super::transport::McpTransport;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::UnixListener;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("echo.sock");
+
+        // Bind a listener that, on the first accepted connection, echoes one
+        // request back as a response and then shuts down. That's enough for
+        // a round-trip sanity check — we're not testing MCP semantics here.
+        // Bind before spawning so the client's connect() cannot race ahead
+        // of the listener being ready.
+        let listener = UnixListener::bind(&sock).expect("bind");
+        let server = tokio::spawn(async move {
+            let (stream, _addr) = listener.accept().await.expect("accept");
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half).lines();
+            let line = reader.next_line().await.expect("read").expect("some");
+            let req: JsonRpcRequest = serde_json::from_str(&line).expect("parse req");
+            let resp = JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: req.id.clone(),
+                result: Some(serde_json::json!({ "method": req.method })),
+                error: None,
+            };
+            let out = serde_json::to_string(&resp).unwrap() + "\n";
+            write_half.write_all(out.as_bytes()).await.unwrap();
+            write_half.flush().await.unwrap();
+        });
+
+        // Client side.
+        let transport = transport::UnixSocketTransport::connect(&sock)
+            .await
+            .expect("connect");
+        let req = JsonRpcRequest::new(42u64, "peer/ping", None);
+        transport.send(&req).await.expect("send");
+        let resp = transport.recv().await.expect("recv ok").expect("some");
+        assert_eq!(resp.id, req.id);
+        let result = resp.result.expect("has result");
+        assert_eq!(result["method"], "peer/ping");
+
+        // Make sure the listener task has exited cleanly.
+        let _ = server.await;
     }
 }
 

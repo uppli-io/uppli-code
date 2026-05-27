@@ -484,10 +484,10 @@ pub fn format_compact_summary(raw: &str) -> String {
 // Threshold helpers
 // ---------------------------------------------------------------------------
 
-/// Return the effective context-window size in tokens for the given model.
-/// These are approximate; the API enforces the real limits server-side.
-// context_window_for_model() removed — callers now pass context_window: u64
+// Return the effective context-window size in tokens for the given model.
+// context_window_for_model() removed -- callers now pass context_window: u64
 // pre-resolved via provider.context_window(model).
+// These are approximate; the API enforces the real limits server-side.
 
 /// Determine token-warning state given current input token count and model.
 ///
@@ -1214,7 +1214,7 @@ pub fn collapse_search_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cc_core::types::{Message, Role};
+    use cc_core::types::Message;
 
     fn make_user(text: &str) -> Message {
         Message::user(text)
@@ -1266,8 +1266,10 @@ mod tests {
 
     #[test]
     fn test_should_not_compact_when_disabled() {
-        let mut state = AutoCompactState::default();
-        state.disabled = true;
+        let state = AutoCompactState {
+            disabled: true,
+            ..Default::default()
+        };
         assert!(!should_auto_compact(195_000, 200_000, &state));
     }
 

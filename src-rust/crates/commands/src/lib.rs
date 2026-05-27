@@ -2149,10 +2149,11 @@ impl SlashCommand for McpCommand {
         if sub == "status" {
             let mut output = String::from("MCP Server Status\n─────────────────\n");
             for srv in &ctx.config.mcp_servers {
-                let kind = match srv.server_type.as_str() {
-                    "stdio" => "stdio",
-                    "sse" | "http" => "HTTP/SSE",
-                    other => other,
+                let kind = match srv.server_type {
+                    cc_core::config::McpTransportType::Stdio => "stdio",
+                    cc_core::config::McpTransportType::Sse
+                    | cc_core::config::McpTransportType::Http => "HTTP/SSE",
+                    _ => srv.server_type.as_str(),
                 };
                 let endpoint = srv
                     .url
@@ -2284,7 +2285,10 @@ impl McpCommand {
             }
         }
 
-        let is_http = matches!(srv.server_type.as_str(), "sse" | "http" | "sse+oauth");
+        let is_http = matches!(
+            srv.server_type,
+            cc_core::config::McpTransportType::Sse | cc_core::config::McpTransportType::Http
+        );
 
         if !is_http {
             // stdio — env-var / API-key auth
@@ -3784,18 +3788,8 @@ impl SlashCommand for ContextCommand {
     async fn execute(&self, _args: &str, ctx: &mut CommandContext) -> CommandResult {
         let model = ctx.config.effective_model();
 
-        // Determine context window size from known model names
-        let context_window: u64 = if model.contains("claude-3-5") || model.contains("claude-3.5") {
-            200_000
-        } else if model.contains("opus") {
-            200_000
-        } else if model.contains("sonnet") {
-            200_000
-        } else if model.contains("haiku") {
-            200_000
-        } else {
-            200_000 // safe default for any Claude model
-        };
+        // All current Claude models use a 200K context window.
+        let context_window: u64 = 200_000;
 
         let used_tokens = ctx.cost_tracker.total_tokens();
         let pct = if context_window > 0 {

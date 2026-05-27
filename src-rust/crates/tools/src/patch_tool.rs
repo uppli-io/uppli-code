@@ -103,11 +103,9 @@ impl Tool for PatchTool {
         // Permission check for each file.
         for file in &files {
             let abs_path = work_dir.join(file);
-            if let Err(e) = ctx.check_permission(
-                self.name(),
-                &format!("Patch {}", abs_path.display()),
-                false,
-            ) {
+            if let Err(e) =
+                ctx.check_permission(self.name(), &format!("Patch {}", abs_path.display()), false)
+            {
                 return ToolResult::error(e.to_string());
             }
         }
@@ -163,10 +161,7 @@ impl Tool for PatchTool {
         }
 
         // All strategies failed — return detailed error.
-        let mut msg = format!(
-            "Patch could not be applied to {}.\n\n",
-            work_dir.display()
-        );
+        let mut msg = format!("Patch could not be applied to {}.\n\n", work_dir.display());
         msg.push_str("git apply output:\n");
         msg.push_str(&result.stderr);
         msg.push_str("\n\ngit apply --3way output:\n");
@@ -194,11 +189,13 @@ struct ApplyResult {
     stderr: String,
 }
 
-async fn run_git_apply(work_dir: &PathBuf, patch_path: &PathBuf, extra_args: &[&str]) -> ApplyResult {
+async fn run_git_apply(
+    work_dir: &PathBuf,
+    patch_path: &PathBuf,
+    extra_args: &[&str],
+) -> ApplyResult {
     let mut cmd = tokio::process::Command::new("git");
-    cmd.current_dir(work_dir)
-        .arg("apply")
-        .arg("--verbose");
+    cmd.current_dir(work_dir).arg("apply").arg("--verbose");
     for arg in extra_args {
         cmd.arg(arg);
     }

@@ -531,15 +531,9 @@ fn render_hook_detail(state: &HooksConfigMenuState) -> (&'static str, Vec<Line<'
         Style::default().fg(Color::DarkGray),
     )]));
     // Wrap long target strings across multiple lines
-    for (i, chunk) in hook
-        .target
-        .chars()
-        .collect::<Vec<_>>()
-        .chunks(60)
-        .enumerate()
-    {
+    for chunk in hook.target.chars().collect::<Vec<_>>().chunks(60) {
         let text: String = chunk.iter().collect();
-        let indent = if i == 0 { "    " } else { "    " };
+        let indent = "    ";
         lines.push(Line::from(vec![Span::styled(
             format!("{indent}{text}"),
             Style::default().fg(Color::White),

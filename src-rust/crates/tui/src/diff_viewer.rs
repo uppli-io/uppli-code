@@ -478,10 +478,10 @@ pub fn parse_unified_diff(text: &str) -> Vec<FileDiffStats> {
                 if let Some(f) = current_file.as_mut() {
                     f.removed += 1;
                 }
-            } else if raw_line.starts_with(' ') {
+            } else if let Some(stripped) = raw_line.strip_prefix(' ') {
                 hunk.lines.push(DiffLine {
                     kind: DiffLineKind::Context,
-                    content: raw_line[1..].to_string(),
+                    content: stripped.to_string(),
                     old_line_no: Some(old_line),
                     new_line_no: Some(new_line),
                 });
@@ -659,11 +659,7 @@ fn render_file_list(state: &DiffViewerState, area: Rect, buf: &mut Buffer) {
             break;
         }
 
-        let collapse_style = if is_collapsed {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
+        let collapse_style = Style::default().fg(Color::DarkGray);
         let line = Line::from(vec![
             Span::styled(if selected { "> " } else { "  " }, base_style),
             Span::styled(format!("{} ", collapse_char), collapse_style),
@@ -808,11 +804,9 @@ fn render_diff_detail(state: &DiffViewerState, area: Rect, buf: &mut Buffer) {
         let thumb_size = ((bar_h * bar_h) / total_lines).max(1).min(bar_h);
         // Thumb position
         let scroll_range = total_lines.saturating_sub(bar_h);
-        let thumb_top = if scroll_range > 0 {
-            (scroll * (bar_h.saturating_sub(thumb_size))) / scroll_range
-        } else {
-            0
-        };
+        let thumb_top = (scroll * (bar_h.saturating_sub(thumb_size)))
+            .checked_div(scroll_range)
+            .unwrap_or(0);
 
         for row in 0..bar_h {
             let y = inner.y + row as u16;

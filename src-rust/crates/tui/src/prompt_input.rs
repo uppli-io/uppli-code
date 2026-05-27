@@ -570,6 +570,7 @@ fn vim_idle(
     vim_normal(mode, text, cursor, key, yank_buf, pending, last_find, 1)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn vim_count(
     mode: &mut VimMode,
     text: &mut String,
@@ -1031,7 +1032,7 @@ fn vim_normal(
 }
 
 fn vim_g(
-    text: &mut String,
+    text: &mut str,
     cursor: &mut usize,
     key: &str,
     pending: &mut VimPendingState,
@@ -1353,10 +1354,8 @@ pub fn apply_vim_command(
         "h" if *mode == VimMode::Normal => {
             *cursor = cursor.saturating_sub(1);
         }
-        "l" if *mode == VimMode::Normal => {
-            if *cursor < text.len() {
-                *cursor += 1;
-            }
+        "l" if *mode == VimMode::Normal && *cursor < text.len() => {
+            *cursor += 1;
         }
         "0" if *mode == VimMode::Normal => {
             *cursor = 0;
@@ -1392,14 +1391,12 @@ pub fn apply_vim_command(
                 .count();
             *cursor = cursor.saturating_sub(skip_space + skip_word);
         }
-        "x" if *mode == VimMode::Normal => {
+        "x" if *mode == VimMode::Normal && *cursor < text.len() => {
             // Delete char under cursor
-            if *cursor < text.len() {
-                *yank_buf = text.chars().nth(*cursor).unwrap_or_default().to_string();
-                text.remove(*cursor);
-                if *cursor > 0 && *cursor >= text.len() {
-                    *cursor = text.len().saturating_sub(1);
-                }
+            *yank_buf = text.chars().nth(*cursor).unwrap_or_default().to_string();
+            text.remove(*cursor);
+            if *cursor > 0 && *cursor >= text.len() {
+                *cursor = text.len().saturating_sub(1);
             }
         }
         "dd" if *mode == VimMode::Normal => {
@@ -2567,7 +2564,7 @@ pub fn input_height(state: &PromptInputState) -> u16 {
         state.text.lines().count().max(1)
     };
     // top-line + text rows + bottom-line + 1 breathing-room row, at least 4, at most 12
-    let base = ((line_count as u16) + 3).max(4).min(12);
+    let base = ((line_count as u16) + 3).clamp(4, 12);
     // +1 for image pill row when images are pending
     base + if state.pending_images.is_empty() {
         0
@@ -2823,6 +2820,7 @@ pub fn render_prompt_input(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use super::*;
 

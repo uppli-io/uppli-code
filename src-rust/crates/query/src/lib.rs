@@ -486,6 +486,7 @@ const MAX_TOKENS_RECOVERY_MSG: &str =
 /// during tool execution (e.g. by the UI or a command queue).  Each string is
 /// appended as a plain user message between turns.  Callers that do not need
 /// command queuing may pass `None` or an empty `Vec`.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_query_loop(
     client: &dyn LlmProvider,
     messages: &mut Vec<Message>,
@@ -512,7 +513,8 @@ pub async fn run_query_loop(
     // CodeAudit gate: track files that have been audited.
     // Edit/Write on source files is blocked until CodeAudit has been called.
     // Map file path → content hash at time of audit. Re-audit only if hash changed.
-    let mut audited_files: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    let mut audited_files: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
     // Quick file hash for change detection.
     let file_hash = |path: &str| -> u64 {
         use std::hash::{Hash, Hasher};
@@ -523,14 +525,18 @@ pub async fn run_query_loop(
         hasher.finish()
     };
     // Check if a file needs (re-)auditing: never audited or content changed.
-    let needs_audit = |path: &str, audited: &std::collections::HashMap<String, u64>, hash_fn: &dyn Fn(&str) -> u64| -> bool {
+    let needs_audit = |path: &str,
+                       audited: &std::collections::HashMap<String, u64>,
+                       hash_fn: &dyn Fn(&str) -> u64|
+     -> bool {
         match audited.get(path) {
             None => true,
             Some(&old_hash) => hash_fn(path) != old_hash,
         }
     };
     // Store pre-edit audit reports for post-edit comparison.
-    let mut pre_edit_audits: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut pre_edit_audits: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     // Empty-response retry: when the model returns end_turn with no tools
     // and no text (likely rate-limit or API glitch), retry with backoff.
     let mut empty_response_retries: u32 = 0;
@@ -1009,9 +1015,9 @@ pub async fn run_query_loop(
                 let has_tools = !assistant_msg.get_tool_use_blocks().is_empty();
                 let has_text = match &assistant_msg.content {
                     cc_core::types::MessageContent::Text(t) => !t.trim().is_empty(),
-                    cc_core::types::MessageContent::Blocks(blocks) => blocks.iter().any(|b| {
-                        matches!(b, ContentBlock::Text { text } if !text.trim().is_empty())
-                    }),
+                    cc_core::types::MessageContent::Blocks(blocks) => blocks.iter().any(
+                        |b| matches!(b, ContentBlock::Text { text } if !text.trim().is_empty()),
+                    ),
                 };
                 if !has_tools && !has_text && empty_response_retries < MAX_EMPTY_RETRIES {
                     empty_response_retries += 1;
@@ -1024,7 +1030,9 @@ pub async fn run_query_loop(
                     if let Some(ref tx) = event_tx {
                         let _ = tx.send(QueryEvent::Status(format!(
                             "Empty API response, retrying in {}s ({}/{})",
-                            wait.as_secs(), empty_response_retries, MAX_EMPTY_RETRIES
+                            wait.as_secs(),
+                            empty_response_retries,
+                            MAX_EMPTY_RETRIES
                         )));
                     }
                     // Remove the empty assistant message before retrying.
@@ -1032,9 +1040,6 @@ pub async fn run_query_loop(
                     tokio::time::sleep(wait).await;
                     continue;
                 }
-                // Valid end_turn — reset the retry counter.
-                empty_response_retries = 0;
-
                 fire_stop_hook!(assistant_msg);
 
                 // T1-3: Fire Stop hooks in background (fire-and-forget).
@@ -1218,22 +1223,29 @@ pub async fn run_query_loop(
                             let gate_blocked = {
                                 let is_edit = name == "Edit" || name == "Write";
                                 if is_edit {
-                                    let path = input.as_object()
+                                    let path = input
+                                        .as_object()
                                         .and_then(|o| o.get("file_path"))
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("");
-                                    let is_source = path.ends_with(".py") || path.ends_with(".rs")
-                                        || path.ends_with(".js") || path.ends_with(".ts")
-                                        || path.ends_with(".go") || path.ends_with(".java");
-                                    is_source && needs_audit(path, &audited_files, &file_hash)
-                                        && !path.contains("test_") && !path.contains("/tests/")
+                                    let is_source = path.ends_with(".py")
+                                        || path.ends_with(".rs")
+                                        || path.ends_with(".js")
+                                        || path.ends_with(".ts")
+                                        || path.ends_with(".go")
+                                        || path.ends_with(".java");
+                                    is_source
+                                        && needs_audit(path, &audited_files, &file_hash)
+                                        && !path.contains("test_")
+                                        && !path.contains("/tests/")
                                 } else {
                                     false
                                 }
                             };
 
                             if gate_blocked {
-                                let path = input.as_object()
+                                let path = input
+                                    .as_object()
                                     .and_then(|o| o.get("file_path"))
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("?");
@@ -1256,19 +1268,22 @@ pub async fn run_query_loop(
 
                                 // Track CodeAudit calls: store report for post-edit comparison
                                 if name == "CodeAudit" && !result.is_error {
-                                    if let Some(path) = input.as_object()
+                                    if let Some(path) = input
+                                        .as_object()
                                         .and_then(|o| o.get("file_path"))
                                         .and_then(|v| v.as_str())
                                     {
                                         audited_files.insert(path.to_string(), file_hash(path));
-                                        pre_edit_audits.insert(path.to_string(), result.content.clone());
+                                        pre_edit_audits
+                                            .insert(path.to_string(), result.content.clone());
                                     }
                                 }
 
                                 // Post-edit audit: after Edit/Write on an audited source file,
                                 // re-run CodeAudit and check if HIGH anomalies were resolved.
                                 if (name == "Edit" || name == "Write") && !result.is_error {
-                                    let path = input.as_object()
+                                    let path = input
+                                        .as_object()
                                         .and_then(|o| o.get("file_path"))
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("");
@@ -1280,18 +1295,23 @@ pub async fn run_query_loop(
                                             "language": "auto"
                                         });
                                         let post_audit = execute_tool(
-                                            &"CodeAudit".to_string(),
+                                            "CodeAudit",
                                             &audit_input,
                                             tools,
                                             tool_ctx,
-                                        ).await;
+                                        )
+                                        .await;
                                         if !post_audit.is_error {
                                             // Update hash and report after edit
                                             audited_files.insert(path.to_string(), file_hash(path));
-                                            pre_edit_audits.insert(path.to_string(), post_audit.content.clone());
+                                            pre_edit_audits.insert(
+                                                path.to_string(),
+                                                post_audit.content.clone(),
+                                            );
                                             // Check if HIGH anomalies from pre-edit are still present
                                             let pre_has_high = pre_report.contains("[HIGH]");
-                                            let post_has_high = post_audit.content.contains("[HIGH]");
+                                            let post_has_high =
+                                                post_audit.content.contains("[HIGH]");
                                             if pre_has_high && post_has_high {
                                                 result.content.push_str(&format!(
                                                     "\n\n⚠️ CodeAudit post-edit check: HIGH anomalies are still present after your edit.\n\
@@ -1356,7 +1376,7 @@ pub async fn run_query_loop(
                         // Append contextual tips from the tool expertise database.
                         // On error: suggest alternatives. On success: no extra noise.
                         let mut enriched_content = if result.is_error {
-                            if let Some(tips) = cc_tools::tool_expertise::on_error_tips(&name) {
+                            if let Some(tips) = cc_tools::tool_expertise::on_error_tips(name) {
                                 format!("{}\n\nTips: {}", result.content, tips)
                             } else {
                                 result.content.clone()
@@ -1372,12 +1392,11 @@ pub async fn run_query_loop(
                                 "\n\n⚠️ You've repeated this exact tool call multiple times \
                                  with the same result. Try a different approach: \
                                  read the file directly, use a different search pattern, \
-                                 or use Bash to explore the code."
+                                 or use Bash to explore the code.",
                             );
                             warn!(
                                 tool = name.as_str(),
-                                repeat_count,
-                                "Stuck loop detected — nudging model"
+                                repeat_count, "Stuck loop detected — nudging model"
                             );
                         }
 
@@ -1385,32 +1404,53 @@ pub async fn run_query_loop(
                         // automatically run CodeAudit and append the report.
                         if name == "Read" && !result.is_error {
                             if let Some(input_obj) = input.as_object() {
-                                let path = input_obj.get("file_path")
+                                let path = input_obj
+                                    .get("file_path")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("");
-                                let is_source = path.ends_with(".py") || path.ends_with(".rs")
-                                    || path.ends_with(".js") || path.ends_with(".ts")
-                                    || path.ends_with(".go") || path.ends_with(".java");
+                                let is_source = path.ends_with(".py")
+                                    || path.ends_with(".rs")
+                                    || path.ends_with(".js")
+                                    || path.ends_with(".ts")
+                                    || path.ends_with(".go")
+                                    || path.ends_with(".java");
                                 let is_test = path.contains("test_") || path.contains("/tests/");
-                                if is_source && !is_test && needs_audit(path, &audited_files, &file_hash) {
+                                if is_source
+                                    && !is_test
+                                    && needs_audit(path, &audited_files, &file_hash)
+                                {
                                     // Run CodeAudit automatically
+                                    debug!(path, "CodeAudit auto-audit triggered on Read");
                                     let audit_input = serde_json::json!({
                                         "file_path": path,
                                         "language": "auto"
                                     });
-                                    let audit_result = execute_tool(
-                                        &"CodeAudit".to_string(),
-                                        &audit_input,
-                                        tools,
-                                        tool_ctx,
-                                    ).await;
+                                    let audit_result =
+                                        execute_tool("CodeAudit", &audit_input, tools, tool_ctx)
+                                            .await;
                                     let h = file_hash(path);
-                                    if !audit_result.is_error && !audit_result.content.contains("No anomalies") {
+                                    debug!(
+                                        is_error = audit_result.is_error,
+                                        content_len = audit_result.content.len(),
+                                        "CodeAudit auto-audit result"
+                                    );
+                                    if !audit_result.is_error
+                                        && !audit_result.content.contains("No anomalies")
+                                    {
                                         audited_files.insert(path.to_string(), h);
-                                        pre_edit_audits.insert(path.to_string(), audit_result.content.clone());
+                                        pre_edit_audits
+                                            .insert(path.to_string(), audit_result.content.clone());
                                         enriched_content.push_str(&format!(
                                             "\n\n--- CodeAudit Report (auto) ---\n{}\n--- End Report ---\n\
-                                             Review these anomalies before making changes.",
+                                             \n⚠️ VERIFICATION PROTOCOL (MANDATORY):\n\
+                                             For each anomaly above, you MUST address EVERY line number listed in its `lines` field — not just one.\n\
+                                             Before your final edit, output an explicit checklist in this exact format:\n  \
+                                               - Line N: MODIFIED — <what you changed>\n  \
+                                               - Line N: VERIFIED OK — <one-sentence reason the current code is correct>\n\
+                                             Rules:\n  \
+                                               1. Do NOT stop after fixing the first plausible cause. Many bugs span multiple lines flagged together by the same anomaly.\n  \
+                                               2. Skipping a line without justification means your fix is likely incomplete.\n  \
+                                               3. The checklist is required even if you think only one line needs changing.",
                                             audit_result.content
                                         ));
                                     } else {
@@ -1515,6 +1555,53 @@ fn build_system_prompt(config: &QueryConfig) -> SystemPrompt {
 
     let text = cc_core::system_prompt::build_system_prompt(&opts);
     SystemPrompt::Text(text)
+}
+
+// ---------------------------------------------------------------------------
+/// Stream handler that forwards events to an unbounded channel.
+struct ChannelStreamHandler {
+    tx: mpsc::UnboundedSender<QueryEvent>,
+}
+
+impl StreamHandler for ChannelStreamHandler {
+    fn on_event(&self, event: &StreamEvent) {
+        let _ = self.tx.send(QueryEvent::Stream(event.clone()));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Single-shot query (non-looping, for simple one-off calls)
+// ---------------------------------------------------------------------------
+
+/// Run a single (non-agentic) query -- no tool loop, just one API call.
+pub async fn run_single_query(
+    client: &dyn LlmProvider,
+    messages: Vec<Message>,
+    config: &QueryConfig,
+) -> Result<Message, ClaudeError> {
+    let api_messages: Vec<ApiMessage> = messages.iter().map(ApiMessage::from).collect();
+    let system = build_system_prompt(config);
+
+    // Pour les requêtes simples, on utilise toujours le modèle de raisonnement par défaut (R2)
+    let request = CreateMessageRequest::builder(&config.model, config.max_tokens)
+        .messages(api_messages)
+        .system(system)
+        .build();
+
+    let handler: Arc<dyn StreamHandler> = Arc::new(cc_api::streaming::NullStreamHandler);
+
+    let mut rx = client.create_message_stream(request, handler).await?;
+    let mut acc = StreamAccumulator::new();
+
+    while let Some(evt) = rx.recv().await {
+        acc.on_event(&evt);
+        if matches!(evt, StreamEvent::MessageStop) {
+            break;
+        }
+    }
+
+    let (msg, _usage, _stop) = acc.finish();
+    Ok(msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -1672,50 +1759,4 @@ mod tests {
         let s2 = format!("{:?}", err_outcome);
         assert!(s2.contains("Error"));
     }
-}
-
-/// Stream handler that forwards events to an unbounded channel.
-struct ChannelStreamHandler {
-    tx: mpsc::UnboundedSender<QueryEvent>,
-}
-
-impl StreamHandler for ChannelStreamHandler {
-    fn on_event(&self, event: &StreamEvent) {
-        let _ = self.tx.send(QueryEvent::Stream(event.clone()));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Single-shot query (non-looping, for simple one-off calls)
-// ---------------------------------------------------------------------------
-
-/// Run a single (non-agentic) query – no tool loop, just one API call.
-pub async fn run_single_query(
-    client: &dyn LlmProvider,
-    messages: Vec<Message>,
-    config: &QueryConfig,
-) -> Result<Message, ClaudeError> {
-    let api_messages: Vec<ApiMessage> = messages.iter().map(ApiMessage::from).collect();
-    let system = build_system_prompt(config);
-
-    // Pour les requêtes simples, on utilise toujours le modèle de raisonnement par défaut (R2)
-    let request = CreateMessageRequest::builder(&config.model, config.max_tokens)
-        .messages(api_messages)
-        .system(system)
-        .build();
-
-    let handler: Arc<dyn StreamHandler> = Arc::new(cc_api::streaming::NullStreamHandler);
-
-    let mut rx = client.create_message_stream(request, handler).await?;
-    let mut acc = StreamAccumulator::new();
-
-    while let Some(evt) = rx.recv().await {
-        acc.on_event(&evt);
-        if matches!(evt, StreamEvent::MessageStop) {
-            break;
-        }
-    }
-
-    let (msg, _usage, _stop) = acc.finish();
-    Ok(msg)
 }

@@ -395,27 +395,28 @@ fn parse_agent_def(path: &std::path::Path) -> Option<AgentDefinition> {
     let content = std::fs::read_to_string(path).ok()?;
     let stem = path.file_stem()?.to_string_lossy().to_string();
 
-    let (name, model, memory, description, tools, instructions) = if content.starts_with("---") {
-        let end = content[3..].find("\n---")? + 3;
-        let front = &content[3..end];
-        let body = content[end + 4..].trim().to_string();
-        let name = extract_yaml_str(front, "name").unwrap_or_else(|| stem.clone());
-        let model = extract_yaml_str(front, "model");
-        let memory =
-            extract_yaml_str(front, "memory_scope").or_else(|| extract_yaml_str(front, "memory"));
-        let desc = extract_yaml_str(front, "description").unwrap_or_default();
-        let tools = extract_yaml_list(front, "tools");
-        (name, model, memory, desc, tools, body)
-    } else {
-        (
-            stem,
-            None,
-            None,
-            content.lines().next().unwrap_or("").to_string(),
-            vec![],
-            content.trim().to_string(),
-        )
-    };
+    let (name, model, memory, description, tools, instructions) =
+        if let Some(after_prefix) = content.strip_prefix("---") {
+            let end = after_prefix.find("\n---")?;
+            let front = &after_prefix[..end];
+            let body = after_prefix[end + 4..].trim().to_string();
+            let name = extract_yaml_str(front, "name").unwrap_or_else(|| stem.clone());
+            let model = extract_yaml_str(front, "model");
+            let memory = extract_yaml_str(front, "memory_scope")
+                .or_else(|| extract_yaml_str(front, "memory"));
+            let desc = extract_yaml_str(front, "description").unwrap_or_default();
+            let tools = extract_yaml_list(front, "tools");
+            (name, model, memory, desc, tools, body)
+        } else {
+            (
+                stem,
+                None,
+                None,
+                content.lines().next().unwrap_or("").to_string(),
+                vec![],
+                content.trim().to_string(),
+            )
+        };
 
     Some(AgentDefinition {
         file_path: path.to_path_buf(),

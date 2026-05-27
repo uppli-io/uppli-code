@@ -16,7 +16,6 @@ use crate::{PermissionLevel, Tool, ToolContext, ToolResult};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::path::PathBuf;
 use tracing::debug;
 
 pub struct AstEditTool;
@@ -100,7 +99,9 @@ impl Tool for AstEditTool {
         // Read original content for diff/revert
         let original = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
-            Err(e) => return ToolResult::error(format!("Failed to read {}: {}", path.display(), e)),
+            Err(e) => {
+                return ToolResult::error(format!("Failed to read {}: {}", path.display(), e))
+            }
         };
 
         debug!(
@@ -114,9 +115,12 @@ impl Tool for AstEditTool {
         let output = tokio::process::Command::new("sg")
             .args([
                 "run",
-                "--pattern", &params.pattern,
-                "--rewrite", &params.rewrite,
-                "--lang", &params.language,
+                "--pattern",
+                &params.pattern,
+                "--rewrite",
+                &params.rewrite,
+                "--lang",
+                &params.language,
                 "--update-all",
                 "--debug-query=ast",
             ])
@@ -184,10 +188,7 @@ impl Tool for AstEditTool {
         );
 
         if !lint.ok {
-            msg.push_str(&format!(
-                "\n\n⚠️ SYNTAX ERROR after edit:\n{}",
-                lint.errors
-            ));
+            msg.push_str(&format!("\n\n⚠️ SYNTAX ERROR after edit:\n{}", lint.errors));
         } else if let Some(lang) = lint.language {
             msg.push_str(&format!(" Syntax check passed ({}).", lang));
         }
@@ -199,4 +200,3 @@ impl Tool for AstEditTool {
         }))
     }
 }
-

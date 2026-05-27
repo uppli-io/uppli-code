@@ -136,9 +136,9 @@ fn load_skill_from_file(path: &std::path::Path) -> Option<SkillDefinition> {
     let stem = path.file_stem()?.to_string_lossy().to_string();
 
     // Try to parse front-matter
-    if content.starts_with("---") {
-        let end = content[3..].find("\n---")? + 3;
-        let front = &content[3..end];
+    if let Some(after_prefix) = content.strip_prefix("---") {
+        let end = after_prefix.find("\n---")?;
+        let front = &after_prefix[..end];
         let name = extract_yaml_str(front, "name").unwrap_or_else(|| stem.clone());
         let description = extract_yaml_str(front, "description").unwrap_or_default();
         let tags = extract_yaml_list(front, "tags");

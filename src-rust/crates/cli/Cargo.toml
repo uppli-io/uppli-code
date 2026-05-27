@@ -37,3 +37,15 @@ nix = { workspace = true }
 shell-words = "1"
 cc-rag = { path = "../rag" }
 
+[features]
+## Enable the cross-process IPC peer infrastructure (spawn_peer_child,
+## Unix-socket MCP server for --groom). Dormant: the in-process binome
+## replaced it; kept behind a feature flag to avoid dead-code warnings
+## while preserving the code for future use.
+ipc-peer = []
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+

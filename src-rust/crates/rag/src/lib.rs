@@ -9,8 +9,8 @@
 //   - Search = embed query → cosine similarity → top-K
 //   - Model downloads automatically on first use (~22MB)
 
-pub mod store;
 pub mod embed;
+pub mod store;
 
-pub use store::{Chunk, VectorStore};
 pub use embed::Embedder;
+pub use store::{Chunk, VectorStore};

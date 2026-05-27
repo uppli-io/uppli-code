@@ -76,12 +76,8 @@ impl Tool for AstGrepHelperTool {
             Err(e) => return ToolResult::error(format!("RAG store not available: {}", e)),
         };
 
-        let results = store.search_owned(
-            &params.query,
-            Some(&params.language),
-            Some("ast-grep"),
-            5,
-        );
+        let results =
+            store.search_owned(&params.query, Some(&params.language), Some("ast-grep"), 5);
 
         if results.is_empty() {
             return ToolResult::success(

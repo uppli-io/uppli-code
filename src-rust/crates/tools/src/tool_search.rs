@@ -27,11 +27,28 @@ fn default_max() -> usize {
 
 /// Keywords that trigger RAG vector search for ast-grep patterns.
 const RAG_TRIGGER_KEYWORDS: &[&str] = &[
-    "ast-grep", "ast_grep", "astedit", "pattern", "rewrite",
-    "structural", "raise", "exception", "function call", "method",
-    "import", "class", "return", "assign", "replace code",
-    "modify code", "edit code", "change code", "add line",
-    "insert after", "wrap with", "indentation",
+    "ast-grep",
+    "ast_grep",
+    "astedit",
+    "pattern",
+    "rewrite",
+    "structural",
+    "raise",
+    "exception",
+    "function call",
+    "method",
+    "import",
+    "class",
+    "return",
+    "assign",
+    "replace code",
+    "modify code",
+    "edit code",
+    "change code",
+    "add line",
+    "insert after",
+    "wrap with",
+    "indentation",
 ];
 
 fn should_search_rag(query: &str) -> bool {
@@ -43,14 +60,26 @@ fn should_search_rag(query: &str) -> bool {
 fn detect_language(query: &str) -> Option<&'static str> {
     let q = query.to_lowercase();
     let langs = [
-        ("python", "python"), ("py ", "python"), (".py", "python"),
-        ("javascript", "javascript"), ("js ", "javascript"), (".js", "javascript"),
-        ("typescript", "typescript"), ("ts ", "typescript"), (".ts", "typescript"),
-        ("rust", "rust"), (".rs", "rust"),
-        ("go ", "go"), ("golang", "go"), (".go", "go"),
-        ("java", "java"), (".java", "java"),
-        ("ruby", "ruby"), (".rb", "ruby"),
-        ("c++", "cpp"), ("cpp", "cpp"),
+        ("python", "python"),
+        ("py ", "python"),
+        (".py", "python"),
+        ("javascript", "javascript"),
+        ("js ", "javascript"),
+        (".js", "javascript"),
+        ("typescript", "typescript"),
+        ("ts ", "typescript"),
+        (".ts", "typescript"),
+        ("rust", "rust"),
+        (".rs", "rust"),
+        ("go ", "go"),
+        ("golang", "go"),
+        (".go", "go"),
+        ("java", "java"),
+        (".java", "java"),
+        ("ruby", "ruby"),
+        (".rb", "ruby"),
+        ("c++", "cpp"),
+        ("cpp", "cpp"),
     ];
     for (keyword, lang) in &langs {
         if q.contains(keyword) {
@@ -122,10 +151,7 @@ impl Tool for ToolSearchTool {
             }
 
             if output.is_empty() {
-                return ToolResult::success(format!(
-                    "No tools found: {}.",
-                    missing.join(", ")
-                ));
+                return ToolResult::success(format!("No tools found: {}.", missing.join(", ")));
             }
             if !missing.is_empty() {
                 output.push_str(&format!("\nNot found: {}", missing.join(", ")));
@@ -151,7 +177,9 @@ impl Tool for ToolSearchTool {
                             chunk.content.replace('\n', "\n  "),
                         ));
                     }
-                    output.push_str("\nRules: $VAR=one node, $$$VAR=multiple. NEVER match string literals.\n");
+                    output.push_str(
+                        "\nRules: $VAR=one node, $$$VAR=multiple. NEVER match string literals.\n",
+                    );
                 }
             }
         }

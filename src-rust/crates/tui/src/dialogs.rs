@@ -571,15 +571,11 @@ pub fn handle_permission_key(pr: &mut PermissionRequest, key: KeyEvent) -> bool 
         KeyCode::Enter => {
             return true;
         }
-        KeyCode::Up => {
-            if pr.selected_option > 0 {
-                pr.selected_option -= 1;
-            }
+        KeyCode::Up if pr.selected_option > 0 => {
+            pr.selected_option -= 1;
         }
-        KeyCode::Down => {
-            if pr.selected_option + 1 < option_count {
-                pr.selected_option += 1;
-            }
+        KeyCode::Down if pr.selected_option + 1 < option_count => {
+            pr.selected_option += 1;
         }
         KeyCode::Esc => {
             // Move selection to the last option (deny) without confirming.

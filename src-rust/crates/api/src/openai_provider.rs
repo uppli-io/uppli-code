@@ -106,21 +106,19 @@ impl OpenAiProviderConfig {
             max_retries: 5,
             request_timeout: Duration::from_secs(600),
             attribution: "powered by OpenRouter".to_string(),
-            known_models: vec![
-                ModelMetadata {
-                    id: "qwen/qwen3.6-plus".to_string(),
-                    display_name: "Qwen 3.6 Plus".to_string(),
-                    description: "Agentic coding model, 1M context".to_string(),
-                    context_window: 1_000_000,
-                    max_output_tokens: 32_768,
-                    supports_thinking: true,
-                    pricing: Some(ModelPricing {
-                        input_per_mtk: 0.325,
-                        output_per_mtk: 1.95,
-                        ..Default::default()
-                    }),
-                },
-            ],
+            known_models: vec![ModelMetadata {
+                id: "qwen/qwen3.6-plus".to_string(),
+                display_name: "Qwen 3.6 Plus".to_string(),
+                description: "Agentic coding model, 1M context".to_string(),
+                context_window: 1_000_000,
+                max_output_tokens: 32_768,
+                supports_thinking: true,
+                pricing: Some(ModelPricing {
+                    input_per_mtk: 0.325,
+                    output_per_mtk: 1.95,
+                    ..Default::default()
+                }),
+            }],
             default_max_tokens: 16_384,
             default_thinking_budget: Some(16_000),
             auth: AuthConfig {
@@ -324,6 +322,9 @@ struct OpenAiRequest {
     /// Qwen3-specific: max tokens for thinking.
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking_budget: Option<u32>,
+    /// Ollama-specific: disable thinking for Qwen3 local models.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    think: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -350,7 +351,10 @@ struct OpenAiToolCall {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct OpenAiFunction {
     name: String,
-    arguments: String,
+    /// OpenAI/standard: JSON-encoded string (`Value::String`).
+    /// Ollama: JSON object (`Value::Object`).
+    /// Using `Value` so serde serialises the right shape for each provider.
+    arguments: Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -433,6 +437,22 @@ struct OllamaChatMessage {
     #[allow(dead_code)]
     role: Option<String>,
     content: Option<String>,
+    /// Ollama Qwen3 thinking content (when `think: true` is enabled).
+    thinking: Option<String>,
+    /// Ollama tool calls — arguments are a pre-parsed JSON object (unlike OpenAI which sends a string).
+    tool_calls: Option<Vec<OllamaToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaToolCall {
+    function: Option<OllamaToolFunction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaToolFunction {
+    name: Option<String>,
+    /// Already-parsed JSON object (Ollama sends objects, not strings like OpenAI).
+    arguments: Option<Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -462,7 +482,7 @@ impl OpenAiProvider {
             default_thinking_budget: config.default_thinking_budget,
             api_format: config.api_format,
             default_api_base: config.api_base.clone(),
-            auth: config.auth.clone(),
+            auth: config.auth,
         };
 
         Ok(Self {
@@ -527,6 +547,17 @@ impl OpenAiProvider {
             (None, None)
         };
 
+        // Ollama: `think` is a Boolean toggle (no budget). Only send it when
+        // the provider supports thinking AND the user actually requested it.
+        // Sending `think: false` to models that don't know the field is harmless
+        // but unnecessary; omitting it entirely (None) is cleaner.
+        let think = if self.config.api_format == ApiFormat::Ollama && self.config.supports_thinking
+        {
+            Some(req.thinking.is_some())
+        } else {
+            None
+        };
+
         // Clamp max_tokens to the model's output limit (from known_models metadata).
         let model_max = self
             .config
@@ -548,6 +579,7 @@ impl OpenAiProvider {
             tools,
             enable_thinking,
             thinking_budget,
+            think,
         }
     }
 
@@ -555,6 +587,7 @@ impl OpenAiProvider {
     ///
     /// A single Anthropic assistant message with tool_use blocks produces:
     ///   1. An assistant message with tool_calls
+    ///
     /// A user message with tool_result blocks produces:
     ///   1. One "tool" message per result
     fn translate_message(&self, msg: &crate::types::ApiMessage) -> Vec<OpenAiMessage> {
@@ -607,14 +640,17 @@ impl OpenAiProvider {
                             .get("input")
                             .cloned()
                             .unwrap_or(Value::Object(Default::default()));
-                        let arguments = match serde_json::to_string(&input) {
-                            Ok(a) => a,
-                            Err(e) => {
-                                warn!(error = %e, tool = %name, "Failed to serialize tool arguments — sending raw Debug repr");
-                                // Use Debug repr ("{:?}") NOT Display ("{}") because
-                                // Display on serde_json::Value calls to_string() again
-                                // which would hit the same error.
-                                format!("{:?}", input)
+                        // Ollama expects arguments as a JSON object; OpenAI/others
+                        // expect a JSON-encoded string.
+                        let arguments = if self.config.api_format == ApiFormat::Ollama {
+                            input
+                        } else {
+                            match serde_json::to_string(&input) {
+                                Ok(a) => Value::String(a),
+                                Err(e) => {
+                                    warn!(error = %e, tool = %name, "Failed to serialize tool arguments");
+                                    Value::String(format!("{:?}", input))
+                                }
                             }
                         };
                         tool_calls.push(OpenAiToolCall {
@@ -674,13 +710,19 @@ impl OpenAiProvider {
                     name: None,
                 });
             } else if !tool_results.is_empty() {
-                // User message with tool results → emit as "tool" role messages
+                // User message with tool results → emit as "tool" role messages.
+                // Ollama doesn't use tool_call_id (no IDs in its tool call responses).
+                let include_tool_call_id = self.config.api_format != ApiFormat::Ollama;
                 for (tool_use_id, content) in tool_results {
                     result.push(OpenAiMessage {
                         role: "tool".to_string(),
                         content: Some(Value::String(content)),
                         tool_calls: None,
-                        tool_call_id: Some(tool_use_id),
+                        tool_call_id: if include_tool_call_id {
+                            Some(tool_use_id)
+                        } else {
+                            None
+                        },
                         name: None,
                     });
                 }
@@ -987,33 +1029,60 @@ impl OpenAiProvider {
     }
 
     /// Parse Ollama NDJSON stream into StreamEvents.
+    ///
+    /// Key differences from OpenAI SSE:
+    /// - NDJSON lines, not `data:` prefix SSE
+    /// - `done: true` on final line
+    /// - Tool calls are objects with pre-parsed `arguments` (not JSON strings)
+    /// - No incremental tool_call deltas — full tool call arrives in a single chunk
+    ///
+    /// Allocation strategy: raw bytes are appended into a persistent
+    /// `leftover` buffer. We find the last newline, process all complete
+    /// lines in-place (via `split('\n')`), and keep the incomplete
+    /// trailing fragment for the next iteration. This avoids a Vec
+    /// allocation per chunk.
     async fn process_ollama_stream(
         resp: reqwest::Response,
         handler: Arc<dyn StreamHandler>,
         tx: mpsc::Sender<StreamEvent>,
     ) -> Result<(), ClaudeError> {
+        macro_rules! emit {
+            ($evt:expr) => {{
+                let evt = $evt;
+                handler.on_event(&evt);
+                let _ = tx.send(evt).await;
+            }};
+        }
+
         let mut byte_stream = resp.bytes_stream();
-        let mut leftover = String::new();
+        let mut leftover = Vec::<u8>::new();
         let mut sent_start = false;
+
+        // Block tracking — lazily opened so tool-only responses get no spurious text block.
+        let mut next_block: usize = 0;
+        let mut text_open = false;
+        let mut text_block_idx: usize = 0;
+        let mut thinking_open = false;
+        let mut thinking_block_idx: usize = 0;
+        let mut had_tool_calls = false;
 
         while let Some(chunk_result) = byte_stream.next().await {
             let chunk = chunk_result.map_err(ClaudeError::Http)?;
-            let text = String::from_utf8_lossy(&chunk);
+            leftover.extend_from_slice(&chunk);
 
-            let combined = if leftover.is_empty() {
-                text.to_string()
-            } else {
-                let mut s = std::mem::take(&mut leftover);
-                s.push_str(&text);
-                s
+            // Find the last newline — everything before it is complete
+            // lines; everything after stays in the buffer.
+            let split_pos = match leftover.iter().rposition(|&b| b == b'\n') {
+                Some(pos) => pos + 1,
+                None => continue, // no complete line yet
             };
 
-            let mut lines: Vec<&str> = combined.split('\n').collect();
-            if !combined.ends_with('\n') {
-                leftover = lines.pop().unwrap_or("").to_string();
-            }
+            // Safety: we only feed UTF-8 JSON from the server. Lossy
+            // conversion keeps us resilient to stray bytes without panicking.
+            let complete = String::from_utf8_lossy(&leftover[..split_pos]).to_string();
+            leftover.drain(..split_pos);
 
-            for line in lines {
+            for line in complete.split('\n') {
                 let line = line.trim();
                 if line.is_empty() {
                     continue;
@@ -1028,44 +1097,138 @@ impl OpenAiProvider {
                 };
 
                 if !sent_start {
-                    let evt = StreamEvent::MessageStart {
+                    emit!(StreamEvent::MessageStart {
                         id: uuid_v4(),
                         model: chunk.model.clone().unwrap_or_default(),
                         usage: UsageInfo::default(),
-                    };
-                    handler.on_event(&evt);
-                    let _ = tx.send(evt).await;
-
-                    let evt = StreamEvent::ContentBlockStart {
-                        index: 0,
-                        content_block: ContentBlock::Text {
-                            text: String::new(),
-                        },
-                    };
-                    handler.on_event(&evt);
-                    let _ = tx.send(evt).await;
+                    });
                     sent_start = true;
                 }
 
                 if let Some(ref msg) = chunk.message {
+                    // ── Thinking content (Qwen3 on Ollama with `think: true`) ──
+                    if let Some(ref thinking) = msg.thinking {
+                        if !thinking.is_empty() {
+                            if !thinking_open {
+                                thinking_block_idx = next_block;
+                                next_block += 1;
+                                emit!(StreamEvent::ContentBlockStart {
+                                    index: thinking_block_idx,
+                                    content_block: ContentBlock::Thinking {
+                                        thinking: String::new(),
+                                        signature: String::new(),
+                                    },
+                                });
+                                thinking_open = true;
+                            }
+                            emit!(StreamEvent::ContentBlockDelta {
+                                index: thinking_block_idx,
+                                delta: ContentDelta::ThinkingDelta {
+                                    thinking: thinking.clone(),
+                                },
+                            });
+                        }
+                    }
+
+                    // ── Text content — lazily open text block ────────────
                     if let Some(ref content) = msg.content {
                         if !content.is_empty() {
-                            let evt = StreamEvent::ContentBlockDelta {
-                                index: 0,
+                            // Thinking must close before text opens.
+                            if thinking_open {
+                                emit!(StreamEvent::ContentBlockStop {
+                                    index: thinking_block_idx
+                                });
+                                thinking_open = false;
+                            }
+                            if !text_open {
+                                text_block_idx = next_block;
+                                next_block += 1;
+                                emit!(StreamEvent::ContentBlockStart {
+                                    index: text_block_idx,
+                                    content_block: ContentBlock::Text {
+                                        text: String::new(),
+                                    },
+                                });
+                                text_open = true;
+                            }
+                            emit!(StreamEvent::ContentBlockDelta {
+                                index: text_block_idx,
                                 delta: ContentDelta::TextDelta {
                                     text: content.clone(),
                                 },
-                            };
-                            handler.on_event(&evt);
-                            let _ = tx.send(evt).await;
+                            });
+                        }
+                    }
+
+                    // ── Tool calls (Ollama sends full objects, not partial JSON) ──
+                    if let Some(ref tool_calls) = msg.tool_calls {
+                        if !tool_calls.is_empty() {
+                            // Close any open thinking or text block before emitting tool use blocks.
+                            if thinking_open {
+                                emit!(StreamEvent::ContentBlockStop {
+                                    index: thinking_block_idx
+                                });
+                                thinking_open = false;
+                            }
+                            if text_open {
+                                emit!(StreamEvent::ContentBlockStop {
+                                    index: text_block_idx
+                                });
+                                text_open = false;
+                            }
+
+                            for tc in tool_calls {
+                                if let Some(ref func) = tc.function {
+                                    let name = func.name.clone().unwrap_or_default();
+                                    let args = func
+                                        .arguments
+                                        .clone()
+                                        .unwrap_or(Value::Object(Default::default()));
+                                    let blk_idx = next_block;
+                                    next_block += 1;
+                                    // Ollama doesn't provide tool call IDs — generate one.
+                                    let tc_id = format!("toolu_{}", blk_idx);
+                                    had_tool_calls = true;
+
+                                    emit!(StreamEvent::ContentBlockStart {
+                                        index: blk_idx,
+                                        content_block: ContentBlock::ToolUse {
+                                            id: tc_id,
+                                            name,
+                                            input: args.clone(),
+                                        },
+                                    });
+                                    // Send arguments as a single InputJsonDelta
+                                    // (Ollama gives us the full object at once).
+                                    let args_json = serde_json::to_string(&args)
+                                        .unwrap_or_else(|_| "{}".to_string());
+                                    emit!(StreamEvent::ContentBlockDelta {
+                                        index: blk_idx,
+                                        delta: ContentDelta::InputJsonDelta {
+                                            partial_json: args_json,
+                                        },
+                                    });
+                                    emit!(StreamEvent::ContentBlockStop { index: blk_idx });
+                                }
+                            }
                         }
                     }
                 }
 
                 if chunk.done.unwrap_or(false) {
-                    let evt = StreamEvent::ContentBlockStop { index: 0 };
-                    handler.on_event(&evt);
-                    let _ = tx.send(evt).await;
+                    // Close any still-open blocks in order.
+                    if thinking_open {
+                        emit!(StreamEvent::ContentBlockStop {
+                            index: thinking_block_idx
+                        });
+                        thinking_open = false;
+                    }
+                    if text_open {
+                        emit!(StreamEvent::ContentBlockStop {
+                            index: text_block_idx
+                        });
+                        text_open = false;
+                    }
 
                     let usage = UsageInfo {
                         input_tokens: chunk.prompt_eval_count.unwrap_or(0),
@@ -1073,16 +1236,18 @@ impl OpenAiProvider {
                         ..Default::default()
                     };
 
-                    let evt = StreamEvent::MessageDelta {
-                        stop_reason: Some("end_turn".to_string()),
-                        usage: Some(usage),
+                    let stop_reason = if had_tool_calls {
+                        "tool_use"
+                    } else {
+                        "end_turn"
                     };
-                    handler.on_event(&evt);
-                    let _ = tx.send(evt).await;
 
-                    let evt = StreamEvent::MessageStop;
-                    handler.on_event(&evt);
-                    let _ = tx.send(evt).await;
+                    emit!(StreamEvent::MessageDelta {
+                        stop_reason: Some(stop_reason.to_string()),
+                        usage: Some(usage),
+                    });
+
+                    emit!(StreamEvent::MessageStop);
                 }
             }
         }
@@ -1510,7 +1675,7 @@ mod tests {
         let translated = provider.translate_message(&tool_result_msg);
         assert_eq!(translated.len(), 1);
         assert_eq!(translated[0].role, "tool");
-        assert_eq!(translated[0].tool_call_id.as_deref(), Some("tu_1"));
+        assert_eq!(translated[0].tool_call_id, None);
     }
 
     /// Simulate an OpenAI SSE stream and verify the StreamAccumulator
@@ -1521,7 +1686,7 @@ mod tests {
         use crate::StreamAccumulator;
 
         // Simulate a simple text response SSE stream.
-        let sse_data = "\
+        let _sse_data = "\
 data: {\"id\":\"chatcmpl-1\",\"model\":\"gemma4\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n\
 data: {\"id\":\"chatcmpl-1\",\"model\":\"gemma4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello \"},\"finish_reason\":null}]}\n\n\
 data: {\"id\":\"chatcmpl-1\",\"model\":\"gemma4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"world!\"},\"finish_reason\":null}]}\n\n\

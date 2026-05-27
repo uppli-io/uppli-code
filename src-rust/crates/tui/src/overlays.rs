@@ -967,10 +967,9 @@ fn build_highlighted_spans<'a>(
     let mut spans: Vec<Span<'a>> = Vec::new();
     let mut current_text = String::new();
     let mut current_highlighted = false;
-    let mut char_count = 0usize;
     let mut truncated = false;
 
-    for (byte_off, ch) in &chars {
+    for (char_count, (byte_off, ch)) in chars.iter().enumerate() {
         if char_count >= max_chars {
             truncated = true;
             break;
@@ -989,7 +988,6 @@ fn build_highlighted_spans<'a>(
         }
         current_highlighted = is_hl;
         current_text.push(*ch);
-        char_count += 1;
     }
     if !current_text.is_empty() {
         let style = if current_highlighted {

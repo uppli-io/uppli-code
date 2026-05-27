@@ -51,9 +51,7 @@ pub async fn check_syntax(path: &Path) -> LintResult {
     // or the check times out, we pass silently — never block the agent.
     let output = match tokio::time::timeout(
         Duration::from_secs(5),
-        tokio::process::Command::new(program)
-            .args(&args)
-            .output(),
+        tokio::process::Command::new(program).args(&args).output(),
     )
     .await
     {
@@ -127,7 +125,6 @@ async fn cleanup_pycache(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use tempfile::NamedTempFile;
 
     #[tokio::test]

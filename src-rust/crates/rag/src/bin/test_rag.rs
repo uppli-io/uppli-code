@@ -14,7 +14,10 @@ fn main() {
         // The exact cases that failed in the benchmark
         ("raise ValueError error message python", "python"),
         ("change exception message in raise statement", "python"),
-        ("modify raise ValueError to show all required columns", "python"),
+        (
+            "modify raise ValueError to show all required columns",
+            "python",
+        ),
         ("add re.IGNORECASE flag to re.compile", "python"),
         ("make string comparison case insensitive", "python"),
         ("add line after function call", "python"),

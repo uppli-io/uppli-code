@@ -388,7 +388,7 @@ mod tests {
                         args: vec![],
                         env: std::collections::HashMap::new(),
                         url: None,
-                        server_type: "stdio".to_string(),
+                        server_type: cc_core::config::McpTransportType::Stdio,
                     },
                 )
             })

@@ -36,9 +36,7 @@ impl Embedder {
     pub fn embed_batch(texts: &[String]) -> Vec<Vec<f32>> {
         let lock = EMBEDDER.get().expect("Embedder not initialized");
         let mut model = lock.lock().unwrap();
-        model
-            .embed(texts.to_vec(), None)
-            .expect("Batch embedding failed")
+        model.embed(texts, None).expect("Batch embedding failed")
     }
 
     /// Check if the embedder is initialized.
