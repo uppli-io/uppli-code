@@ -83,7 +83,7 @@ impl OpenAiProviderConfig {
                 pricing: None, // Local = free
             }],
             default_max_tokens: 8_192,
-            default_thinking_budget: None,
+            default_thinking_budget: Some(16_000),
             auth: AuthConfig {
                 env_vars: &[],
                 keychain_key: "ollama",
