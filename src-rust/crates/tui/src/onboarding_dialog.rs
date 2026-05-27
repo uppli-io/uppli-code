@@ -21,19 +21,14 @@ use crate::overlays::centered_rect;
 // Steps
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum OnboardingStep {
+    #[default]
     ProviderChoice,
     ApiKey,
     ModelChoice,
     Confirm,
     Done,
-}
-
-impl Default for OnboardingStep {
-    fn default() -> Self {
-        Self::ProviderChoice
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -449,11 +444,7 @@ fn render_provider_choice(frame: &mut Frame, state: &OnboardingDialogState, area
         } else {
             Style::default().fg(Color::White)
         };
-        let desc_style = if i == state.provider_idx {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
+        let desc_style = Style::default().fg(Color::DarkGray);
 
         lines.push(Line::from(vec![
             Span::styled(marker.to_string(), style),

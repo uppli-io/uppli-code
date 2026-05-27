@@ -16,9 +16,13 @@ use std::sync::Arc;
 
 // Sub-modules – each contains a full tool implementation.
 pub mod ask_user;
+pub mod ast_edit;
+pub mod ast_grep_helper;
+pub mod ast_grep_rag;
 pub mod bash;
 pub mod brief;
 pub mod bundled_skills;
+pub mod code_audit;
 pub mod computer_use;
 pub mod config_tool;
 pub mod cron;
@@ -29,12 +33,7 @@ pub mod file_read;
 pub mod file_write;
 pub mod glob_tool;
 pub mod grep_tool;
-pub mod ast_edit;
-pub mod ast_grep_helper;
-pub mod code_audit;
-pub mod ast_grep_rag;
 pub mod lint;
-pub mod tool_expertise;
 pub mod lsp_tool;
 pub mod mcp_auth_tool;
 pub mod mcp_resources;
@@ -49,6 +48,7 @@ pub mod synthetic_output;
 pub mod tasks;
 pub mod team_tool;
 pub mod todo_write;
+pub mod tool_expertise;
 pub mod tool_search;
 pub mod web_fetch;
 #[allow(dead_code)]
@@ -57,16 +57,16 @@ pub mod worktree;
 
 // Re-exports for convenience.
 pub use ask_user::AskUserQuestionTool;
+pub use ast_edit::AstEditTool;
+pub use ast_grep_helper::AstGrepHelperTool;
 pub use bash::BashTool;
 pub use brief::BriefTool;
+pub use code_audit::CodeAuditTool;
 pub use computer_use::ComputerUseTool;
 pub use config_tool::ConfigTool;
 pub use cron::{CronCreateTool, CronDeleteTool, CronListTool};
 pub use enter_plan_mode::EnterPlanModeTool;
 pub use exit_plan_mode::ExitPlanModeTool;
-pub use ast_edit::AstEditTool;
-pub use ast_grep_helper::AstGrepHelperTool;
-pub use code_audit::CodeAuditTool;
 pub use file_edit::FileEditTool;
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;

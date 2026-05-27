@@ -988,7 +988,8 @@ impl McpManager {
                         _ => {
                             manager.failed_servers.push((
                                 expanded.name.clone(),
-                                "unix transport requires `command` to be the socket path".to_string(),
+                                "unix transport requires `command` to be the socket path"
+                                    .to_string(),
                             ));
                             continue;
                         }

@@ -985,8 +985,7 @@ fn render_welcome_box(frame: &mut Frame, app: &App, area: Rect) {
     // Split inner into left | divider(1) | right
     // Left width: ~28 chars or half the inner width, whichever is smaller
     let left_w = (inner.width / 2)
-        .max(22)
-        .min(32)
+        .clamp(22, 32)
         .min(inner.width.saturating_sub(3));
     let right_w = inner.width.saturating_sub(left_w + 1);
     let h_chunks = Layout::default()
@@ -1328,9 +1327,7 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
 }
 
 fn should_render_status_row(app: &App) -> bool {
-    app.is_streaming
-        || app.last_turn_elapsed.is_some()
-        || (!app.is_streaming && app.status_message.is_some())
+    app.is_streaming || app.last_turn_elapsed.is_some() || app.status_message.is_some()
 }
 
 fn render_status_row(frame: &mut Frame, app: &App, area: Rect) {

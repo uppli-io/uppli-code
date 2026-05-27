@@ -327,7 +327,7 @@ pub fn render_attachment_message(
 ) -> Vec<Line<'static>> {
     // Reserve space for the "  [label] " prefix and a small margin.
     let prefix_len = kind_label.len() + 6; // "  [label] "
-    let preview_max = (width as usize).saturating_sub(prefix_len).max(20).min(120);
+    let preview_max = (width as usize).saturating_sub(prefix_len).clamp(20, 120);
     let preview: String = content.chars().take(preview_max).collect();
     let preview = if content.chars().count() > preview_max {
         format!("{preview}\u{2026}")

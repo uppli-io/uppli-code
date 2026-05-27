@@ -501,9 +501,7 @@ pub fn format_search_results(results: &[(&ToolExpertise, usize)]) -> String {
             ));
         }
     }
-    out.push_str(&format!(
-        "\nUse ToolSearch(\"select:ToolName\") for full details on any tool.\n"
-    ));
+    out.push_str("\nUse ToolSearch(\"select:ToolName\") for full details on any tool.\n");
     out
 }
 
@@ -513,7 +511,7 @@ pub fn pre_execution_tips(tool_name: &str) -> Option<String> {
     if entry.tips.is_empty() {
         return None;
     }
-    let tips: Vec<&str> = entry.tips.iter().copied().collect();
+    let tips: Vec<&str> = entry.tips.to_vec();
     Some(tips.join(" "))
 }
 
@@ -523,7 +521,7 @@ pub fn on_error_tips(tool_name: &str) -> Option<String> {
     if entry.on_error_tips.is_empty() {
         return None;
     }
-    let tips: Vec<&str> = entry.on_error_tips.iter().copied().collect();
+    let tips: Vec<&str> = entry.on_error_tips.to_vec();
     Some(tips.join(" "))
 }
 
@@ -533,7 +531,9 @@ pub fn brief_listing() -> String {
     for entry in EXPERTISE {
         out.push_str(&format!("- **{}** — {}\n", entry.name, entry.brief));
     }
-    out.push_str("\nUse ToolSearch to find the best tool for your task or get detailed usage info.\n");
+    out.push_str(
+        "\nUse ToolSearch to find the best tool for your task or get detailed usage info.\n",
+    );
     out
 }
 
@@ -559,7 +559,11 @@ mod tests {
         assert!(!results.is_empty());
         // Edit should rank high for "modify file"
         let names: Vec<&str> = results.iter().map(|(e, _)| e.name).collect();
-        assert!(names.contains(&"Edit"), "Expected Edit in results: {:?}", names);
+        assert!(
+            names.contains(&"Edit"),
+            "Expected Edit in results: {:?}",
+            names
+        );
     }
 
     #[test]
@@ -567,7 +571,11 @@ mod tests {
         let results = search("edit code indentation", 5);
         let names: Vec<&str> = results.iter().map(|(e, _)| e.name).collect();
         // Should return Edit, AstEdit, and possibly Bash
-        assert!(names.len() >= 2, "Expected multiple alternatives: {:?}", names);
+        assert!(
+            names.len() >= 2,
+            "Expected multiple alternatives: {:?}",
+            names
+        );
     }
 
     #[test]

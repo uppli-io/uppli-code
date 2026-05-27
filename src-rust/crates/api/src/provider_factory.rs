@@ -243,15 +243,13 @@ fn create_openai_provider(
     preset_name: Option<&str>,
 ) -> anyhow::Result<Box<dyn LlmProvider>> {
     // Step 1: Build preset config.
-    let model = settings
-        .and_then(|s| s.model.clone())
-        .unwrap_or_else(|| {
-            // Use preset name directly if available, fall back to provider_type lookup
-            preset_name
-                .and_then(find_preset)
-                .map(|p| p.default_model.to_string())
-                .unwrap_or_else(|| default_model_for(provider_type))
-        });
+    let model = settings.and_then(|s| s.model.clone()).unwrap_or_else(|| {
+        // Use preset name directly if available, fall back to provider_type lookup
+        preset_name
+            .and_then(find_preset)
+            .map(|p| p.default_model.to_string())
+            .unwrap_or_else(|| default_model_for(provider_type))
+    });
 
     let mut cfg = match (provider_type, preset_name) {
         (ProviderType::Ollama, _) => crate::OpenAiProviderConfig::ollama(&model),

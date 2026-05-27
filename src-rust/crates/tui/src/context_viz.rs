@@ -40,6 +40,7 @@ impl ContextVizState {
 // Rendering
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_context_viz(
     frame: &mut Frame,
     state: &ContextVizState,

@@ -106,21 +106,19 @@ impl OpenAiProviderConfig {
             max_retries: 5,
             request_timeout: Duration::from_secs(600),
             attribution: "powered by OpenRouter".to_string(),
-            known_models: vec![
-                ModelMetadata {
-                    id: "qwen/qwen3.6-plus".to_string(),
-                    display_name: "Qwen 3.6 Plus".to_string(),
-                    description: "Agentic coding model, 1M context".to_string(),
-                    context_window: 1_000_000,
-                    max_output_tokens: 32_768,
-                    supports_thinking: true,
-                    pricing: Some(ModelPricing {
-                        input_per_mtk: 0.325,
-                        output_per_mtk: 1.95,
-                        ..Default::default()
-                    }),
-                },
-            ],
+            known_models: vec![ModelMetadata {
+                id: "qwen/qwen3.6-plus".to_string(),
+                display_name: "Qwen 3.6 Plus".to_string(),
+                description: "Agentic coding model, 1M context".to_string(),
+                context_window: 1_000_000,
+                max_output_tokens: 32_768,
+                supports_thinking: true,
+                pricing: Some(ModelPricing {
+                    input_per_mtk: 0.325,
+                    output_per_mtk: 1.95,
+                    ..Default::default()
+                }),
+            }],
             default_max_tokens: 16_384,
             default_thinking_budget: Some(16_000),
             auth: AuthConfig {
@@ -484,7 +482,7 @@ impl OpenAiProvider {
             default_thinking_budget: config.default_thinking_budget,
             api_format: config.api_format,
             default_api_base: config.api_base.clone(),
-            auth: config.auth.clone(),
+            auth: config.auth,
         };
 
         Ok(Self {
@@ -553,8 +551,7 @@ impl OpenAiProvider {
         // the provider supports thinking AND the user actually requested it.
         // Sending `think: false` to models that don't know the field is harmless
         // but unnecessary; omitting it entirely (None) is cleaner.
-        let think = if self.config.api_format == ApiFormat::Ollama
-            && self.config.supports_thinking
+        let think = if self.config.api_format == ApiFormat::Ollama && self.config.supports_thinking
         {
             Some(req.thinking.is_some())
         } else {
@@ -590,6 +587,7 @@ impl OpenAiProvider {
     ///
     /// A single Anthropic assistant message with tool_use blocks produces:
     ///   1. An assistant message with tool_calls
+    ///
     /// A user message with tool_result blocks produces:
     ///   1. One "tool" message per result
     fn translate_message(&self, msg: &crate::types::ApiMessage) -> Vec<OpenAiMessage> {
@@ -1132,7 +1130,9 @@ impl OpenAiProvider {
                         if !content.is_empty() {
                             // Thinking must close before text opens.
                             if thinking_open {
-                                emit!(StreamEvent::ContentBlockStop { index: thinking_block_idx });
+                                emit!(StreamEvent::ContentBlockStop {
+                                    index: thinking_block_idx
+                                });
                                 thinking_open = false;
                             }
                             if !text_open {
@@ -1160,11 +1160,15 @@ impl OpenAiProvider {
                         if !tool_calls.is_empty() {
                             // Close any open thinking or text block before emitting tool use blocks.
                             if thinking_open {
-                                emit!(StreamEvent::ContentBlockStop { index: thinking_block_idx });
+                                emit!(StreamEvent::ContentBlockStop {
+                                    index: thinking_block_idx
+                                });
                                 thinking_open = false;
                             }
                             if text_open {
-                                emit!(StreamEvent::ContentBlockStop { index: text_block_idx });
+                                emit!(StreamEvent::ContentBlockStop {
+                                    index: text_block_idx
+                                });
                                 text_open = false;
                             }
 
@@ -1209,11 +1213,15 @@ impl OpenAiProvider {
                 if chunk.done.unwrap_or(false) {
                     // Close any still-open blocks in order.
                     if thinking_open {
-                        emit!(StreamEvent::ContentBlockStop { index: thinking_block_idx });
+                        emit!(StreamEvent::ContentBlockStop {
+                            index: thinking_block_idx
+                        });
                         thinking_open = false;
                     }
                     if text_open {
-                        emit!(StreamEvent::ContentBlockStop { index: text_block_idx });
+                        emit!(StreamEvent::ContentBlockStop {
+                            index: text_block_idx
+                        });
                         text_open = false;
                     }
 
@@ -1223,7 +1231,11 @@ impl OpenAiProvider {
                         ..Default::default()
                     };
 
-                    let stop_reason = if had_tool_calls { "tool_use" } else { "end_turn" };
+                    let stop_reason = if had_tool_calls {
+                        "tool_use"
+                    } else {
+                        "end_turn"
+                    };
 
                     emit!(StreamEvent::MessageDelta {
                         stop_reason: Some(stop_reason.to_string()),
@@ -1669,7 +1681,7 @@ mod tests {
         use crate::StreamAccumulator;
 
         // Simulate a simple text response SSE stream.
-        let sse_data = "\
+        let _sse_data = "\
 data: {\"id\":\"chatcmpl-1\",\"model\":\"gemma4\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n\
 data: {\"id\":\"chatcmpl-1\",\"model\":\"gemma4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello \"},\"finish_reason\":null}]}\n\n\
 data: {\"id\":\"chatcmpl-1\",\"model\":\"gemma4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"world!\"},\"finish_reason\":null}]}\n\n\

@@ -263,11 +263,8 @@ async fn run_callback_server(
         .map(|(_, v)| v.to_string());
 
     // Send success redirect to the browser before validating, so the browser shows a page
-    let location = if received_state.as_deref() == Some(expected_state) && code.is_some() {
-        oauth::CLAUDEAI_SUCCESS_URL
-    } else {
-        oauth::CLAUDEAI_SUCCESS_URL // Show same page on error (browser UX)
-    };
+    // Show same page on both success and error (browser UX).
+    let location = oauth::CLAUDEAI_SUCCESS_URL;
 
     let response = format!(
         "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",

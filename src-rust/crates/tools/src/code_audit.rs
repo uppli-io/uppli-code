@@ -142,9 +142,7 @@ impl Tool for CodeAuditTool {
                 ));
             }
             Err(_) => {
-                return ToolResult::error(
-                    "CodeAudit timed out after 10 seconds.".to_string(),
-                );
+                return ToolResult::error("CodeAudit timed out after 10 seconds.".to_string());
             }
         };
 

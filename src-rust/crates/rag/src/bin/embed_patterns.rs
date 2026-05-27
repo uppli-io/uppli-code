@@ -32,8 +32,17 @@ fn main() {
 
     // Quick test
     println!("\n--- Test search ---");
-    let results = store.search("raise ValueError error message python", Some("python"), Some("ast-grep"), 3);
+    let results = store.search(
+        "raise ValueError error message python",
+        Some("python"),
+        Some("ast-grep"),
+        3,
+    );
     for r in &results {
-        println!("  [{:.3}] {}", r.score, r.chunk.content.lines().next().unwrap_or(""));
+        println!(
+            "  [{:.3}] {}",
+            r.score,
+            r.chunk.content.lines().next().unwrap_or("")
+        );
     }
 }

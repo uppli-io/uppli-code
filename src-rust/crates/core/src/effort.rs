@@ -32,7 +32,7 @@ impl EffortLevel {
     ///
     /// Accepts lowercase strings: `"low"`, `"medium"`, `"high"`, `"max"`.
     /// Returns `None` for any other value.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_level(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "low" => Some(Self::Low),
             "medium" => Some(Self::Medium),
@@ -44,7 +44,7 @@ impl EffortLevel {
 
     /// The lowercase string name of this effort level.
     ///
-    /// Round-trips with `from_str`.
+    /// Round-trips with `parse_level`.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Low => "low",
@@ -135,7 +135,7 @@ mod tests {
             EffortLevel::High,
             EffortLevel::Max,
         ] {
-            let parsed = EffortLevel::from_str(level.as_str());
+            let parsed = EffortLevel::parse_level(level.as_str());
             assert_eq!(
                 parsed,
                 Some(level),
@@ -147,17 +147,20 @@ mod tests {
 
     #[test]
     fn from_str_case_insensitive() {
-        assert_eq!(EffortLevel::from_str("LOW"), Some(EffortLevel::Low));
-        assert_eq!(EffortLevel::from_str("Medium"), Some(EffortLevel::Medium));
-        assert_eq!(EffortLevel::from_str("HIGH"), Some(EffortLevel::High));
-        assert_eq!(EffortLevel::from_str("Max"), Some(EffortLevel::Max));
+        assert_eq!(EffortLevel::parse_level("LOW"), Some(EffortLevel::Low));
+        assert_eq!(
+            EffortLevel::parse_level("Medium"),
+            Some(EffortLevel::Medium)
+        );
+        assert_eq!(EffortLevel::parse_level("HIGH"), Some(EffortLevel::High));
+        assert_eq!(EffortLevel::parse_level("Max"), Some(EffortLevel::Max));
     }
 
     #[test]
     fn from_str_unknown_returns_none() {
-        assert_eq!(EffortLevel::from_str("ultra"), None);
-        assert_eq!(EffortLevel::from_str(""), None);
-        assert_eq!(EffortLevel::from_str("3"), None);
+        assert_eq!(EffortLevel::parse_level("ultra"), None);
+        assert_eq!(EffortLevel::parse_level(""), None);
+        assert_eq!(EffortLevel::parse_level("3"), None);
     }
 
     #[test]

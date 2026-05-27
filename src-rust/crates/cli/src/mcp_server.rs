@@ -32,6 +32,7 @@ pub struct McpServerState {
     pub config: cc_core::config::Config,
     pub cost_tracker: Arc<cc_core::cost::CostTracker>,
     pub permission_mode: cc_core::config::PermissionMode,
+    #[allow(dead_code)]
     pub max_turns: u32,
     /// CLI --model override (None = use provider default).
     pub model_override: Option<String>,
@@ -90,7 +91,10 @@ pub async fn run_mcp_server_unix(
     let _ = std::fs::remove_file(&socket_path);
 
     let listener = tokio::net::UnixListener::bind(&socket_path).map_err(|e| {
-        anyhow::anyhow!("failed to bind MCP Unix socket at {}: {e}", socket_path.display())
+        anyhow::anyhow!(
+            "failed to bind MCP Unix socket at {}: {e}",
+            socket_path.display()
+        )
     })?;
 
     info!(path = %socket_path.display(), "MCP server listening (unix socket)");
@@ -321,7 +325,10 @@ async fn tool_query(conn: &Conn, args: &Value) -> Result<Value, JsonRpcError> {
         return Err(rpc_err(-32000, "Agent is busy with another query"));
     }
 
-    let max_turns = args.get("max_turns").and_then(|v| v.as_u64()).unwrap_or(250) as u32;
+    let max_turns = args
+        .get("max_turns")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(250) as u32;
     let work_dir = args
         .get("working_dir")
         .and_then(|v| v.as_str())
@@ -369,7 +376,11 @@ async fn tool_query(conn: &Conn, args: &Value) -> Result<Value, JsonRpcError> {
         output_style: cc_core::system_prompt::OutputStyle::Default,
         output_style_prompt: None,
         working_directory: Some(tool_ctx.working_dir.display().to_string()),
-        thinking_budget: state.provider.capabilities().default_thinking_budget.map(|_| 64_000),
+        thinking_budget: state
+            .provider
+            .capabilities()
+            .default_thinking_budget
+            .map(|_| 64_000),
         temperature: None,
         tool_result_budget: 0,
         effort_level: Some(cc_core::effort::EffortLevel::Max),
@@ -382,8 +393,7 @@ async fn tool_query(conn: &Conn, args: &Value) -> Result<Value, JsonRpcError> {
     let mut messages = vec![cc_core::types::Message::user(prompt.to_string())];
     let cancel = tokio_util::sync::CancellationToken::new();
 
-    let (event_tx, mut event_rx) =
-        tokio::sync::mpsc::unbounded_channel::<cc_query::QueryEvent>();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<cc_query::QueryEvent>();
     let notif_tx = conn.tx.clone();
 
     let notif_handle = tokio::spawn(async move {
@@ -391,23 +401,32 @@ async fn tool_query(conn: &Conn, args: &Value) -> Result<Value, JsonRpcError> {
 
         while let Some(event) = event_rx.recv().await {
             let params = match &event {
-                cc_query::QueryEvent::ToolStart { tool_name, tool_id, input_json } => {
+                cc_query::QueryEvent::ToolStart {
+                    tool_name,
+                    tool_id,
+                    input_json,
+                } => {
                     let preview: String = input_json.chars().take(200).collect();
-                    Some(json!({"event":"tool_start","tool":tool_name,"tool_id":tool_id,"input_preview":preview}))
+                    Some(
+                        json!({"event":"tool_start","tool":tool_name,"tool_id":tool_id,"input_preview":preview}),
+                    )
                 }
-                cc_query::QueryEvent::ToolEnd { tool_name, tool_id, result, is_error } => {
+                cc_query::QueryEvent::ToolEnd {
+                    tool_name,
+                    tool_id,
+                    result,
+                    is_error,
+                } => {
                     let preview: String = result.chars().take(500).collect();
-                    Some(json!({"event":"tool_end","tool":tool_name,"tool_id":tool_id,"result_preview":preview,"is_error":is_error}))
+                    Some(
+                        json!({"event":"tool_end","tool":tool_name,"tool_id":tool_id,"result_preview":preview,"is_error":is_error}),
+                    )
                 }
-                cc_query::QueryEvent::TurnComplete { turn, stop_reason, .. } => {
-                    Some(json!({"event":"turn_complete","turn":turn,"stop_reason":stop_reason}))
-                }
-                cc_query::QueryEvent::Status(msg) => {
-                    Some(json!({"event":"status","message":msg}))
-                }
-                cc_query::QueryEvent::Error(msg) => {
-                    Some(json!({"event":"error","message":msg}))
-                }
+                cc_query::QueryEvent::TurnComplete {
+                    turn, stop_reason, ..
+                } => Some(json!({"event":"turn_complete","turn":turn,"stop_reason":stop_reason})),
+                cc_query::QueryEvent::Status(msg) => Some(json!({"event":"status","message":msg})),
+                cc_query::QueryEvent::Error(msg) => Some(json!({"event":"error","message":msg})),
                 cc_query::QueryEvent::Stream(StreamEvent::ContentBlockDelta {
                     delta: ContentDelta::TextDelta { text },
                     ..
@@ -497,7 +516,9 @@ fn tool_status(state: &Arc<McpServerState>) -> Result<Value, JsonRpcError> {
         "busy": busy,
         "cost_summary": state.cost_tracker.summary(),
     });
-    Ok(json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&status).unwrap_or_default() }] }))
+    Ok(
+        json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&status).unwrap_or_default() }] }),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -507,7 +528,11 @@ fn tool_status(state: &Arc<McpServerState>) -> Result<Value, JsonRpcError> {
 fn tool_cancel(state: &Arc<McpServerState>) -> Result<Value, JsonRpcError> {
     // TODO: wire to a shared CancellationToken
     let was_busy = state.busy.swap(false, std::sync::atomic::Ordering::SeqCst);
-    let msg = if was_busy { "Query cancelled" } else { "No active query" };
+    let msg = if was_busy {
+        "Query cancelled"
+    } else {
+        "No active query"
+    };
     Ok(json!({ "content": [{ "type": "text", "text": msg }] }))
 }
 
@@ -523,7 +548,9 @@ async fn tool_sessions(state: &Arc<McpServerState>) -> Result<Value, JsonRpcErro
         .iter()
         .map(|s| json!({ "session_id": s.session_id, "title": s.title }))
         .collect();
-    Ok(json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&list).unwrap_or_default() }] }))
+    Ok(
+        json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&list).unwrap_or_default() }] }),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -534,11 +561,16 @@ async fn handle_resource_read(
     state: &Arc<McpServerState>,
     params: Option<&Value>,
 ) -> Result<Value, JsonRpcError> {
-    let uri = params.and_then(|p| p.get("uri")).and_then(|v| v.as_str()).unwrap_or("");
+    let uri = params
+        .and_then(|p| p.get("uri"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     match uri {
         "uppli://status" => {
             let status = tool_status(state)?;
-            Ok(json!({ "contents": [{ "uri": "uppli://status", "mimeType": "application/json", "text": status["content"][0]["text"] }] }))
+            Ok(
+                json!({ "contents": [{ "uri": "uppli://status", "mimeType": "application/json", "text": status["content"][0]["text"] }] }),
+            )
         }
         _ => Err(rpc_err(-32602, format!("Unknown resource: {}", uri))),
     }

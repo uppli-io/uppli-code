@@ -992,10 +992,19 @@ pub fn global_lsp_manager() -> Arc<tokio::sync::Mutex<LspManager>> {
     GLOBAL_LSP_MANAGER.clone()
 }
 
+/// Candidate entry: (name, command_candidates, args, patterns, ext-to-lang mappings).
+type LspCandidate<'a> = (
+    &'a str,
+    &'a [&'a str],
+    &'a [&'a str],
+    &'a [&'a str],
+    &'a [(&'a str, &'a str)],
+);
+
 /// Auto-detect installed language servers by checking PATH.
 pub fn detect_installed_servers() -> Vec<LspServerConfig> {
     // (name, command_candidates, args, patterns, ext→lang mappings)
-    let candidates: &[(&str, &[&str], &[&str], &[&str], &[(&str, &str)])] = &[
+    let candidates: &[LspCandidate<'_>] = &[
         // Python
         (
             "pyright",

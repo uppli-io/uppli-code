@@ -186,7 +186,7 @@ pub async fn load_plugins(
     // Extra paths.
     for path in extra_paths {
         let (plugins, errors) = discover_plugins(
-            &[path.clone()],
+            std::slice::from_ref(path),
             PluginSource::Extra(path.to_string_lossy().into_owned()),
         )
         .await;

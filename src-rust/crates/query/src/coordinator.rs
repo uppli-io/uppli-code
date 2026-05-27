@@ -154,12 +154,13 @@ impl Default for ScratchpadGate {
 pub fn filter_tools_for_mode(
     tools: &[Box<dyn cc_tools::Tool>],
     mode: AgentMode,
-) -> Vec<&Box<dyn cc_tools::Tool>> {
+) -> Vec<&dyn cc_tools::Tool> {
     match mode {
-        AgentMode::Coordinator | AgentMode::Normal => tools.iter().collect(),
+        AgentMode::Coordinator | AgentMode::Normal => tools.iter().map(|t| t.as_ref()).collect(),
         AgentMode::Worker => tools
             .iter()
             .filter(|t| !COORDINATOR_ONLY_TOOLS.contains(&t.name()))
+            .map(|t| t.as_ref())
             .collect(),
     }
 }

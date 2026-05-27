@@ -478,10 +478,10 @@ pub fn parse_unified_diff(text: &str) -> Vec<FileDiffStats> {
                 if let Some(f) = current_file.as_mut() {
                     f.removed += 1;
                 }
-            } else if raw_line.starts_with(' ') {
+            } else if let Some(stripped) = raw_line.strip_prefix(' ') {
                 hunk.lines.push(DiffLine {
                     kind: DiffLineKind::Context,
-                    content: raw_line[1..].to_string(),
+                    content: stripped.to_string(),
                     old_line_no: Some(old_line),
                     new_line_no: Some(new_line),
                 });
@@ -659,11 +659,7 @@ fn render_file_list(state: &DiffViewerState, area: Rect, buf: &mut Buffer) {
             break;
         }
 
-        let collapse_style = if is_collapsed {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
+        let collapse_style = Style::default().fg(Color::DarkGray);
         let line = Line::from(vec![
             Span::styled(if selected { "> " } else { "  " }, base_style),
             Span::styled(format!("{} ", collapse_char), collapse_style),

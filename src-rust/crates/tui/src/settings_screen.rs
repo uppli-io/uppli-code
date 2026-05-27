@@ -984,17 +984,17 @@ fn build_advanced_lines(screen: &SettingsScreen) -> Vec<Line<'static>> {
 // ---------------------------------------------------------------------------
 
 fn build_keybindings_lines(_screen: &SettingsScreen) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    lines.push(section_header("Key Bindings"));
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![Span::styled(
-        "  Edit ~/.uppli/keybindings.json to customise bindings.",
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::ITALIC),
-    )]));
-    lines.push(Line::from(""));
+    let mut lines: Vec<Line<'static>> = vec![
+        section_header("Key Bindings"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "  Edit ~/.uppli/keybindings.json to customise bindings.",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::ITALIC),
+        )]),
+        Line::from(""),
+    ];
 
     // Group bindings by context
     let mut by_context: std::collections::HashMap<String, Vec<(String, String)>> =

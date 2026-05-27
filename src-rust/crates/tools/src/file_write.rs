@@ -117,12 +117,14 @@ impl Tool for FileWriteTool {
             byte_count
         );
         if !lint.ok {
-            msg.push_str(&format!("\n\n⚠️ SYNTAX ERROR (file written but code is broken):\n{}", lint.errors));
+            msg.push_str(&format!(
+                "\n\n⚠️ SYNTAX ERROR (file written but code is broken):\n{}",
+                lint.errors
+            ));
         } else if let Some(lang) = lint.language {
             msg.push_str(&format!(". Syntax check passed ({}).", lang));
         }
-        ToolResult::success(msg)
-        .with_metadata(json!({
+        ToolResult::success(msg).with_metadata(json!({
             "file_path": path.display().to_string(),
             "is_new": is_new,
             "lines": line_count,

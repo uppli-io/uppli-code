@@ -595,10 +595,7 @@ async fn main() -> anyhow::Result<()> {
         if !json_str.is_empty() {
             match serde_json::from_str::<serde_json::Value>(&json_str) {
                 Ok(data) => {
-                    if let Some(servers_obj) = data
-                        .get("mcpServers")
-                        .and_then(|s| s.as_object())
-                    {
+                    if let Some(servers_obj) = data.get("mcpServers").and_then(|s| s.as_object()) {
                         let existing_names: std::collections::HashSet<String> =
                             config.mcp_servers.iter().map(|s| s.name.clone()).collect();
                         let mut added = 0usize;
@@ -973,7 +970,7 @@ async fn main() -> anyhow::Result<()> {
         query_config.thinking_budget = Some(tokens);
     }
     if let Some(ref level_str) = cli.effort {
-        if let Some(level) = cc_core::effort::EffortLevel::from_str(level_str) {
+        if let Some(level) = cc_core::effort::EffortLevel::parse_level(level_str) {
             query_config.effort_level = Some(level);
         } else {
             eprintln!(
@@ -1117,6 +1114,7 @@ async fn main() -> anyhow::Result<()> {
 ///   explicitly so the peer sees the same working directory even if
 ///   env-driven cwd differs.
 #[cfg(unix)]
+#[allow(dead_code)]
 async fn spawn_peer_child(
     cli: &Cli,
     cwd: &std::path::Path,
@@ -1143,9 +1141,9 @@ async fn spawn_peer_child(
     // exactly what a user wants for a "binome at my side" experience.
 
     info!(socket = %socket.display(), "Spawning groom peer child");
-    let child = cmd.spawn().map_err(|e| {
-        anyhow::anyhow!("failed to spawn peer child ({}): {e}", exe.display())
-    })?;
+    let child = cmd
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("failed to spawn peer child ({}): {e}", exe.display()))?;
 
     // Wait for the listener to be ready. The peer binds immediately after
     // startup so ~200ms is typically enough; we give 5s to tolerate cold
@@ -2082,8 +2080,7 @@ async fn run_headless(
     if let Some(ref session_id) = cli.resume {
         let tp = cc_core::session_storage::transcript_path(&tool_ctx.working_dir, session_id);
         if let Ok(entries) = cc_core::session_storage::load_transcript(&tp).await {
-            let loaded =
-                cc_core::session_storage::messages_from_transcript(&entries);
+            let loaded = cc_core::session_storage::messages_from_transcript(&entries);
             if !loaded.is_empty() {
                 eprintln!(
                     "Resumed session '{}' ({} messages)",
@@ -2394,6 +2391,7 @@ async fn run_headless(
 // Interactive REPL mode
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn run_interactive(
     config: Config,
     settings: cc_core::config::Settings,
@@ -2922,7 +2920,7 @@ async fn run_interactive(
                             // /effort with explicit args (/effort high).
                             if handled_by_cli && cmd_name == "effort" && !cmd_args.is_empty() {
                                 if let Some(level) =
-                                    cc_core::effort::EffortLevel::from_str(&cmd_args)
+                                    cc_core::effort::EffortLevel::parse_level(&cmd_args)
                                 {
                                     current_effort = Some(level);
                                     app.effort_level = match level {
@@ -3305,13 +3303,8 @@ async fn run_interactive(
 
         // Drain CLAUDE_STATUS_COMMAND results (most recent wins)
         if status_cmd_str.is_some() {
-            loop {
-                match status_cmd_rx.try_recv() {
-                    Ok(text) => {
-                        app.status_line_override = if text.is_empty() { None } else { Some(text) };
-                    }
-                    Err(_) => break,
-                }
+            while let Ok(text) = status_cmd_rx.try_recv() {
+                app.status_line_override = if text.is_empty() { None } else { Some(text) };
             }
         }
 
@@ -3555,9 +3548,7 @@ async fn auth_status(json_output: bool) {
             "oauth_token"
         };
         (method.to_string(), true)
-    } else if env_api_key.is_some() {
-        ("api_key".to_string(), true)
-    } else if settings_api_key.is_some() {
+    } else if env_api_key.is_some() || settings_api_key.is_some() {
         ("api_key".to_string(), true)
     } else {
         ("none".to_string(), false)
