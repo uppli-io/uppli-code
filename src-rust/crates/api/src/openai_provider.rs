@@ -1080,8 +1080,7 @@ impl OpenAiProvider {
             // Safety: we only feed UTF-8 JSON from the server. Lossy
             // conversion keeps us resilient to stray bytes without panicking.
             let complete = String::from_utf8_lossy(&leftover[..split_pos]).to_string();
-            let tail = leftover[split_pos..].to_vec();
-            leftover = tail;
+            leftover.drain(..split_pos);
 
             for line in complete.split('\n') {
                 let line = line.trim();

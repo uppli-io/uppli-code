@@ -194,12 +194,15 @@ where
     // panicked writer disappears silently.
     //
     // Uses ManuallyDrop so we can take the handle back on the happy path
-    // without triggering the Drop impl.
+    // without triggering the Drop impl. We use ManuallyDrop instead of
+    // tokio::scopeguard because we need ownership of the JoinHandle on the
+    // happy path (to .await it), and scopeguard only gives &mut in its
+    // closure which can't move out.
     struct WriterGuard(std::mem::ManuallyDrop<tokio::task::JoinHandle<()>>);
     impl Drop for WriterGuard {
         fn drop(&mut self) {
-            // SAFETY: only called once (either here on early return, or
-            // never if we take() on the happy path).
+            // SAFETY: only called once — either here on early-return (Drop),
+            // or never (happy path calls take() + mem::forget before Drop runs).
             unsafe { std::mem::ManuallyDrop::take(&mut self.0) }.abort();
         }
     }

@@ -395,7 +395,7 @@ pub async fn list_sessions(project_root: &Path) -> crate::Result<Vec<SessionSumm
     }
 
     // Sort newest-first.
-    sessions.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.mtime));
     Ok(sessions)
 }
 
