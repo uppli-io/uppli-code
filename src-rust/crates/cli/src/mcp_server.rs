@@ -1,23 +1,22 @@
-// MCP Server mode — exposes uppli-code as an MCP tool via stdio.
+// MCP Server mode — exposes uppli-code as an MCP tool via stdio or Unix socket.
 //
 // When launched with `uppli-code --mcp-server`, the CLI speaks JSON-RPC 2.0
-// on stdin/stdout instead of launching the TUI or headless mode. Any MCP
-// client (Claude Code, another uppli-code instance, CI pipelines) can
-// connect to it and orchestrate coding tasks.
+// on stdin/stdout. When launched with `--peer` inside a `--groom` parent, it
+// listens on a Unix domain socket instead. Either way, the same dispatch
+// logic ([`handle_request`] + tool handlers) serves the connection.
 //
-// This enables the "SuperAgent" pattern: a master agent piloting multiple
-// uppli-code workers in parallel, each with its own provider/model/workdir.
-//
-// The protocol is bidirectional during a query:
-//   - Server → Client: notifications/progress (tool_start, tool_end, text_delta, permission_request)
-//   - Client → Server: notifications during query (permission_response, inject_prompt, cancel)
+// The per-connection state (writer channel) is passed separately from the
+// long-lived [`McpServerState`] so a single state can back multiple
+// connection handlers over the lifetime of the process. In practice the
+// groom binome is 1:1, but this shape keeps the stdio and Unix paths
+// symmetric and leaves room for future multi-client use.
 
 use cc_mcp::types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::Mutex;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 // ---------------------------------------------------------------------------
@@ -25,7 +24,8 @@ use tracing::{debug, info, warn};
 // ---------------------------------------------------------------------------
 
 /// MCP server state — holds the provider and configuration needed to
-/// execute queries on behalf of the remote MCP client.
+/// execute queries on behalf of the remote MCP client. No I/O handles live
+/// here; see [`Conn`] for per-connection state.
 pub struct McpServerState {
     pub provider: Arc<dyn cc_api::LlmProvider>,
     pub working_dir: PathBuf,
@@ -35,24 +35,119 @@ pub struct McpServerState {
     pub max_turns: u32,
     /// CLI --model override (None = use provider default).
     pub model_override: Option<String>,
-    /// Shared stdout for responses AND streaming notifications.
-    pub stdout: Arc<Mutex<tokio::io::Stdout>>,
-    /// True while a query is running.
+    /// True while a query is running on this state. Rejects concurrent
+    /// `uppli_query` calls with a busy error.
     pub busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Per-connection context. Bundles the shared state with a writer channel
+/// so responses and streaming notifications can be emitted from anywhere
+/// in the call chain without threading the raw writer through every
+/// signature.
+#[derive(Clone)]
+struct Conn {
+    state: Arc<McpServerState>,
+    /// Pre-framed JSON lines (each already terminated with `\n`) are pushed
+    /// here and drained by a dedicated writer task. Using a channel rather
+    /// than a shared `Mutex<W>` means responses and notifications never
+    /// contend on a lock, and the writer task owns the `AsyncWrite` for the
+    /// entire connection lifetime.
+    tx: mpsc::UnboundedSender<String>,
+}
+
 // ---------------------------------------------------------------------------
-// Public entry point
+// Public entry points
 // ---------------------------------------------------------------------------
 
-/// Run the MCP server loop on stdin/stdout. Blocks until stdin closes.
+/// Run the MCP server on stdin/stdout. Blocks until stdin closes.
 pub async fn run_mcp_server(state: McpServerState) -> anyhow::Result<()> {
     let state = Arc::new(state);
-    let stdin = BufReader::new(tokio::io::stdin());
-    let stdout = state.stdout.clone();
-    let mut lines = stdin.lines();
-
     info!("MCP server started (stdio), waiting for requests");
+    serve_connection(state, tokio::io::stdin(), tokio::io::stdout()).await?;
+    info!("MCP server stdin closed, shutting down");
+    Ok(())
+}
+
+/// Run the MCP server on a Unix domain socket. Binds the socket, accepts a
+/// single connection (the binome peer), serves it to completion, and then
+/// returns. The socket file is removed on exit.
+///
+/// Rationale for single-accept: the `--groom` feature is a 1:1 binome. Any
+/// second connection attempt would share [`McpServerState.busy`] with the
+/// first and race on `uppli_query`, which is precisely what we want to
+/// avoid. If multi-client ever becomes a requirement, loop over `accept`
+/// and spawn a task per connection — `serve_connection` is already written
+/// to support that.
+#[cfg(unix)]
+pub async fn run_mcp_server_unix(
+    state: McpServerState,
+    socket_path: PathBuf,
+) -> anyhow::Result<()> {
+    let state = Arc::new(state);
+
+    // Clean any stale socket file from a prior crash. Safe because the
+    // caller chose the path (we prefix it with our pid upstream).
+    let _ = std::fs::remove_file(&socket_path);
+
+    let listener = tokio::net::UnixListener::bind(&socket_path).map_err(|e| {
+        anyhow::anyhow!("failed to bind MCP Unix socket at {}: {e}", socket_path.display())
+    })?;
+
+    info!(path = %socket_path.display(), "MCP server listening (unix socket)");
+
+    // Guard that removes the socket file on drop so we don't leak it if
+    // the caller bails early.
+    struct SocketGuard(PathBuf);
+    impl Drop for SocketGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _guard = SocketGuard(socket_path.clone());
+
+    let (stream, _addr) = listener.accept().await?;
+    info!("MCP peer connected");
+    let (read_half, write_half) = stream.into_split();
+    serve_connection(state, read_half, write_half).await?;
+    info!("MCP peer disconnected, shutting down");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Generic per-connection driver
+// ---------------------------------------------------------------------------
+
+/// Drive one JSON-RPC connection: spawn a writer task that drains pre-framed
+/// lines to `writer`, then loop on `reader`, dispatching requests. Returns
+/// when the reader hits EOF.
+async fn serve_connection<R, W>(
+    state: Arc<McpServerState>,
+    reader: R,
+    writer: W,
+) -> anyhow::Result<()>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+
+    // Writer task — owns the AsyncWrite for the lifetime of the connection.
+    // Exits when `tx` is dropped (reader loop completes) or when a write
+    // fails (peer closed).
+    let writer_task = tokio::spawn(async move {
+        let mut w = writer;
+        while let Some(line) = rx.recv().await {
+            if w.write_all(line.as_bytes()).await.is_err() {
+                break;
+            }
+            if w.flush().await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let conn = Conn { state, tx };
+    let mut lines = BufReader::new(reader).lines();
 
     while let Ok(Some(line)) = lines.next_line().await {
         let line = line.trim().to_string();
@@ -63,8 +158,8 @@ pub async fn run_mcp_server(state: McpServerState) -> anyhow::Result<()> {
         let request: JsonRpcRequest = match serde_json::from_str(&line) {
             Ok(r) => r,
             Err(e) => {
-                write_response(
-                    &stdout,
+                send_response(
+                    &conn,
                     &JsonRpcResponse {
                         jsonrpc: "2.0".to_string(),
                         id: None,
@@ -75,19 +170,19 @@ pub async fn run_mcp_server(state: McpServerState) -> anyhow::Result<()> {
                             data: None,
                         }),
                     },
-                )
-                .await;
+                );
                 continue;
             }
         };
 
         debug!(method = %request.method, "MCP request");
-
-        let response = handle_request(&state, &request).await;
-        write_response(&stdout, &response).await;
+        let response = handle_request(&conn, &request).await;
+        send_response(&conn, &response);
     }
 
-    info!("MCP server stdin closed, shutting down");
+    // Drop the sender so the writer task exits cleanly.
+    drop(conn);
+    let _ = writer_task.await;
     Ok(())
 }
 
@@ -95,14 +190,14 @@ pub async fn run_mcp_server(state: McpServerState) -> anyhow::Result<()> {
 // Dispatcher
 // ---------------------------------------------------------------------------
 
-async fn handle_request(state: &Arc<McpServerState>, req: &JsonRpcRequest) -> JsonRpcResponse {
+async fn handle_request(conn: &Conn, req: &JsonRpcRequest) -> JsonRpcResponse {
     let result = match req.method.as_str() {
-        "initialize" => handle_initialize(state),
+        "initialize" => handle_initialize(&conn.state),
         "initialized" => return ok(req, json!({})),
         "tools/list" => Ok(json!({ "tools": tool_definitions() })),
-        "tools/call" => handle_tool_call(state, req.params.as_ref()).await,
+        "tools/call" => handle_tool_call(conn, req.params.as_ref()).await,
         "resources/list" => Ok(json!({ "resources": resource_definitions() })),
-        "resources/read" => handle_resource_read(state, req.params.as_ref()).await,
+        "resources/read" => handle_resource_read(&conn.state, req.params.as_ref()).await,
         "ping" => Ok(json!({})),
         _ => Err(rpc_err(-32601, format!("Method not found: {}", req.method))),
     };
@@ -111,7 +206,7 @@ async fn handle_request(state: &Arc<McpServerState>, req: &JsonRpcRequest) -> Js
         Ok(v) => ok(req, v),
         Err(e) => JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
-            id: Some(req.id.clone()),
+            id: req.id.clone(),
             result: None,
             error: Some(e),
         },
@@ -197,19 +292,16 @@ fn resource_definitions() -> Value {
 // Tool dispatch
 // ---------------------------------------------------------------------------
 
-async fn handle_tool_call(
-    state: &Arc<McpServerState>,
-    params: Option<&Value>,
-) -> Result<Value, JsonRpcError> {
+async fn handle_tool_call(conn: &Conn, params: Option<&Value>) -> Result<Value, JsonRpcError> {
     let params = params.ok_or_else(|| rpc_err(-32602, "Missing params"))?;
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
     match name {
-        "uppli_query" => tool_query(state, &args).await,
-        "uppli_status" => tool_status(state),
-        "uppli_cancel" => tool_cancel(state),
-        "uppli_sessions" => tool_sessions(state).await,
+        "uppli_query" => tool_query(conn, &args).await,
+        "uppli_status" => tool_status(&conn.state),
+        "uppli_cancel" => tool_cancel(&conn.state),
+        "uppli_sessions" => tool_sessions(&conn.state).await,
         _ => Err(rpc_err(-32602, format!("Unknown tool: {}", name))),
     }
 }
@@ -218,10 +310,8 @@ async fn handle_tool_call(
 // uppli_query — the main tool
 // ---------------------------------------------------------------------------
 
-async fn tool_query(
-    state: &Arc<McpServerState>,
-    args: &Value,
-) -> Result<Value, JsonRpcError> {
+async fn tool_query(conn: &Conn, args: &Value) -> Result<Value, JsonRpcError> {
+    let state = &conn.state;
     let prompt = args
         .get("prompt")
         .and_then(|v| v.as_str())
@@ -272,7 +362,6 @@ async fn tool_query(
         .to_string();
     let query_config = cc_query::QueryConfig {
         model: effective_model,
-        // Max output: 32K (2x Claude Code's 16K)
         max_tokens: 32_768,
         max_turns,
         system_prompt: None,
@@ -280,30 +369,23 @@ async fn tool_query(
         output_style: cc_core::system_prompt::OutputStyle::Default,
         output_style_prompt: None,
         working_directory: Some(tool_ctx.working_dir.display().to_string()),
-        // Thinking: 64K — sweet spot. 131K available but causes timeouts
-        // (model thinks for 5+ minutes without acting).
-        thinking_budget: Some(64_000),
+        thinking_budget: state.provider.capabilities().default_thinking_budget.map(|_| 64_000),
         temperature: None,
-        // Never truncate tool results — 1M context window handles it.
-        // Compaction kicks in only if we approach 80% (800K tokens).
         tool_result_budget: 0,
         effort_level: Some(cc_core::effort::EffortLevel::Max),
         command_queue: None,
         skill_index: None,
         max_budget_usd: None,
-        // Full reasoning on all turns — no fast model fallback.
         fallback_model: None,
     };
 
     let mut messages = vec![cc_core::types::Message::user(prompt.to_string())];
     let cancel = tokio_util::sync::CancellationToken::new();
 
-    // Event channel for streaming progress notifications to MCP client.
     let (event_tx, mut event_rx) =
         tokio::sync::mpsc::unbounded_channel::<cc_query::QueryEvent>();
-    let stdout_clone = state.stdout.clone();
+    let notif_tx = conn.tx.clone();
 
-    // Forward events as MCP notifications in a background task.
     let notif_handle = tokio::spawn(async move {
         use cc_api::streaming::{ContentDelta, StreamEvent};
 
@@ -337,12 +419,11 @@ async fn tool_query(
                 _ => None,
             };
             if let Some(p) = params {
-                send_notification(&stdout_clone, "notifications/progress", p).await;
+                send_notification(&notif_tx, "notifications/progress", p);
             }
         }
     });
 
-    // Run the agentic loop.
     let outcome = cc_query::run_query_loop(
         state.provider.as_ref(),
         &mut messages,
@@ -356,12 +437,10 @@ async fn tool_query(
     )
     .await;
 
-    // Wait for notifications to drain before building the response.
     let _ = notif_handle.await;
 
     state.busy.store(false, std::sync::atomic::Ordering::SeqCst);
 
-    // Extract final assistant text.
     let response_text = messages
         .iter()
         .rev()
@@ -472,7 +551,7 @@ async fn handle_resource_read(
 fn ok(req: &JsonRpcRequest, result: Value) -> JsonRpcResponse {
     JsonRpcResponse {
         jsonrpc: "2.0".to_string(),
-        id: Some(req.id.clone()),
+        id: req.id.clone(),
         result: Some(result),
         error: None,
     }
@@ -486,21 +565,18 @@ fn rpc_err(code: i64, msg: impl Into<String>) -> JsonRpcError {
     }
 }
 
-async fn write_response(stdout: &Arc<Mutex<tokio::io::Stdout>>, resp: &JsonRpcResponse) {
+fn send_response(conn: &Conn, resp: &JsonRpcResponse) {
     if let Ok(mut line) = serde_json::to_string(resp) {
         line.push('\n');
-        let mut out = stdout.lock().await;
-        let _ = out.write_all(line.as_bytes()).await;
-        let _ = out.flush().await;
+        // Receiver dropped means the peer is gone — nothing useful to do.
+        let _ = conn.tx.send(line);
     }
 }
 
-async fn send_notification(stdout: &Arc<Mutex<tokio::io::Stdout>>, method: &str, params: Value) {
+fn send_notification(tx: &mpsc::UnboundedSender<String>, method: &str, params: Value) {
     let notif = JsonRpcRequest::notification(method, Some(params));
     if let Ok(mut line) = serde_json::to_string(&notif) {
         line.push('\n');
-        let mut out = stdout.lock().await;
-        let _ = out.write_all(line.as_bytes()).await;
-        let _ = out.flush().await;
+        let _ = tx.send(line);
     }
 }

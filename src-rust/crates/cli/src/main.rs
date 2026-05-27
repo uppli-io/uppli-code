@@ -8,6 +8,7 @@
 //    - Headless (--print / -p) mode: single query, output to stdout
 //    - Interactive REPL mode: full TUI with ratatui
 
+mod binome;
 mod mcp_server;
 mod oauth_flow;
 
@@ -104,6 +105,20 @@ struct Cli {
     /// Enables orchestration by Claude Code, another uppli-code, or any MCP client.
     #[arg(long = "mcp-server", action = ArgAction::SetTrue)]
     mcp_server: bool,
+
+    /// Groom (binome) mode: spawn a read-only peer in the same working
+    /// directory and expose it over MCP as `uppli_query`. The peer is
+    /// available for brainstorming, review, and sanity-checking decisions
+    /// before edits.
+    #[arg(long = "groom", action = ArgAction::SetTrue)]
+    groom: bool,
+
+    /// Peer mode (internal — set by `--groom`): run as the read-only half
+    /// of a binome, serving MCP on the given Unix socket. Forces
+    /// `--permission-mode plan`. Not intended for direct invocation by the
+    /// user; we document it for transparency.
+    #[arg(long = "peer", value_name = "SOCKET")]
+    peer_socket: Option<PathBuf>,
 
     /// Model to use (overrides provider default)
     #[arg(short = 'm', long = "model")]
@@ -535,11 +550,128 @@ async fn main() -> anyhow::Result<()> {
     } else {
         config.permission_mode = cli.permission_mode.into();
     }
+    // --peer forces Plan (read-only) regardless of what the user passed —
+    // the peer half of the binome must not be able to edit, ever. Override
+    // comes last so no prior flag (including --dangerously-skip-permissions)
+    // can accidentally unlock writes.
+    if cli.peer_socket.is_some() {
+        config.permission_mode = PermissionMode::Plan;
+        // Append the peer role addendum to whatever system prompt override
+        // the user may already have set, so custom prompts still compose.
+        let addendum = cc_core::system_prompt::groom_peer_addendum();
+        config.append_system_prompt = Some(match config.append_system_prompt.take() {
+            Some(prev) => format!("{prev}\n{addendum}"),
+            None => addendum,
+        });
+    }
+    // --groom appends the worker addendum and injects a synthetic "peer"
+    // MCP server pointing at the socket we will spawn the child on. The
+    // child itself is spawned just below, before we connect the manager.
+    if cli.groom {
+        let addendum = cc_core::system_prompt::groom_worker_addendum();
+        config.append_system_prompt = Some(match config.append_system_prompt.take() {
+            Some(prev) => format!("{prev}\n{addendum}"),
+            None => addendum,
+        });
+    }
     config.additional_dirs = cli.add_dir.clone();
     if cli.no_auto_compact {
         config.auto_compact = false;
     }
     config.project_dir = Some(cwd.clone());
+
+    // --mcp-config: merge MCP servers from a JSON file or inline JSON string.
+    // Format matches .mcp.json: {"mcpServers": {"name": {"command": "...", ...}}}
+    if let Some(ref mcp_config_value) = cli.mcp_config {
+        let json_str = if std::path::Path::new(mcp_config_value).is_file() {
+            std::fs::read_to_string(mcp_config_value).unwrap_or_else(|e| {
+                warn!(path = %mcp_config_value, error = %e, "Failed to read --mcp-config file");
+                String::new()
+            })
+        } else {
+            mcp_config_value.clone()
+        };
+
+        if !json_str.is_empty() {
+            match serde_json::from_str::<serde_json::Value>(&json_str) {
+                Ok(data) => {
+                    if let Some(servers_obj) = data
+                        .get("mcpServers")
+                        .and_then(|s| s.as_object())
+                    {
+                        let existing_names: std::collections::HashSet<String> =
+                            config.mcp_servers.iter().map(|s| s.name.clone()).collect();
+                        let mut added = 0usize;
+                        let mut overridden = 0usize;
+                        for (name, server_val) in servers_obj {
+                            let command = server_val
+                                .get("command")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            let args: Vec<String> = server_val
+                                .get("args")
+                                .and_then(|v| v.as_array())
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str().map(String::from))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let env: std::collections::HashMap<String, String> = server_val
+                                .get("env")
+                                .and_then(|v| v.as_object())
+                                .map(|obj| {
+                                    obj.iter()
+                                        .filter_map(|(k, v)| {
+                                            v.as_str().map(|s| (k.clone(), s.to_string()))
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let url = server_val
+                                .get("url")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            let server_type = server_val
+                                .get("type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("stdio")
+                                .to_string();
+
+                            let mcp_cfg = cc_core::McpServerConfig {
+                                name: name.clone(),
+                                command,
+                                args,
+                                env,
+                                url,
+                                server_type,
+                            };
+
+                            if existing_names.contains(name) {
+                                // Override: remove existing entry, then push new one.
+                                config.mcp_servers.retain(|s| s.name != *name);
+                                overridden += 1;
+                            } else {
+                                added += 1;
+                            }
+                            config.mcp_servers.push(mcp_cfg);
+                        }
+                        info!(
+                            added,
+                            overridden,
+                            total = config.mcp_servers.len(),
+                            "MCP servers loaded from --mcp-config"
+                        );
+                    } else {
+                        warn!("--mcp-config JSON does not contain a \"mcpServers\" key");
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to parse --mcp-config as JSON");
+                }
+            }
+        }
+    }
 
     // --dump-system-prompt fast path
     if cli.dump_system_prompt {
@@ -778,6 +910,13 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // --groom is now handled in-process by `binome::run_binome`. The
+    // cross-process peer (spawn_peer_child + Unix socket MCP) remains in
+    // the codebase as dormant infrastructure (UnixSocketTransport,
+    // run_mcp_server_unix, --peer flag) but is no longer wired into
+    // --groom — the serial orchestrator avoids the IPC complexity and
+    // gives deterministic routing between worker and peer.
+
     // Build query config from the provider's metadata (model, max_tokens, thinking, etc.).
     let mut query_config = cc_query::QueryConfig::from_provider(client.as_ref(), &config);
     // If the user explicitly set --model, override the provider default.
@@ -873,10 +1012,70 @@ async fn main() -> anyhow::Result<()> {
             permission_mode: config.permission_mode.clone(),
             max_turns: cli.max_turns,
             model_override: cli.model.clone(),
-            stdout: std::sync::Arc::new(tokio::sync::Mutex::new(tokio::io::stdout())),
             busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         mcp_server::run_mcp_server(mcp_state).await
+    } else if let Some(sock) = cli.peer_socket.clone() {
+        // --peer: MCP server on a Unix socket. The parent --groom process
+        // is our sole client. `config.permission_mode` has already been
+        // forced to Plan above.
+        #[cfg(unix)]
+        {
+            let mcp_state = mcp_server::McpServerState {
+                provider: client,
+                working_dir: cwd.clone(),
+                config: config.clone(),
+                cost_tracker: cost_tracker.clone(),
+                permission_mode: config.permission_mode.clone(),
+                max_turns: cli.max_turns,
+                model_override: cli.model.clone(),
+                busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            };
+            mcp_server::run_mcp_server_unix(mcp_state, sock).await
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = sock;
+            anyhow::bail!("--peer is only supported on Unix platforms");
+        }
+    } else if cli.groom {
+        // In-process binome: one worker (Edit perms), one peer (Plan).
+        // We already baked the worker addendum into `system_prompt` above
+        // (see the `if cli.groom` block ~line 569). For the peer we build
+        // a second system prompt with the peer addendum and a Plan-mode
+        // ToolContext so its tool calls can't mutate state.
+        let user_prompt = cli
+            .prompt
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--groom requires a prompt (-p \"...\")"))?;
+
+        // Peer system prompt: swap the worker addendum for the peer
+        // addendum in the already-assembled system prompt.
+        let worker_addendum = cc_core::system_prompt::groom_worker_addendum();
+        let peer_addendum = cc_core::system_prompt::groom_peer_addendum();
+        let peer_system_prompt = query_config
+            .system_prompt
+            .as_ref()
+            .map(|s| s.replace(&worker_addendum, &peer_addendum))
+            .unwrap_or_else(|| peer_addendum.clone());
+
+        let mut peer_query_config = query_config.clone();
+        peer_query_config.system_prompt = Some(peer_system_prompt);
+
+        let mut peer_tool_ctx = tool_ctx.clone();
+        peer_tool_ctx.permission_mode = cc_core::config::PermissionMode::Plan;
+
+        binome::run_binome(
+            client,
+            tools,
+            tool_ctx,
+            peer_tool_ctx,
+            query_config,
+            peer_query_config,
+            cost_tracker,
+            user_prompt,
+        )
+        .await
     } else if is_sdk_piped {
         run_sdk_headless(&cli, client, tools, tool_ctx, query_config, cost_tracker).await
     } else if is_headless {
@@ -898,6 +1097,80 @@ async fn main() -> anyhow::Result<()> {
 
     cron_cancel.cancel();
     result
+}
+
+/// Spawn the read-only peer child process for `--groom` mode.
+///
+/// Design notes:
+/// - The child listens on a Unix socket at `/tmp/uppli-peer-<pid>.sock`.
+///   Including the parent pid scopes the path to this invocation and
+///   avoids collisions when multiple groomed sessions run concurrently.
+/// - We wait for the socket file to appear (bounded poll) before
+///   returning so the MCP manager's subsequent `connect_all` finds a
+///   listener. Without this, connect_unix races the child's bind.
+/// - `kill_on_drop(true)` ensures the child dies with the parent on
+///   normal exit or unwind. On unexpected kills (SIGKILL on parent),
+///   the orphan remains — acceptable for MVP, revisit with
+///   `PR_SET_PDEATHSIG` on Linux.
+/// - Provider credentials / api-base / model are inherited via env;
+///   the child re-reads them in its own startup. We pass `--cwd`
+///   explicitly so the peer sees the same working directory even if
+///   env-driven cwd differs.
+#[cfg(unix)]
+async fn spawn_peer_child(
+    cli: &Cli,
+    cwd: &std::path::Path,
+) -> anyhow::Result<(tokio::process::Child, cc_core::config::McpServerConfig)> {
+    let pid = std::process::id();
+    let socket = std::env::temp_dir().join(format!("uppli-peer-{pid}.sock"));
+    // Clean stale socket if one lingered from a prior crash with the same pid.
+    let _ = std::fs::remove_file(&socket);
+
+    let exe = std::env::current_exe().map_err(|e| {
+        anyhow::anyhow!("failed to locate current uppli-code executable to spawn peer: {e}")
+    })?;
+
+    let mut cmd = tokio::process::Command::new(&exe);
+    cmd.arg("--peer")
+        .arg(&socket)
+        .arg("--cwd")
+        .arg(cwd)
+        .kill_on_drop(true);
+    if let Some(m) = cli.model.as_deref() {
+        cmd.arg("--model").arg(m);
+    }
+    // Inherit stdio — the peer's logs join the parent terminal, which is
+    // exactly what a user wants for a "binome at my side" experience.
+
+    info!(socket = %socket.display(), "Spawning groom peer child");
+    let child = cmd.spawn().map_err(|e| {
+        anyhow::anyhow!("failed to spawn peer child ({}): {e}", exe.display())
+    })?;
+
+    // Wait for the listener to be ready. The peer binds immediately after
+    // startup so ~200ms is typically enough; we give 5s to tolerate cold
+    // starts on slow machines.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !socket.exists() {
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!(
+                "peer child did not create socket at {} within 5s",
+                socket.display()
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    let peer_cfg = cc_core::config::McpServerConfig {
+        name: "peer".to_string(),
+        command: Some(socket.display().to_string()),
+        args: Vec::new(),
+        env: std::collections::HashMap::new(),
+        url: None,
+        server_type: "unix".to_string(),
+    };
+
+    Ok((child, peer_cfg))
 }
 
 async fn connect_mcp_manager_arc(config: &Config) -> Option<Arc<cc_mcp::McpManager>> {

@@ -193,22 +193,37 @@ fn find_audit_script() -> Option<PathBuf> {
         }
     }
 
-    // 2. Relative to the binary location
+    // 2. Relative to the binary location — walk ancestors until scripts/ is found.
+    // Typical layout: <repo>/src-rust/target/release/uppli-code
+    // Script lives at: <repo>/scripts/code_audit/code_audit.py
+    // So we may need to go up multiple levels (release → target → src-rust → repo).
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let p = dir.join("scripts/code_audit/code_audit.py");
-            if p.exists() {
-                return Some(p);
-            }
-            // Also check two levels up (typical cargo layout)
-            let p = dir
-                .parent()
-                .and_then(|d| d.parent())
-                .map(|d| d.join("scripts/code_audit/code_audit.py"));
-            if let Some(p) = p {
+        let mut ancestor = exe.parent();
+        for _ in 0..6 {
+            if let Some(dir) = ancestor {
+                let p = dir.join("scripts/code_audit/code_audit.py");
                 if p.exists() {
                     return Some(p);
                 }
+                ancestor = dir.parent();
+            } else {
+                break;
+            }
+        }
+    }
+
+    // 2b. Walk ancestors of the current working directory.
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut ancestor: Option<&std::path::Path> = Some(cwd.as_path());
+        for _ in 0..8 {
+            if let Some(dir) = ancestor {
+                let p = dir.join("scripts/code_audit/code_audit.py");
+                if p.exists() {
+                    return Some(p);
+                }
+                ancestor = dir.parent();
+            } else {
+                break;
             }
         }
     }

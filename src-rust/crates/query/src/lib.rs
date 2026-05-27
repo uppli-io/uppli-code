@@ -1394,6 +1394,7 @@ pub async fn run_query_loop(
                                 let is_test = path.contains("test_") || path.contains("/tests/");
                                 if is_source && !is_test && needs_audit(path, &audited_files, &file_hash) {
                                     // Run CodeAudit automatically
+                                    debug!(path, "CodeAudit auto-audit triggered on Read");
                                     let audit_input = serde_json::json!({
                                         "file_path": path,
                                         "language": "auto"
@@ -1405,12 +1406,25 @@ pub async fn run_query_loop(
                                         tool_ctx,
                                     ).await;
                                     let h = file_hash(path);
+                                    debug!(
+                                        is_error = audit_result.is_error,
+                                        content_len = audit_result.content.len(),
+                                        "CodeAudit auto-audit result"
+                                    );
                                     if !audit_result.is_error && !audit_result.content.contains("No anomalies") {
                                         audited_files.insert(path.to_string(), h);
                                         pre_edit_audits.insert(path.to_string(), audit_result.content.clone());
                                         enriched_content.push_str(&format!(
                                             "\n\n--- CodeAudit Report (auto) ---\n{}\n--- End Report ---\n\
-                                             Review these anomalies before making changes.",
+                                             \n⚠️ VERIFICATION PROTOCOL (MANDATORY):\n\
+                                             For each anomaly above, you MUST address EVERY line number listed in its `lines` field — not just one.\n\
+                                             Before your final edit, output an explicit checklist in this exact format:\n  \
+                                               - Line N: MODIFIED — <what you changed>\n  \
+                                               - Line N: VERIFIED OK — <one-sentence reason the current code is correct>\n\
+                                             Rules:\n  \
+                                               1. Do NOT stop after fixing the first plausible cause. Many bugs span multiple lines flagged together by the same anomaly.\n  \
+                                               2. Skipping a line without justification means your fix is likely incomplete.\n  \
+                                               3. The checklist is required even if you think only one line needs changing.",
                                             audit_result.content
                                         ));
                                     } else {

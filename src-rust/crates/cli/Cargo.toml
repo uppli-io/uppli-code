@@ -37,3 +37,8 @@ nix = { workspace = true }
 shell-words = "1"
 cc-rag = { path = "../rag" }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
