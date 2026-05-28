@@ -1602,6 +1602,7 @@ mod tests {
             stop_sequences: None,
             stream: true,
             thinking: None,
+            output_config: None,
         };
 
         let openai_req = provider.translate_request(&req);
@@ -1633,6 +1634,7 @@ mod tests {
             stop_sequences: None,
             stream: true,
             thinking: Some(crate::types::ThinkingConfig::enabled(16000)),
+            output_config: None,
         };
 
         let openai_req = provider.translate_request(&req);
