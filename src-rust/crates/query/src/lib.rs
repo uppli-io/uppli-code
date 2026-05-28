@@ -688,6 +688,16 @@ pub async fn run_query_loop(
             if let Some(budget) = effective_thinking_budget {
                 req_builder = req_builder.thinking(ThinkingConfig::enabled(budget));
             }
+
+            // DeepSeek's Anthropic API ignores `thinking.budget_tokens` and reads
+            // `output_config.effort` instead. Send the effort level alongside so
+            // both Anthropic-format providers honour the request. Anthropic itself
+            // silently ignores unknown fields, so this is safe to send.
+            // See https://api-docs.deepseek.com/guides/thinking_mode
+            if let Some(level) = config.effort_level {
+                req_builder =
+                    req_builder.output_config(cc_api::OutputConfig::effort(level.as_str()));
+            }
         }
 
         // Apply temperature: explicit config value takes precedence, then effort-level override.

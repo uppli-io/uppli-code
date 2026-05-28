@@ -76,6 +76,8 @@ pub mod types {
         pub stream: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub thinking: Option<ThinkingConfig>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub output_config: Option<OutputConfig>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +92,29 @@ pub mod types {
             Self {
                 thinking_type: "enabled".to_string(),
                 budget_tokens: if budget < 4000 { 16000 } else { budget },
+            }
+        }
+    }
+
+    /// Provider-specific reasoning effort control (Anthropic-format field).
+    ///
+    /// DeepSeek's Anthropic-compatible API ignores `thinking.budget_tokens` and
+    /// instead reads `output_config.effort` to set the reasoning depth.
+    /// See https://api-docs.deepseek.com/guides/thinking_mode
+    ///
+    /// Accepted effort values per DeepSeek docs: `"high"` (default) or `"max"`.
+    /// Anthropic's own API silently ignores this field, so it is safe to send
+    /// on either backend.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct OutputConfig {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub effort: Option<String>,
+    }
+
+    impl OutputConfig {
+        pub fn effort(level: impl Into<String>) -> Self {
+            Self {
+                effort: Some(level.into()),
             }
         }
     }
@@ -825,6 +850,7 @@ impl CreateMessageRequest {
             top_k: None,
             stop_sequences: None,
             thinking: None,
+            output_config: None,
         }
     }
 }
@@ -840,6 +866,7 @@ pub struct CreateMessageRequestBuilder {
     top_k: Option<u32>,
     stop_sequences: Option<Vec<String>>,
     thinking: Option<ThinkingConfig>,
+    output_config: Option<OutputConfig>,
 }
 
 impl CreateMessageRequestBuilder {
@@ -893,6 +920,13 @@ impl CreateMessageRequestBuilder {
         self
     }
 
+    /// Set the `output_config` field (DeepSeek-specific effort control).
+    /// See `OutputConfig` for details.
+    pub fn output_config(mut self, config: OutputConfig) -> Self {
+        self.output_config = Some(config);
+        self
+    }
+
     pub fn build(self) -> CreateMessageRequest {
         CreateMessageRequest {
             model: self.model,
@@ -906,6 +940,7 @@ impl CreateMessageRequestBuilder {
             stop_sequences: self.stop_sequences,
             stream: true,
             thinking: self.thinking,
+            output_config: self.output_config,
         }
     }
 }
@@ -1100,6 +1135,39 @@ mod tests {
         assert_eq!(req.model, "claude-opus-4-6");
         assert_eq!(req.max_tokens, 4096);
         assert!(req.stream);
+    }
+
+    #[test]
+    fn test_request_without_output_config_omits_field() {
+        let req = CreateMessageRequest::builder("deepseek-v4-pro", 4096).build();
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(
+            !json.contains("output_config"),
+            "no output_config set → JSON must not contain the field, got: {json}"
+        );
+    }
+
+    #[test]
+    fn test_request_with_output_config_effort_max_serializes_correctly() {
+        // DeepSeek Anthropic API expects: {"output_config": {"effort": "max"}}
+        // See https://api-docs.deepseek.com/guides/thinking_mode
+        let req = CreateMessageRequest::builder("deepseek-v4-pro", 4096)
+            .output_config(OutputConfig::effort("max"))
+            .build();
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            json["output_config"]["effort"], "max",
+            "expected output_config.effort = \"max\", got: {json}"
+        );
+    }
+
+    #[test]
+    fn test_output_config_effort_high_serializes_correctly() {
+        let req = CreateMessageRequest::builder("deepseek-v4-pro", 4096)
+            .output_config(OutputConfig::effort("high"))
+            .build();
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["output_config"]["effort"], "high");
     }
 
     #[test]
