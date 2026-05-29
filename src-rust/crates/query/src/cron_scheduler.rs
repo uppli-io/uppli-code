@@ -113,7 +113,7 @@ async fn run_scheduler_loop(
                         limit_tokens,
                     } => {
                         eprintln!(
-                            "[cron] task {} budget exceeded: spent ${:.4} of ${:.4}",
+                            "[cron] task {} token budget exceeded: spent {} of {} tokens",
                             task_id, tokens, limit_tokens
                         );
                     }

@@ -232,7 +232,7 @@ impl Tool for AgentTool {
                 tokens,
                 limit_tokens,
             } => ToolResult::error(format!(
-                "Sub-agent stopped: budget ${:.4} exceeded (limit ${:.4})",
+                "Sub-agent stopped: token budget exceeded ({} of {} tokens)",
                 tokens, limit_tokens
             )),
         }

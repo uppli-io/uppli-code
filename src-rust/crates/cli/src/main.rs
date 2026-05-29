@@ -1567,12 +1567,12 @@ async fn run_sdk_headless(
                     Some("Conversation cleared.")
                 }
                 "cost" => {
-                    let cost = cost_tracker.total_tokens();
+                    let total = cost_tracker.total_tokens();
                     let input = cost_tracker.input_tokens();
                     let output = cost_tracker.output_tokens();
                     let msg = format!(
-                        "Session cost: ${:.4}\nTokens: {} input, {} output",
-                        cost, input, output
+                        "Session tokens: {}\n  Input:  {}\n  Output: {}\n(See provider dashboard for USD billing.)",
+                        total, input, output
                     );
                     emit!(serde_json::json!({
                         "type": "assistant",
@@ -1659,16 +1659,16 @@ async fn run_sdk_headless(
                 }
                 "status" => {
                     let caps = client.capabilities();
-                    let cost = cost_tracker.total_tokens();
+                    let total_tokens = cost_tracker.total_tokens();
                     Some(&*format!(
                         "Uppli Code Status:\n\
                         Provider: {}\n\
                         Model: {}\n\
-                        Session cost: ${:.4}\n\
+                        Session tokens: {}\n\
                         Messages: {}\n\
                         Config: ~/.uppli/\n\
                         Memory: UPPLI.md",
-                        caps.name, &active_model, cost, messages.len()
+                        caps.name, &active_model, total_tokens, messages.len()
                     ))
                 }
                 "version" => {
@@ -2350,6 +2350,18 @@ async fn run_headless(
                 eprintln!("{}", out);
                 std::process::exit(1);
             }
+            QueryOutcome::BudgetExceeded {
+                tokens,
+                limit_tokens,
+            } => {
+                let out = serde_json::json!({
+                    "type": "budget_exceeded",
+                    "tokens": tokens,
+                    "limit_tokens": limit_tokens,
+                });
+                eprintln!("{}", out);
+                std::process::exit(2);
+            }
             _ => {}
         },
         CliOutputFormat::StreamJson => {
@@ -2370,6 +2382,18 @@ async fn run_headless(
                     let out = serde_json::json!({ "type": "error", "error": e.to_string() });
                     eprintln!("{}", out);
                     std::process::exit(1);
+                }
+                QueryOutcome::BudgetExceeded {
+                    tokens,
+                    limit_tokens,
+                } => {
+                    let out = serde_json::json!({
+                        "type": "budget_exceeded",
+                        "tokens": tokens,
+                        "limit_tokens": limit_tokens,
+                    });
+                    eprintln!("{}", out);
+                    std::process::exit(2);
                 }
                 _ => {}
             }

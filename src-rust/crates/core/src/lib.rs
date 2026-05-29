@@ -2879,18 +2879,29 @@ mod tests {
         assert_eq!(tracker.total_tokens(), 1800);
     }
 
-    /// PR P regression: ensure no USD-related method survives.
-    /// If someone reintroduces total_cost_usd / ModelPricing / with_pricing,
-    /// this test (or rather the compiler) will yell first.
+    /// PR P regression: total_tokens MUST sum input+output+cache_creation+cache_read.
+    /// The previous (decorative) version asserted nothing; this one validates
+    /// the actual accumulation contract.
     #[test]
-    fn test_cost_tracker_has_no_usd_api() {
+    fn test_cost_tracker_total_tokens_is_sum_of_all_components() {
         let tracker = CostTracker::new();
-        // The API surface is tokens-only after PR P.
-        let _ = tracker.total_tokens();
-        // The following calls would not compile if uncommented (kept as docs):
-        //   let _ = tracker.total_cost_usd();      // removed
-        //   let _ = CostTracker::with_pricing(..); // removed
-        //   let _ = tracker.set_pricing(..);       // removed
+        tracker.add_usage(11, 23, 47, 59);
+        assert_eq!(tracker.input_tokens(), 11);
+        assert_eq!(tracker.output_tokens(), 23);
+        assert_eq!(tracker.cache_creation_tokens(), 47);
+        assert_eq!(tracker.cache_read_tokens(), 59);
+        assert_eq!(
+            tracker.total_tokens(),
+            11 + 23 + 47 + 59,
+            "total_tokens must include input+output+cache_creation+cache_read"
+        );
+        // Add more usage and verify accumulation
+        tracker.add_usage(1, 2, 3, 4);
+        assert_eq!(
+            tracker.total_tokens(),
+            11 + 23 + 47 + 59 + 1 + 2 + 3 + 4,
+            "total_tokens must accumulate across multiple add_usage calls"
+        );
     }
 
     #[test]

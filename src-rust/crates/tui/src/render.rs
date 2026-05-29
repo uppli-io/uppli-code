@@ -2021,12 +2021,13 @@ fn render_legacy_history_search(
 // -----------------------------------------------------------------------
 
 /// Complete status line data for rendering.
+///
+/// PR P (2026-05-29): `cost_cents` removed — tokens-only.
 #[derive(Debug, Clone, Default)]
 pub struct StatusLineData {
     pub model: String,
     pub tokens_used: u64,
     pub tokens_total: u64,
-    pub cost_cents: f64,
     pub compact_warning_pct: Option<f64>, // None = no warning; Some(pct) = show warning
     pub vim_mode: Option<String>,         // None = no vim mode; Some("NORMAL") etc.
     pub bridge_connected: bool,
@@ -2078,14 +2079,7 @@ pub fn render_full_status_line(
         spans.push(Span::styled(" â”‚ ", Style::default().fg(Color::DarkGray)));
     }
 
-    // Cost
-    if data.cost_cents > 0.0 {
-        spans.push(Span::styled(
-            format!("${:.2}", data.cost_cents / 100.0),
-            Style::default().fg(Color::White),
-        ));
-        spans.push(Span::styled(" â”‚ ", Style::default().fg(Color::DarkGray)));
-    }
+    // Cost segment removed in PR P (2026-05-29).
 
     // Compact warning
     if let Some(pct) = data.compact_warning_pct {
