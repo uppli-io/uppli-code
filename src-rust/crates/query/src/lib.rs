@@ -700,15 +700,16 @@ pub async fn run_query_loop(
                 req_builder = req_builder.thinking(ThinkingConfig::enabled(budget));
             }
 
-            // DeepSeek's Anthropic API ignores `thinking.budget_tokens` and reads
-            // `output_config.effort` instead. Send the effort level alongside so
-            // both Anthropic-format providers honour the request. Anthropic itself
-            // silently ignores unknown fields, so this is safe to send.
-            // See https://api-docs.deepseek.com/guides/thinking_mode
-            if let Some(level) = config.effort_level {
-                req_builder =
-                    req_builder.output_config(cc_api::OutputConfig::effort(level.as_str()));
-            }
+            // NOTE: we intentionally do NOT send `output_config.effort` to
+            // DeepSeek anymore. Sending `effort: "max"` puts DeepSeek V4 Pro
+            // into its deepest reasoning mode, which silently breaks tool
+            // calling (the model spends its budget reconsidering instead of
+            // executing tools — observed on the Mercer bench: Write=0).
+            // Sending "low"/"medium" is a no-op (DeepSeek silently maps them
+            // to "high"), and "high" is already DeepSeek's default. So the
+            // entire field is either useless or actively harmful — drop it.
+            // The OutputConfig type stays in cc_api in case a future provider
+            // honors `effort` semantically, but no call site populates it.
         }
 
         // Apply temperature: explicit config value takes precedence, then effort-level override.
