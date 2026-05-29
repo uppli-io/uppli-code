@@ -1003,10 +1003,10 @@ pub mod constants {
     pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
     // Models
-    pub const DEFAULT_MODEL: &str = "deepseek-reasoner";
-    pub const SONNET_MODEL: &str = "deepseek-chat";
-    pub const HAIKU_MODEL: &str = "deepseek-chat";
-    pub const OPUS_MODEL: &str = "deepseek-reasoner";
+    pub const DEFAULT_MODEL: &str = "deepseek-v4-pro";
+    pub const SONNET_MODEL: &str = "deepseek-v4-flash";
+    pub const HAIKU_MODEL: &str = "deepseek-v4-flash";
+    pub const OPUS_MODEL: &str = "deepseek-v4-pro";
 
     // Token limits (DeepSeek output limits: reasoner=64K, chat=8K)
     pub const DEFAULT_MAX_TOKENS: u32 = 64_000;
