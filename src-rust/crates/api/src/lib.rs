@@ -1203,6 +1203,37 @@ mod tests {
         assert_eq!(json["output_config"]["effort"], "high");
     }
 
+    // ── PR B regression: do NOT send output_config on the wire ─────────────
+    //
+    // The query loop previously called `req_builder.output_config(...)`
+    // unconditionally when an effort_level was set. That sent
+    // `output_config: { "effort": "max" }` to DeepSeek V4 Pro, which puts
+    // the model into its deepest reasoning mode and silently breaks tool
+    // calling (Mercer bench: Write=0).
+    //
+    // This test pins the regression: a request built like the post-PR-B
+    // query loop (thinking enabled, no explicit output_config call) MUST
+    // serialize without the `output_config` field. The OutputConfig type
+    // and builder method remain available, but no production call site
+    // populates them.
+
+    #[test]
+    fn test_request_with_thinking_and_no_explicit_output_config_omits_field() {
+        let req = CreateMessageRequest::builder("deepseek-v4-pro", 4096)
+            .thinking(ThinkingConfig::enabled(64_000))
+            .build();
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(
+            json.contains("\"thinking\""),
+            "thinking field must be present, got: {json}"
+        );
+        assert!(
+            !json.contains("output_config"),
+            "output_config must NOT be present (PR B revert — would re-trigger \
+             DeepSeek V4 Pro tool-calling regression), got: {json}"
+        );
+    }
+
     // ── DeepSeek known_models metadata (PR A — TDD) ────────────────────────
     //
     // Pin the documented DeepSeek v4 model metadata so:
