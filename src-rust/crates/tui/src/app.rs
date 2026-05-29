@@ -3123,8 +3123,7 @@ impl App {
         loop {
             self.frame_count = self.frame_count.wrapping_add(1);
 
-            // Sync cost/token counters from the shared tracker
-            self.cost_usd = self.cost_tracker.total_cost_usd();
+            // Sync token counters from the shared tracker (PR P: USD removed).
             self.token_count = self.cost_tracker.total_tokens() as u32;
 
             // Expire old notifications

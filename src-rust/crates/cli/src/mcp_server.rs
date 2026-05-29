@@ -470,7 +470,7 @@ async fn tool_query(conn: &Conn, args: &Value) -> Result<Value, JsonRpcError> {
         effort_level: Some(cc_core::effort::EffortLevel::Max),
         command_queue: None,
         skill_index: None,
-        max_budget_usd: None,
+        max_total_tokens: None,
         fallback_model: None,
     };
 

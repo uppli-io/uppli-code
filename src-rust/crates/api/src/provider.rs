@@ -16,10 +16,14 @@ use tokio::sync::mpsc;
 // Per-model metadata
 // ---------------------------------------------------------------------------
 
-/// Re-export ModelPricing from cc_core so there's ONE canonical type.
-pub use cc_core::cost::ModelPricing;
-
 /// Complete metadata for a single model offered by a provider.
+///
+/// NOTE: Pricing was removed in PR P (2026-05-29). Provider promos and tariff
+/// changes caused perpetual sync drift (DeepSeek's promo silently underrated
+/// cost by 4× at one point). uppli-code now tracks tokens (objective) instead
+/// of USD (derived, drifting). For per-session spend caps use
+/// `--max-tokens-total <u64>` (formerly `--max-budget-usd <f64>`). For actual
+/// billing, see the provider dashboard.
 #[derive(Debug, Clone)]
 pub struct ModelMetadata {
     /// Model identifier sent in API requests (e.g., "qwen3-235b-a22b").
@@ -34,8 +38,6 @@ pub struct ModelMetadata {
     pub max_output_tokens: u32,
     /// Whether this model supports thinking/reasoning blocks.
     pub supports_thinking: bool,
-    /// Token pricing (None = free / local / unknown).
-    pub pricing: Option<ModelPricing>,
 }
 
 // ---------------------------------------------------------------------------
@@ -232,15 +234,6 @@ pub trait LlmProvider: Send + Sync {
             .map(|m| m.max_output_tokens)
             .unwrap_or(self.capabilities().default_max_tokens)
     }
-
-    /// Pricing for a specific model (None = free/unknown).
-    fn model_pricing(&self, model: &str) -> Option<ModelPricing> {
-        self.capabilities()
-            .known_models
-            .iter()
-            .find(|m| m.id == model)
-            .and_then(|m| m.pricing)
-    }
 }
 
 #[cfg(test)]
@@ -311,7 +304,6 @@ mod tests {
                 context_window: 32_000,
                 max_output_tokens: 4096,
                 supports_thinking: false,
-                pricing: None,
             }],
             4096,
         );
@@ -342,7 +334,6 @@ mod tests {
                 context_window: 128_000,
                 max_output_tokens: 16_384,
                 supports_thinking: true,
-                pricing: None,
             }],
             4096,
         );
@@ -365,7 +356,6 @@ mod tests {
                 context_window: 128_000,
                 max_output_tokens: 8192,
                 supports_thinking: true,
-                pricing: None,
             }],
             4096,
         );

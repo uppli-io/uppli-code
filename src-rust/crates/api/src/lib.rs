@@ -26,8 +26,7 @@ use tracing::{debug, warn};
 pub use client::AnthropicClient;
 pub use openai_provider::{OpenAiProvider, OpenAiProviderConfig};
 pub use provider::{
-    ApiFormat, AuthConfig, LlmProvider, ModelMetadata, ModelPricing, ProviderCapabilities,
-    ProviderPreset,
+    ApiFormat, AuthConfig, LlmProvider, ModelMetadata, ProviderCapabilities, ProviderPreset,
 };
 pub use provider_factory::{default_preset, find_preset, provider_registry};
 pub use streaming::{StreamEvent, StreamHandler};
@@ -796,12 +795,6 @@ impl provider::LlmProvider for client::AnthropicClient {
                         context_window: 1_000_000,
                         max_output_tokens: 384_000,
                         supports_thinking: true,
-                        pricing: Some(provider::ModelPricing {
-                            input_per_mtk: 0.435,
-                            output_per_mtk: 0.87,
-                            cache_creation_per_mtk: 0.0,
-                            cache_read_per_mtk: 0.003625,
-                        }),
                     },
                     provider::ModelMetadata {
                         id: "deepseek-v4-flash".to_string(),
@@ -810,12 +803,6 @@ impl provider::LlmProvider for client::AnthropicClient {
                         context_window: 1_000_000,
                         max_output_tokens: 384_000,
                         supports_thinking: true,
-                        pricing: Some(provider::ModelPricing {
-                            input_per_mtk: 0.14,
-                            output_per_mtk: 0.28,
-                            cache_creation_per_mtk: 0.0,
-                            cache_read_per_mtk: 0.0028,
-                        }),
                     },
                     provider::ModelMetadata {
                         id: "deepseek-reasoner".to_string(),
@@ -824,12 +811,6 @@ impl provider::LlmProvider for client::AnthropicClient {
                         context_window: 128_000,
                         max_output_tokens: 64_000,
                         supports_thinking: true,
-                        pricing: Some(provider::ModelPricing {
-                            input_per_mtk: 0.55,
-                            output_per_mtk: 2.19,
-                            cache_creation_per_mtk: 0.0,
-                            cache_read_per_mtk: 0.14,
-                        }),
                     },
                     provider::ModelMetadata {
                         id: "deepseek-chat".to_string(),
@@ -838,12 +819,6 @@ impl provider::LlmProvider for client::AnthropicClient {
                         context_window: 128_000,
                         max_output_tokens: 8_192,
                         supports_thinking: false,
-                        pricing: Some(provider::ModelPricing {
-                            input_per_mtk: 0.27,
-                            output_per_mtk: 1.10,
-                            cache_creation_per_mtk: 0.0,
-                            cache_read_per_mtk: 0.07,
-                        }),
                     },
                 ],
                 default_max_tokens: 64_000,

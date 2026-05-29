@@ -364,7 +364,6 @@ fn build_temp_capabilities(preset: &ProviderPreset) -> Vec<ModelMetadata> {
         context_window: 128_000,
         max_output_tokens: 16_384,
         supports_thinking: preset.supports_thinking,
-        pricing: None,
     });
 
     if let Some(fast) = preset.fast_model {
@@ -375,7 +374,6 @@ fn build_temp_capabilities(preset: &ProviderPreset) -> Vec<ModelMetadata> {
             context_window: 128_000,
             max_output_tokens: 16_384,
             supports_thinking: false,
-            pricing: None,
         });
     }
 

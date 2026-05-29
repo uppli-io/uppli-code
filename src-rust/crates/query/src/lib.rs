@@ -85,8 +85,8 @@ pub enum QueryOutcome {
     Cancelled,
     /// An unrecoverable error occurred.
     Error(ClaudeError),
-    /// The configured USD budget was exceeded.
-    BudgetExceeded { cost_usd: f64, limit_usd: f64 },
+    /// The configured total-token budget was exceeded.
+    BudgetExceeded { tokens: u64, limit_tokens: u64 },
 }
 
 /// Configuration for a single query-loop invocation.
@@ -124,9 +124,14 @@ pub struct QueryConfig {
     /// the resulting index is used to inject a skill listing attachment into
     /// the conversation context.
     pub skill_index: Option<SharedSkillIndex>,
-    /// Optional USD spend cap. The query loop checks accumulated cost after
-    /// each turn and aborts with `QueryOutcome::BudgetExceeded` when exceeded.
-    pub max_budget_usd: Option<f64>,
+    /// Optional total-token cap. The query loop checks accumulated tokens
+    /// after each turn and aborts with `QueryOutcome::BudgetExceeded` when
+    /// exceeded.
+    ///
+    /// PR P (2026-05-29): replaces the previous `max_budget_usd: Option<f64>`.
+    /// USD tracking was removed because per-provider pricing drift made the
+    /// cap unreliable; token counts are objective and provider-reported.
+    pub max_total_tokens: Option<u64>,
     /// Fallback model name. Used when the primary model returns overloaded /
     /// rate-limit errors (mirrors TS `--fallback-model`).
     pub fallback_model: Option<String>,
@@ -162,7 +167,7 @@ impl Default for QueryConfig {
             effort_level: Some(cc_core::effort::EffortLevel::High),
             command_queue: None,
             skill_index: None,
-            max_budget_usd: None,
+            max_total_tokens: None,
             fallback_model: fallback,
         }
     }
@@ -847,19 +852,19 @@ pub async fn run_query_loop(
             usage.cache_read_input_tokens,
         );
 
-        // Budget guard: abort the loop if the configured USD cap is exceeded.
-        if let Some(limit) = config.max_budget_usd {
-            let spent = cost_tracker.total_cost_usd();
+        // Budget guard: abort the loop if the configured token cap is exceeded.
+        if let Some(limit) = config.max_total_tokens {
+            let spent = cost_tracker.total_tokens();
             if spent >= limit {
                 if let Some(ref tx) = event_tx {
                     let _ = tx.send(QueryEvent::Status(format!(
-                        "Budget limit ${:.4} exceeded (spent ${:.4}) — stopping.",
+                        "Token budget {} exceeded ({} used) — stopping.",
                         limit, spent
                     )));
                 }
                 return QueryOutcome::BudgetExceeded {
-                    cost_usd: spent,
-                    limit_usd: limit,
+                    tokens: spent,
+                    limit_tokens: limit,
                 };
             }
         }
@@ -1653,7 +1658,7 @@ mod tests {
             effort_level: None,
             command_queue: None,
             skill_index: None,
-            max_budget_usd: None,
+            max_total_tokens: None,
             fallback_model: None,
         }
     }

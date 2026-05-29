@@ -256,9 +256,11 @@ struct Cli {
     #[arg(long = "workload", value_name = "TAG")]
     workload: Option<String>,
 
-    /// Maximum spend in USD before aborting the query loop
-    #[arg(long = "max-budget-usd", value_name = "USD")]
-    max_budget_usd: Option<f64>,
+    /// Maximum total tokens (input+output+cache) before aborting the query loop.
+    /// Replaces the previous `--max-budget-usd` (PR P, 2026-05-29) — see PR
+    /// description for rationale (pricing drift made USD cap unreliable).
+    #[arg(long = "max-tokens-total", value_name = "TOKENS")]
+    max_total_tokens: Option<u64>,
 
     /// Fallback model to use if the primary model is overloaded or unavailable
     #[arg(long = "fallback-model")]
@@ -899,10 +901,7 @@ async fn main() -> anyhow::Result<()> {
             query_config.max_tokens = client.max_output_tokens(explicit_model);
         }
     }
-    // Set cost tracker pricing from provider metadata (same type, no conversion).
-    if let Some(pricing) = client.model_pricing(&query_config.model) {
-        cost_tracker.set_pricing(pricing);
-    }
+    // PR P: pricing tracking removed. cost_tracker accumulates raw tokens only.
 
     // Start LSP servers in background (non-blocking).
     // If lsp_servers is empty, try auto-detecting installed language servers.
@@ -958,8 +957,8 @@ async fn main() -> anyhow::Result<()> {
             );
         }
     }
-    if let Some(usd) = cli.max_budget_usd {
-        query_config.max_budget_usd = Some(usd);
+    if let Some(tokens) = cli.max_total_tokens {
+        query_config.max_total_tokens = Some(tokens);
     }
     if let Some(ref fb) = cli.fallback_model {
         query_config.fallback_model = Some(fb.clone());
@@ -1568,7 +1567,7 @@ async fn run_sdk_headless(
                     Some("Conversation cleared.")
                 }
                 "cost" => {
-                    let cost = cost_tracker.total_cost_usd();
+                    let cost = cost_tracker.total_tokens();
                     let input = cost_tracker.input_tokens();
                     let output = cost_tracker.output_tokens();
                     let msg = format!(
@@ -1597,7 +1596,7 @@ async fn run_sdk_headless(
                         "duration_ms": 0, "duration_api_ms": 0,
                         "is_error": false, "num_turns": 0,
                         "result": "", "stop_reason": "end_turn",
-                        "total_cost_usd": cost_tracker.total_cost_usd(),
+                        "total_tokens": cost_tracker.total_tokens(),
                         "usage": {"input_tokens": 0, "output_tokens": 0},
                         "modelUsage": {}, "permission_denials": [],
                     }));
@@ -1660,7 +1659,7 @@ async fn run_sdk_headless(
                 }
                 "status" => {
                     let caps = client.capabilities();
-                    let cost = cost_tracker.total_cost_usd();
+                    let cost = cost_tracker.total_tokens();
                     Some(&*format!(
                         "Uppli Code Status:\n\
                         Provider: {}\n\
@@ -1702,7 +1701,7 @@ async fn run_sdk_headless(
                     "duration_ms": 0, "duration_api_ms": 0,
                     "is_error": false, "num_turns": 0,
                     "result": "", "stop_reason": "end_turn",
-                    "total_cost_usd": cost_tracker.total_cost_usd(),
+                    "total_tokens": cost_tracker.total_tokens(),
                     "usage": {"input_tokens": 0, "output_tokens": 0},
                     "modelUsage": {}, "permission_denials": [],
                 }));
@@ -2012,7 +2011,7 @@ async fn run_sdk_headless(
                     "num_turns": 1,
                     "result": &full_text,
                     "stop_reason": &stop_reason,
-                    "total_cost_usd": cost_tracker.total_cost_usd(),
+                    "total_tokens": cost_tracker.total_tokens(),
                     "usage": {
                         "input_tokens": usage.input_tokens,
                         "output_tokens": usage.output_tokens,
@@ -2034,7 +2033,7 @@ async fn run_sdk_headless(
                     "is_error": true,
                     "num_turns": 0,
                     "stop_reason": null,
-                    "total_cost_usd": cost_tracker.total_cost_usd(),
+                    "total_tokens": cost_tracker.total_tokens(),
                     "usage": {"input_tokens":0,"output_tokens":0},
                     "modelUsage": {},
                     "permission_denials": [],
@@ -2052,7 +2051,7 @@ async fn run_sdk_headless(
                     "is_error": true,
                     "num_turns": 0,
                     "stop_reason": null,
-                    "total_cost_usd": cost_tracker.total_cost_usd(),
+                    "total_tokens": cost_tracker.total_tokens(),
                     "usage": {"input_tokens":0,"output_tokens":0},
                     "modelUsage": {},
                     "permission_denials": [],
@@ -2342,7 +2341,7 @@ async fn run_headless(
                         "cache_creation_input_tokens": usage.cache_creation_input_tokens,
                         "cache_read_input_tokens": usage.cache_read_input_tokens,
                     },
-                    "cost_usd": cost_tracker.total_cost_usd(),
+                    "tokens": cost_tracker.total_tokens(),
                 });
                 println!("{}", out);
             }
@@ -2363,7 +2362,7 @@ async fn run_headless(
                             "input_tokens": usage.input_tokens,
                             "output_tokens": usage.output_tokens,
                         },
-                        "cost_usd": cost_tracker.total_cost_usd(),
+                        "tokens": cost_tracker.total_tokens(),
                     });
                     println!("{}", out);
                 }
@@ -2380,10 +2379,10 @@ async fn run_headless(
             println!();
             if cli.verbose {
                 eprintln!(
-                    "\nTokens: {} in / {} out | Cost: ${:.4}",
+                    "\nTokens: {} in / {} out / {} total",
                     cost_tracker.input_tokens(),
                     cost_tracker.output_tokens(),
-                    cost_tracker.total_cost_usd(),
+                    cost_tracker.total_tokens(),
                 );
             }
             match outcome {
@@ -2392,12 +2391,12 @@ async fn run_headless(
                     std::process::exit(1);
                 }
                 QueryOutcome::BudgetExceeded {
-                    cost_usd,
-                    limit_usd,
+                    tokens,
+                    limit_tokens,
                 } => {
                     eprintln!(
-                        "Budget limit ${:.4} reached (spent ${:.4}). Stopping.",
-                        limit_usd, cost_usd
+                        "Token budget {} reached ({} used). Stopping.",
+                        limit_tokens, tokens
                     );
                     std::process::exit(2);
                 }

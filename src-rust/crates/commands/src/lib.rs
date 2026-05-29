@@ -546,21 +546,19 @@ impl SlashCommand for CostCommand {
         "cost"
     }
     fn description(&self) -> &str {
-        "Show token usage and cost for this session"
+        "Show token usage for this session"
     }
 
     async fn execute(&self, _args: &str, ctx: &mut CommandContext) -> CommandResult {
         let tracker = &ctx.cost_tracker;
         CommandResult::Message(format!(
-            "Session cost:\n  Input tokens:  {}\n  Output tokens: {}\n  \
-             Cache creation: {}\n  Cache read:    {}\n  Total tokens:  {}\n  \
-             Estimated cost: ${:.4}",
+            "Session token usage:\n  Input:          {}\n  Output:         {}\n  \
+             Cache creation: {}\n  Cache read:     {}\n  Total:          {}",
             tracker.input_tokens(),
             tracker.output_tokens(),
             tracker.cache_creation_tokens(),
             tracker.cache_read_tokens(),
             tracker.total_tokens(),
-            tracker.total_cost_usd(),
         ))
     }
 }
@@ -1442,7 +1440,6 @@ impl SlashCommand for UsageCommand {
         let cache_creation = ctx.cost_tracker.cache_creation_tokens();
         let cache_read = ctx.cost_tracker.cache_read_tokens();
         let total = ctx.cost_tracker.total_tokens();
-        let cost = ctx.cost_tracker.total_cost_usd();
 
         // Try to get account tier from OAuth tokens
         let account_info = match cc_core::oauth::OAuthTokens::load().await {
@@ -1470,7 +1467,7 @@ impl SlashCommand for UsageCommand {
                Cache write:  {cache_creation:>10}\n\
                Cache read:   {cache_read:>10}\n\
                Total:        {total:>10}\n\n\
-             Estimated cost: ${cost:.4}\n\n\
+             For cost in USD, see your provider dashboard.\n\
              Use /extra-usage for per-call breakdown.\n\
              Use /rate-limit-options to see your plan limits.",
             account_info = account_info,
@@ -1480,7 +1477,6 @@ impl SlashCommand for UsageCommand {
             cache_creation = cache_creation,
             cache_read = cache_read,
             total = total,
-            cost = cost,
         ))
     }
 }
@@ -3253,7 +3249,6 @@ impl SlashCommand for StatsCommand {
     async fn execute(&self, _args: &str, ctx: &mut CommandContext) -> CommandResult {
         let input = ctx.cost_tracker.input_tokens();
         let output = ctx.cost_tracker.output_tokens();
-        let cost = ctx.cost_tracker.total_cost_usd();
         let turns = ctx.messages.len();
         let model = ctx.config.effective_model();
 
@@ -3264,14 +3259,12 @@ impl SlashCommand for StatsCommand {
              Messages:       {}\n\
              Input tokens:   {}\n\
              Output tokens:  {}\n\
-             Total tokens:   {}\n\
-             Estimated cost: ${:.4}",
+             Total tokens:   {}",
             model,
             turns,
             input,
             output,
             input + output,
-            cost
         ))
     }
 }
@@ -4629,8 +4622,6 @@ impl SlashCommand for ExtraUsageCommand {
         let cache_creation = ctx.cost_tracker.cache_creation_tokens();
         let cache_read = ctx.cost_tracker.cache_read_tokens();
         let total = ctx.cost_tracker.total_tokens();
-        let cost = ctx.cost_tracker.total_cost_usd();
-
         // Estimate API calls from messages (each assistant message ~ 1 API call)
         let api_calls = ctx
             .messages
@@ -4647,17 +4638,17 @@ impl SlashCommand for ExtraUsageCommand {
             0.0
         };
 
-        let cost_per_call = if api_calls > 0 {
-            cost / api_calls as f64
+        let tokens_per_call = if api_calls > 0 {
+            total / api_calls as u64
         } else {
-            0.0
+            0
         };
 
         CommandResult::Message(format!(
             "Detailed Usage Statistics\n\
              ─────────────────────────\n\
              API calls:           {api_calls}\n\
-             Avg cost/call:       ${cost_per_call:.4}\n\n\
+             Avg tokens/call:     {tokens_per_call}\n\n\
              Token Breakdown:\n\
                Input tokens:      {input:>10}\n\
                Output tokens:     {output:>10}\n\
@@ -4667,11 +4658,9 @@ impl SlashCommand for ExtraUsageCommand {
              Cache Performance:\n\
                Cache hit rate:    {cache_hit_pct:.1}%\n\
                Cache efficiency:  {cache_eff}\n\n\
-             Cost:\n\
-               Total cost:        ${cost:.4}\n\
-               Cost/1k tokens:    ${cost_per_k:.4}",
+             For cost in USD, see your provider dashboard.",
             api_calls = api_calls,
-            cost_per_call = cost_per_call,
+            tokens_per_call = tokens_per_call,
             input = input,
             output = output,
             cache_creation = cache_creation,
@@ -4686,12 +4675,6 @@ impl SlashCommand for ExtraUsageCommand {
                 "Low — prompts may not be stable enough to cache"
             } else {
                 "No cache activity"
-            },
-            cost = cost,
-            cost_per_k = if total > 0 {
-                cost / (total as f64 / 1000.0)
-            } else {
-                0.0
             },
         ))
     }
@@ -5556,7 +5539,6 @@ impl SlashCommand for InsightsCommand {
         let input_tokens = ctx.cost_tracker.input_tokens();
         let output_tokens = ctx.cost_tracker.output_tokens();
         let total_tokens = ctx.cost_tracker.total_tokens();
-        let total_cost = ctx.cost_tracker.total_cost_usd();
 
         let avg_tokens_per_turn = if total_turns > 0 {
             total_tokens / total_turns as u64
@@ -5578,9 +5560,6 @@ impl SlashCommand for InsightsCommand {
              ├─ Total               : {total_tokens}\n\
              └─ Avg per exchange    : {avg_tokens_per_turn}\n\
              \n\
-             Cost\n\
-             └─ Estimated USD       : ${total_cost:.4}\n\
-             \n\
              Tools\n\
              ├─ Total calls         : {total_tool_calls}\n\
              └─ Most used           : {most_frequent_tool}",
@@ -5591,7 +5570,6 @@ impl SlashCommand for InsightsCommand {
             output_tokens = output_tokens,
             total_tokens = total_tokens,
             avg_tokens_per_turn = avg_tokens_per_turn,
-            total_cost = total_cost,
             total_tool_calls = total_tool_calls,
             most_frequent_tool = most_frequent_tool,
         ))

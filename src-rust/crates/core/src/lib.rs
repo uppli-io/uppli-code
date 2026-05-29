@@ -2277,69 +2277,29 @@ pub mod cost {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    /// Per-model pricing tiers (USD per million tokens).
-    #[derive(Debug, Clone, Copy)]
-    pub struct ModelPricing {
-        pub input_per_mtk: f64,
-        pub output_per_mtk: f64,
-        pub cache_creation_per_mtk: f64,
-        pub cache_read_per_mtk: f64,
-    }
-
-    impl ModelPricing {
-        /// Zero pricing (used when provider doesn't report pricing, e.g., Ollama).
-        pub const FREE: Self = Self {
-            input_per_mtk: 0.0,
-            output_per_mtk: 0.0,
-            cache_creation_per_mtk: 0.0,
-            cache_read_per_mtk: 0.0,
-        };
-    }
-
-    impl Default for ModelPricing {
-        fn default() -> Self {
-            Self::FREE
-        }
-    }
-
-    /// Thread-safe, lock-free cost tracker that accumulates token usage.
+    /// Thread-safe, lock-free token usage tracker.
+    ///
+    /// PR P (2026-05-29) removed USD/pricing tracking. Maintaining pricing
+    /// values per model/provider was a perpetual sync burden (drift on every
+    /// provider promo or tariff change), and DeepSeek's promotional pricing
+    /// silently underestimated cost by 4× anyway. For a CLI, the source of
+    /// truth for spend is the provider dashboard; uppli-code now tracks
+    /// what's objective and free: token counts reported in each response.
+    ///
+    /// Budget enforcement was migrated from `--max-budget-usd <f64>` to
+    /// `--max-tokens-total <u64>` (see QueryConfig.max_total_tokens).
     #[derive(Debug, Default)]
     pub struct CostTracker {
         input_tokens: AtomicU64,
         output_tokens: AtomicU64,
         cache_creation_tokens: AtomicU64,
         cache_read_tokens: AtomicU64,
-        pricing: parking_lot::RwLock<ModelPricing>,
     }
 
     impl CostTracker {
         pub fn new() -> Arc<Self> {
             Arc::new(Self::default())
         }
-
-        /// Create a tracker with explicit pricing (from provider.model_pricing()).
-        pub fn with_pricing(pricing: ModelPricing) -> Arc<Self> {
-            Arc::new(Self {
-                pricing: parking_lot::RwLock::new(pricing),
-                ..Default::default()
-            })
-        }
-
-        /// Update pricing (e.g., when the model changes mid-session).
-        pub fn set_pricing(&self, pricing: ModelPricing) {
-            *self.pricing.write() = pricing;
-        }
-
-        /// Legacy: create with model name. Uses FREE pricing since provider
-        /// pricing is not available at this call site.
-        #[deprecated(note = "use with_pricing() instead")]
-        pub fn with_model(_model: &str) -> Arc<Self> {
-            Self::new()
-        }
-
-        /// Legacy: set model. No-op since pricing is now provider-driven.
-        #[deprecated(note = "use set_pricing() instead")]
-        pub fn set_model(&self, _model: &str) {}
 
         pub fn add_usage(&self, input: u64, output: u64, cache_creation: u64, cache_read: u64) {
             self.input_tokens.fetch_add(input, Ordering::Relaxed);
@@ -2348,20 +2308,6 @@ pub mod cost {
                 .fetch_add(cache_creation, Ordering::Relaxed);
             self.cache_read_tokens
                 .fetch_add(cache_read, Ordering::Relaxed);
-        }
-
-        pub fn total_cost_usd(&self) -> f64 {
-            let pricing = *self.pricing.read();
-            let input = self.input_tokens.load(Ordering::Relaxed) as f64;
-            let output = self.output_tokens.load(Ordering::Relaxed) as f64;
-            let cache_creation = self.cache_creation_tokens.load(Ordering::Relaxed) as f64;
-            let cache_read = self.cache_read_tokens.load(Ordering::Relaxed) as f64;
-
-            (input * pricing.input_per_mtk
-                + output * pricing.output_per_mtk
-                + cache_creation * pricing.cache_creation_per_mtk
-                + cache_read * pricing.cache_read_per_mtk)
-                / 1_000_000.0
         }
 
         pub fn total_tokens(&self) -> u64 {
@@ -2389,13 +2335,10 @@ pub mod cost {
 
         /// Produce a human-readable summary string, e.g. for display in the TUI.
         pub fn summary(&self) -> String {
-            let cost = self.total_cost_usd();
             let total = self.total_tokens();
-            if cost < 0.01 {
-                format!("{} tokens (<$0.01)", total)
-            } else {
-                format!("{} tokens (${:.2})", total, cost)
-            }
+            let input = self.input_tokens();
+            let output = self.output_tokens();
+            format!("{} tokens ({} in, {} out)", total, input, output)
         }
     }
 }
@@ -2926,17 +2869,28 @@ mod tests {
     }
 
     #[test]
-    fn test_cost_tracker() {
-        let tracker = CostTracker::with_pricing(cost::ModelPricing {
-            input_per_mtk: 1.0,
-            output_per_mtk: 2.0,
-            cache_creation_per_mtk: 0.5,
-            cache_read_per_mtk: 0.1,
-        });
+    fn test_cost_tracker_token_accumulation() {
+        let tracker = CostTracker::new();
         tracker.add_usage(1000, 500, 200, 100);
         assert_eq!(tracker.input_tokens(), 1000);
         assert_eq!(tracker.output_tokens(), 500);
-        assert!(tracker.total_cost_usd() > 0.0);
+        assert_eq!(tracker.cache_creation_tokens(), 200);
+        assert_eq!(tracker.cache_read_tokens(), 100);
+        assert_eq!(tracker.total_tokens(), 1800);
+    }
+
+    /// PR P regression: ensure no USD-related method survives.
+    /// If someone reintroduces total_cost_usd / ModelPricing / with_pricing,
+    /// this test (or rather the compiler) will yell first.
+    #[test]
+    fn test_cost_tracker_has_no_usd_api() {
+        let tracker = CostTracker::new();
+        // The API surface is tokens-only after PR P.
+        let _ = tracker.total_tokens();
+        // The following calls would not compile if uncommented (kept as docs):
+        //   let _ = tracker.total_cost_usd();      // removed
+        //   let _ = CostTracker::with_pricing(..); // removed
+        //   let _ = tracker.set_pricing(..);       // removed
     }
 
     #[test]
@@ -3383,6 +3337,6 @@ mod tests {
         let tracker = CostTracker::new();
         assert_eq!(tracker.input_tokens(), 0);
         assert_eq!(tracker.output_tokens(), 0);
-        assert_eq!(tracker.total_cost_usd(), 0.0);
+        assert_eq!(tracker.total_tokens(), 0);
     }
 }

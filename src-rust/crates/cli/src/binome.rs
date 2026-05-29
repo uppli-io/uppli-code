@@ -158,10 +158,10 @@ async fn run_one_turn(
             anyhow::bail!("{label}: {e}");
         }
         QueryOutcome::BudgetExceeded {
-            cost_usd,
-            limit_usd,
+            tokens,
+            limit_tokens,
         } => {
-            anyhow::bail!("{label}: budget exceeded ${cost_usd:.4} > ${limit_usd:.4}");
+            anyhow::bail!("{label}: token budget exceeded {tokens} > {limit_tokens}");
         }
     }
 }

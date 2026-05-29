@@ -189,7 +189,7 @@ impl Tool for AgentTool {
             effort_level: Some(cc_core::effort::EffortLevel::High),
             command_queue: None,
             skill_index: None,
-            max_budget_usd: None,
+            max_total_tokens: None,
             fallback_model: caps.fast_model.clone(),
         };
 
@@ -229,11 +229,11 @@ impl Tool for AgentTool {
             QueryOutcome::Cancelled => ToolResult::error("Sub-agent was cancelled".to_string()),
             QueryOutcome::Error(e) => ToolResult::error(format!("Sub-agent error: {}", e)),
             QueryOutcome::BudgetExceeded {
-                cost_usd,
-                limit_usd,
+                tokens,
+                limit_tokens,
             } => ToolResult::error(format!(
                 "Sub-agent stopped: budget ${:.4} exceeded (limit ${:.4})",
-                cost_usd, limit_usd
+                tokens, limit_tokens
             )),
         }
     }
