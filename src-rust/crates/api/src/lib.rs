@@ -776,19 +776,23 @@ impl provider::LlmProvider for client::AnthropicClient {
 
     fn capabilities(&self) -> &provider::ProviderCapabilities {
         use once_cell::sync::Lazy;
-        static CAPS: Lazy<provider::ProviderCapabilities> =
-            Lazy::new(|| provider::ProviderCapabilities {
+        static CAPS: Lazy<provider::ProviderCapabilities> = Lazy::new(|| {
+            provider::ProviderCapabilities {
                 name: "deepseek".to_string(),
                 display_name: "DeepSeek".to_string(),
                 attribution: "powered by DeepSeek".to_string(),
                 default_model: "deepseek-v4-pro".to_string(),
                 fast_model: Some("deepseek-v4-flash".to_string()),
+                // Pricing + capabilities sourced from official DeepSeek docs:
+                //   https://api-docs.deepseek.com/quick_start/pricing
+                // NOTE: v4-pro currently shows a 75% promotional discount on
+                // the docs (regular: $1.74 in / $3.48 out per Mtk). Revisit
+                // when the promo ends.
                 known_models: vec![
                     provider::ModelMetadata {
                         id: "deepseek-v4-pro".to_string(),
                         display_name: "DeepSeek V4 Pro".to_string(),
-                        description: "Flagship V4 reasoning model — 1M context, deep reasoning"
-                            .to_string(),
+                        description: "Flagship V4 reasoning model — 1M context, 384k max output, deep reasoning".to_string(),
                         context_window: 1_000_000,
                         max_output_tokens: 384_000,
                         supports_thinking: true,
@@ -796,22 +800,21 @@ impl provider::LlmProvider for client::AnthropicClient {
                             input_per_mtk: 0.435,
                             output_per_mtk: 0.87,
                             cache_creation_per_mtk: 0.0,
-                            cache_read_per_mtk: 0.0435,
+                            cache_read_per_mtk: 0.003625,
                         }),
                     },
                     provider::ModelMetadata {
                         id: "deepseek-v4-flash".to_string(),
                         display_name: "DeepSeek V4 Flash".to_string(),
-                        description: "Fast V4 model — tool-result turns, cheaper than V4 Pro"
-                            .to_string(),
+                        description: "Fast V4 model — 1M context, 384k max output, cheaper than V4 Pro".to_string(),
                         context_window: 1_000_000,
-                        max_output_tokens: 64_000,
+                        max_output_tokens: 384_000,
                         supports_thinking: true,
                         pricing: Some(provider::ModelPricing {
-                            input_per_mtk: 0.27,
-                            output_per_mtk: 0.55,
+                            input_per_mtk: 0.14,
+                            output_per_mtk: 0.28,
                             cache_creation_per_mtk: 0.0,
-                            cache_read_per_mtk: 0.027,
+                            cache_read_per_mtk: 0.0028,
                         }),
                     },
                     provider::ModelMetadata {
@@ -853,7 +856,8 @@ impl provider::LlmProvider for client::AnthropicClient {
                     display_label: "DeepSeek",
                     required: true,
                 },
-            });
+            }
+        });
         &CAPS
     }
 
