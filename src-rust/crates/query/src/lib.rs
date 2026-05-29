@@ -182,11 +182,22 @@ impl QueryConfig {
 
     /// Create a QueryConfig with defaults sourced from the active provider.
     /// This replaces the hardcoded constants with provider metadata.
+    ///
+    /// `max_tokens` resolution order:
+    ///   1. explicit `cfg.max_tokens` (from `--max-tokens`), else
+    ///   2. the default model's per-model `max_output_tokens` (e.g.
+    ///      deepseek-v4-pro = 384k), else
+    ///   3. the provider's generic `default_max_tokens` (fallback for
+    ///      unknown models).
     pub fn from_provider(provider: &dyn cc_api::LlmProvider, cfg: &Config) -> Self {
         let caps = provider.capabilities();
+        let default_model = caps.default_model.clone();
+        let max_tokens = cfg
+            .max_tokens
+            .unwrap_or_else(|| provider.max_output_tokens(&default_model));
         Self {
-            model: caps.default_model.clone(),
-            max_tokens: caps.default_max_tokens,
+            model: default_model,
+            max_tokens,
             thinking_budget: caps.default_thinking_budget,
             fallback_model: caps.fast_model.clone(),
             output_style: cfg.effective_output_style(),
@@ -1770,5 +1781,53 @@ mod tests {
         let err_outcome = QueryOutcome::Error(cc_core::error::ClaudeError::RateLimit);
         let s2 = format!("{:?}", err_outcome);
         assert!(s2.contains("Error"));
+    }
+
+    // ── from_provider per-model max_tokens resolution (PR #6 follow-up) ────
+    //
+    // PR #6 promoted deepseek-v4-pro as default model. v4-pro has
+    // max_output_tokens=384_000 but the provider's default_max_tokens stayed
+    // at 64_000 (matching the deprecated reasoner). Without per-model
+    // resolution in from_provider, every default DeepSeek request would be
+    // silently capped at 64k — 17% of v4-pro's advertised capability.
+
+    #[test]
+    fn test_from_provider_max_tokens_uses_per_model_max_for_deepseek_default() {
+        let client = cc_api::client::AnthropicClient::new(cc_api::client::ClientConfig {
+            api_key: "test-key-not-used".to_string(),
+            ..Default::default()
+        })
+        .expect("test client builds");
+
+        let cfg = cc_core::config::Config::default();
+        let qc = QueryConfig::from_provider(&client, &cfg);
+
+        assert_eq!(qc.model, "deepseek-v4-pro");
+        assert_eq!(
+            qc.max_tokens, 384_000,
+            "from_provider must use per-model max_output_tokens (384k for v4-pro), \
+             not the generic default_max_tokens (=64k). Otherwise the default \
+             DeepSeek invocation silently caps at 17% of v4-pro's advertised output."
+        );
+    }
+
+    #[test]
+    fn test_from_provider_respects_explicit_max_tokens_in_config() {
+        let client = cc_api::client::AnthropicClient::new(cc_api::client::ClientConfig {
+            api_key: "test-key-not-used".to_string(),
+            ..Default::default()
+        })
+        .expect("test client builds");
+
+        let cfg = cc_core::config::Config {
+            max_tokens: Some(8_192),
+            ..cc_core::config::Config::default()
+        };
+        let qc = QueryConfig::from_provider(&client, &cfg);
+
+        assert_eq!(
+            qc.max_tokens, 8_192,
+            "Explicit cfg.max_tokens must take precedence over per-model max"
+        );
     }
 }

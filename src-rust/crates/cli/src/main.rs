@@ -891,8 +891,13 @@ async fn main() -> anyhow::Result<()> {
     // Build query config from the provider's metadata (model, max_tokens, thinking, etc.).
     let mut query_config = cc_query::QueryConfig::from_provider(client.as_ref(), &config);
     // If the user explicitly set --model, override the provider default.
+    // Also re-resolve max_tokens to the explicit model's per-model max,
+    // unless the user passed --max-tokens explicitly.
     if let Some(ref explicit_model) = cli.model {
         query_config.model = explicit_model.clone();
+        if cli.max_tokens.is_none() {
+            query_config.max_tokens = client.max_output_tokens(explicit_model);
+        }
     }
     // Set cost tracker pricing from provider metadata (same type, no conversion).
     if let Some(pricing) = client.model_pricing(&query_config.model) {

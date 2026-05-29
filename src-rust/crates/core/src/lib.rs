@@ -1003,12 +1003,21 @@ pub mod constants {
     pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
     // Models
-    pub const DEFAULT_MODEL: &str = "deepseek-reasoner";
-    pub const SONNET_MODEL: &str = "deepseek-chat";
-    pub const HAIKU_MODEL: &str = "deepseek-chat";
-    pub const OPUS_MODEL: &str = "deepseek-reasoner";
+    pub const DEFAULT_MODEL: &str = "deepseek-v4-pro";
+    pub const SONNET_MODEL: &str = "deepseek-v4-flash";
+    pub const HAIKU_MODEL: &str = "deepseek-v4-flash";
+    pub const OPUS_MODEL: &str = "deepseek-v4-pro";
 
-    // Token limits (DeepSeek output limits: reasoner=64K, chat=8K)
+    // Token limits — generic fallback when per-model max_output_tokens is
+    // unavailable. Real per-model caps live in `ProviderCapabilities.
+    // known_models[].max_output_tokens` and are resolved in
+    // `QueryConfig::from_provider` via `provider.max_output_tokens(model)`.
+    // Active DeepSeek output limits (per
+    // https://api-docs.deepseek.com/quick_start/pricing):
+    //   - deepseek-v4-pro:   384K
+    //   - deepseek-v4-flash: 384K
+    //   - deepseek-reasoner: 64K  (deprecating)
+    //   - deepseek-chat:     8K   (deprecating)
     pub const DEFAULT_MAX_TOKENS: u32 = 64_000;
     pub const MAX_TOKENS_HARD_LIMIT: u32 = 128_000;
     pub const DEFAULT_COMPACT_THRESHOLD: f32 = 0.9;

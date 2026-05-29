@@ -27,9 +27,9 @@ pub fn provider_registry() -> &'static [ProviderPreset] {
             name: "deepseek",
             aliases: &["ds"],
             display_name: "DeepSeek",
-            description: "deepseek-reasoner (cloud, API key)",
-            default_model: "deepseek-reasoner",
-            fast_model: Some("deepseek-chat"),
+            description: "deepseek-v4-pro (cloud, API key)",
+            default_model: "deepseek-v4-pro",
+            fast_model: Some("deepseek-v4-flash"),
             supports_thinking: true,
             auth: AuthConfig {
                 env_vars: &["DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY"],
@@ -321,7 +321,7 @@ fn default_model_for(provider_type: &ProviderType) -> String {
             ProviderType::Ollama => "llama3".to_string(),
             ProviderType::Alibaba => "qwen3.6-plus-2026-04-02".to_string(),
             ProviderType::OpenAiCompat => "default".to_string(),
-            ProviderType::Deepseek => "deepseek-reasoner".to_string(),
+            ProviderType::Deepseek => "deepseek-v4-pro".to_string(),
         })
 }
 

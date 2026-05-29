@@ -776,18 +776,51 @@ impl provider::LlmProvider for client::AnthropicClient {
 
     fn capabilities(&self) -> &provider::ProviderCapabilities {
         use once_cell::sync::Lazy;
-        static CAPS: Lazy<provider::ProviderCapabilities> =
-            Lazy::new(|| provider::ProviderCapabilities {
+        static CAPS: Lazy<provider::ProviderCapabilities> = Lazy::new(|| {
+            provider::ProviderCapabilities {
                 name: "deepseek".to_string(),
                 display_name: "DeepSeek".to_string(),
                 attribution: "powered by DeepSeek".to_string(),
-                default_model: "deepseek-reasoner".to_string(),
-                fast_model: Some("deepseek-chat".to_string()),
+                default_model: "deepseek-v4-pro".to_string(),
+                fast_model: Some("deepseek-v4-flash".to_string()),
+                // Pricing + capabilities sourced from official DeepSeek docs:
+                //   https://api-docs.deepseek.com/quick_start/pricing
+                // NOTE: v4-pro currently shows a 75% promotional discount on
+                // the docs (regular: $1.74 in / $3.48 out per Mtk). Revisit
+                // when the promo ends.
                 known_models: vec![
+                    provider::ModelMetadata {
+                        id: "deepseek-v4-pro".to_string(),
+                        display_name: "DeepSeek V4 Pro".to_string(),
+                        description: "Flagship V4 reasoning model — 1M context, 384k max output, deep reasoning".to_string(),
+                        context_window: 1_000_000,
+                        max_output_tokens: 384_000,
+                        supports_thinking: true,
+                        pricing: Some(provider::ModelPricing {
+                            input_per_mtk: 0.435,
+                            output_per_mtk: 0.87,
+                            cache_creation_per_mtk: 0.0,
+                            cache_read_per_mtk: 0.003625,
+                        }),
+                    },
+                    provider::ModelMetadata {
+                        id: "deepseek-v4-flash".to_string(),
+                        display_name: "DeepSeek V4 Flash".to_string(),
+                        description: "Fast V4 model — 1M context, 384k max output, cheaper than V4 Pro".to_string(),
+                        context_window: 1_000_000,
+                        max_output_tokens: 384_000,
+                        supports_thinking: true,
+                        pricing: Some(provider::ModelPricing {
+                            input_per_mtk: 0.14,
+                            output_per_mtk: 0.28,
+                            cache_creation_per_mtk: 0.0,
+                            cache_read_per_mtk: 0.0028,
+                        }),
+                    },
                     provider::ModelMetadata {
                         id: "deepseek-reasoner".to_string(),
                         display_name: "DeepSeek Reasoner (R2)".to_string(),
-                        description: "Deep reasoning model — best for complex tasks".to_string(),
+                        description: "Deprecating — superseded by deepseek-v4-pro".to_string(),
                         context_window: 128_000,
                         max_output_tokens: 64_000,
                         supports_thinking: true,
@@ -801,8 +834,7 @@ impl provider::LlmProvider for client::AnthropicClient {
                     provider::ModelMetadata {
                         id: "deepseek-chat".to_string(),
                         display_name: "DeepSeek Chat (V4)".to_string(),
-                        description: "Fast model — great for tool results and simple tasks"
-                            .to_string(),
+                        description: "Deprecating — superseded by deepseek-v4-flash".to_string(),
                         context_window: 128_000,
                         max_output_tokens: 8_192,
                         supports_thinking: false,
@@ -824,7 +856,8 @@ impl provider::LlmProvider for client::AnthropicClient {
                     display_label: "DeepSeek",
                     required: true,
                 },
-            });
+            }
+        });
         &CAPS
     }
 
@@ -1168,6 +1201,108 @@ mod tests {
             .build();
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["output_config"]["effort"], "high");
+    }
+
+    // ── DeepSeek known_models metadata (PR A — TDD) ────────────────────────
+    //
+    // Pin the documented DeepSeek v4 model metadata so:
+    //   - default_model is present in known_models (not unknown fallback)
+    //   - fast_model is a different, cheaper model than default
+    //   - deprecated models stay listed for back-compat but flagged
+
+    fn deepseek_caps_for_test() -> &'static provider::ProviderCapabilities {
+        use provider::LlmProvider;
+        // Build with a dummy key — AnthropicClient::new only checks non-empty.
+        // We only read .capabilities(), no network calls.
+        let cfg = client::ClientConfig {
+            api_key: "test-key-not-used".to_string(),
+            ..Default::default()
+        };
+        let client = Box::leak(Box::new(
+            client::AnthropicClient::new(cfg).expect("test client builds"),
+        ));
+        client.capabilities()
+    }
+
+    #[test]
+    fn test_deepseek_known_models_contains_v4_pro_and_flash_with_thinking() {
+        let caps = deepseek_caps_for_test();
+        let v4_pro = caps
+            .known_models
+            .iter()
+            .find(|m| m.id == "deepseek-v4-pro")
+            .expect("deepseek-v4-pro must be in known_models (it is the default_model)");
+        assert!(
+            v4_pro.supports_thinking,
+            "deepseek-v4-pro must support thinking"
+        );
+        assert!(
+            v4_pro.context_window >= 128_000,
+            "deepseek-v4-pro context_window should be >= 128k, got {}",
+            v4_pro.context_window
+        );
+
+        let v4_flash = caps
+            .known_models
+            .iter()
+            .find(|m| m.id == "deepseek-v4-flash")
+            .expect("deepseek-v4-flash must be in known_models (it is the fast_model)");
+        assert!(
+            v4_flash.supports_thinking,
+            "deepseek-v4-flash must support thinking (used as fast model in hybrid mode)"
+        );
+    }
+
+    #[test]
+    fn test_deepseek_default_model_supports_thinking() {
+        use provider::LlmProvider;
+        let cfg = client::ClientConfig {
+            api_key: "test-key".to_string(),
+            ..Default::default()
+        };
+        let client = client::AnthropicClient::new(cfg).expect("test client builds");
+        let default_model = client.capabilities().default_model.clone();
+        assert!(
+            client.model_supports_thinking(&default_model),
+            "default_model '{}' must support thinking (otherwise --effort silently drops on the default)",
+            default_model
+        );
+    }
+
+    #[test]
+    fn test_deepseek_fast_model_differs_from_default() {
+        let caps = deepseek_caps_for_test();
+        assert_eq!(caps.default_model, "deepseek-v4-pro");
+        assert_eq!(
+            caps.fast_model.as_deref(),
+            Some("deepseek-v4-flash"),
+            "fast_model must be v4-flash (different from default), otherwise hybrid mode pays v4-pro prices on every tool-result turn"
+        );
+    }
+
+    #[test]
+    fn test_deepseek_deprecated_models_kept_for_back_compat_and_flagged() {
+        let caps = deepseek_caps_for_test();
+        let reasoner = caps
+            .known_models
+            .iter()
+            .find(|m| m.id == "deepseek-reasoner")
+            .expect("deepseek-reasoner kept in known_models for back-compat (old user configs)");
+        let chat = caps
+            .known_models
+            .iter()
+            .find(|m| m.id == "deepseek-chat")
+            .expect("deepseek-chat kept in known_models for back-compat");
+        assert!(
+            reasoner.description.to_lowercase().contains("deprecat"),
+            "deepseek-reasoner description must flag deprecation, got: '{}'",
+            reasoner.description
+        );
+        assert!(
+            chat.description.to_lowercase().contains("deprecat"),
+            "deepseek-chat description must flag deprecation, got: '{}'",
+            chat.description
+        );
     }
 
     #[test]
