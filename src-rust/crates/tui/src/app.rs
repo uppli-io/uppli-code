@@ -331,7 +331,6 @@ pub struct App {
     pub permission_request: Option<PermissionRequest>,
     pub frame_count: u64,
     pub token_count: u32,
-    pub cost_usd: f64,
     pub model_name: String,
     /// Current effort level (controls extended-thinking budget_tokens).
     pub effort_level: EffortLevel,
@@ -772,7 +771,6 @@ impl App {
             permission_request: None,
             frame_count: 0,
             token_count: 0,
-            cost_usd: 0.0,
             model_name,
             effort_level: EffortLevel::Normal,
             fast_mode: false,
