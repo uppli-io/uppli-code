@@ -20,5 +20,8 @@ All notable changes to uppli-code are documented in this file.
 
 - `CostTracker` keeps `total_cost_usd()` (derived from per-model pricing) alongside `total_tokens()`. Pricing is seeded from `LlmProvider::model_pricing()` at session start.
 - `ModelMetadata.pricing: Option<ModelPricing>` is back on every model. `None` means free/unknown (Ollama, generic OpenAI-compat endpoints).
-- Assistant messages now stamp their per-turn `cost_usd` into `MessageCost` so session storage (`~/.uppli/sessions/*.jsonl`) attributes spend per message.
+- Assistant messages now stamp their per-turn `cost_usd` into `MessageCost`. **Note:** per-turn cost is computed as `total_cost_usd() - previous_total`, which is correct because pricing is seeded once at startup. If a future change calls `CostTracker::set_pricing` mid-session (e.g. provider switch), per-turn deltas would re-baseline incorrectly — to be revisited then.
 - `BridgeEvent::TurnComplete` payload includes `usage: Option<BridgeUsage>` with `{input_tokens, output_tokens, cost_usd}` for the web UI / SDK consumers.
+- JSON output (`--output-format json` / `stream-json`) `result` records carry both `total_tokens` (u64) and `total_cost_usd` (f64). Schema-locked in `cc-query` tests so downstream consumers (refacturation pipelines) don't break silently on a rename.
+- TUI status bar live shows `${cost:.4}` when pricing is configured, blank when unknown (Ollama).
+- Slash commands `/cost`, `/status`, `/usage`, `/stats`, `/insights`, `/extra-usage` all surface cost consistently when available.

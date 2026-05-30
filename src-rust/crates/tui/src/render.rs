@@ -1616,7 +1616,17 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             }
         }
 
-        // 3. Cost display removed in PR P (2026-05-29): tokens-only.
+        // 3. Cost — best-effort USD from current pricing.
+        //    Hidden when 0.0 (no pricing configured, e.g. Ollama).
+        if app.cost_usd > 0.0 {
+            if !parts.is_empty() {
+                parts.push(Span::raw("  "));
+            }
+            parts.push(Span::styled(
+                format!("${:.4}", app.cost_usd),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
 
         // 4. Rate limits
         if let Some(pct) = app.rate_limit_5h_pct {

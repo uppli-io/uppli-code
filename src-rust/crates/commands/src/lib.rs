@@ -3266,6 +3266,12 @@ impl SlashCommand for StatsCommand {
         let output = ctx.cost_tracker.output_tokens();
         let turns = ctx.messages.len();
         let model = ctx.config.effective_model();
+        let cost = ctx.cost_tracker.total_cost_usd();
+        let cost_line = if cost > 0.0 {
+            format!("\n             Estimated cost: ${:.4} (best-effort)", cost)
+        } else {
+            String::new()
+        };
 
         CommandResult::Message(format!(
             "Session statistics\n\
@@ -3274,12 +3280,13 @@ impl SlashCommand for StatsCommand {
              Messages:       {}\n\
              Input tokens:   {}\n\
              Output tokens:  {}\n\
-             Total tokens:   {}",
+             Total tokens:   {}{}",
             model,
             turns,
             input,
             output,
             input + output,
+            cost_line,
         ))
     }
 }
@@ -4658,6 +4665,25 @@ impl SlashCommand for ExtraUsageCommand {
         } else {
             0
         };
+        let cost = ctx.cost_tracker.total_cost_usd();
+        let avg_cost_per_call = if cost > 0.0 && api_calls > 0 {
+            cost / api_calls as f64
+        } else {
+            0.0
+        };
+
+        let cost_block = if cost > 0.0 {
+            format!(
+                "             Cost:\n\
+                   Estimated total:   ${cost:.4} (best-effort)\n\
+                   Avg cost / call:   ${avg:.4}\n\n\
+                 ",
+                cost = cost,
+                avg = avg_cost_per_call,
+            )
+        } else {
+            String::new()
+        };
 
         CommandResult::Message(format!(
             "Detailed Usage Statistics\n\
@@ -4673,7 +4699,7 @@ impl SlashCommand for ExtraUsageCommand {
              Cache Performance:\n\
                Cache hit rate:    {cache_hit_pct:.1}%\n\
                Cache efficiency:  {cache_eff}\n\n\
-             For cost in USD, see your provider dashboard.",
+             {cost_block}For authoritative billing, see your provider dashboard.",
             api_calls = api_calls,
             tokens_per_call = tokens_per_call,
             input = input,
@@ -4682,6 +4708,7 @@ impl SlashCommand for ExtraUsageCommand {
             cache_read = cache_read,
             total = total,
             cache_hit_pct = cache_hit_pct,
+            cost_block = cost_block,
             cache_eff = if cache_hit_pct > 70.0 {
                 "Excellent"
             } else if cache_hit_pct > 40.0 {
@@ -5554,11 +5581,22 @@ impl SlashCommand for InsightsCommand {
         let input_tokens = ctx.cost_tracker.input_tokens();
         let output_tokens = ctx.cost_tracker.output_tokens();
         let total_tokens = ctx.cost_tracker.total_tokens();
+        let total_cost = ctx.cost_tracker.total_cost_usd();
 
         let avg_tokens_per_turn = if total_turns > 0 {
             total_tokens / total_turns as u64
         } else {
             0
+        };
+
+        let cost_block = if total_cost > 0.0 {
+            format!(
+                "Cost\n             \
+                 └─ Estimated USD       : ${:.4} (best-effort)\n             \n             ",
+                total_cost
+            )
+        } else {
+            String::new()
         };
 
         CommandResult::Message(format!(
@@ -5575,7 +5613,7 @@ impl SlashCommand for InsightsCommand {
              ├─ Total               : {total_tokens}\n\
              └─ Avg per exchange    : {avg_tokens_per_turn}\n\
              \n\
-             Tools\n\
+             {cost_block}Tools\n\
              ├─ Total calls         : {total_tool_calls}\n\
              └─ Most used           : {most_frequent_tool}",
             user_turns = user_turns,
@@ -5585,6 +5623,7 @@ impl SlashCommand for InsightsCommand {
             output_tokens = output_tokens,
             total_tokens = total_tokens,
             avg_tokens_per_turn = avg_tokens_per_turn,
+            cost_block = cost_block,
             total_tool_calls = total_tool_calls,
             most_frequent_tool = most_frequent_tool,
         ))

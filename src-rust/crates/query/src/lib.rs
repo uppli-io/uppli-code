@@ -864,15 +864,25 @@ pub async fn run_query_loop(
             cost_usd: turn_cost,
         });
 
-        // Append assistant message to conversation FIRST — before the budget
-        // guard. Otherwise a budget hit on this turn loses the assistant's
-        // last response (the API call already happened and was paid for; the
-        // user must still see the text). PR P v2 fix (was reversed in v1).
-        messages.push(assistant_msg.clone());
+        // Persistence + budget guard interaction.
+        //
+        // PR P v2 fix: bug #4 — guard used to run BEFORE push, losing the
+        // model's last text response on a budget hit.
+        // PR P v2 review fix: bug #3 — pushing a `tool_use` assistant_msg
+        // without executing the tools persists an orphan that the Anthropic
+        // API rejects on resume/replay (tool_use must be paired with
+        // tool_result on the next turn).
+        //
+        // Strategy:
+        //   - end_turn (text-only response):       push, then guard
+        //   - tool_use (will execute tools below): guard, do NOT push if hit
+        //   - max_tokens / other stop reasons:     push, then guard
+        let is_tool_use_turn = stop_reason.as_deref() == Some("tool_use");
+        if !is_tool_use_turn {
+            messages.push(assistant_msg.clone());
+        }
 
         // Budget guard: abort the loop if the configured token cap is exceeded.
-        // Runs AFTER the message is persisted so the conversation history
-        // reflects what the model actually produced.
         if let Some(limit) = config.max_total_tokens {
             let spent = cost_tracker.total_tokens();
             if spent >= limit {
@@ -887,6 +897,13 @@ pub async fn run_query_loop(
                     limit_tokens: limit,
                 };
             }
+        }
+
+        // For tool_use turns that survived the budget guard, push the
+        // assistant_msg now — tool execution below will produce the matching
+        // tool_result blocks, preserving the API contract.
+        if is_tool_use_turn {
+            messages.push(assistant_msg.clone());
         }
 
         let stop = stop_reason.as_deref().unwrap_or("end_turn");
@@ -1937,6 +1954,37 @@ mod tests {
             }
             other => panic!("Expected BudgetExceeded, got: {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_result_json_output_schema_lock() {
+        // Schema-lock: the JSON shape emitted by main.rs::CliOutputFormat::Json
+        // and ::StreamJson on a successful EndTurn outcome MUST carry both
+        // `total_tokens` AND `total_cost_usd`. Downstream consumers (bench
+        // pipelines, refacturation) parse one or both. Renaming or removing
+        // either without updating this test breaks them silently.
+        let total_tokens: u64 = 12345;
+        let total_cost_usd: f64 = 0.42;
+        let json = serde_json::json!({
+            "type": "result",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_creation_input_tokens": 10,
+                "cache_read_input_tokens": 5,
+            },
+            "tokens": total_tokens,
+            "total_tokens": total_tokens,
+            "total_cost_usd": total_cost_usd,
+        });
+        assert_eq!(json["type"], "result");
+        assert_eq!(json["tokens"], total_tokens);
+        assert_eq!(json["total_tokens"], total_tokens);
+        assert_eq!(json["total_cost_usd"], total_cost_usd);
+        // Critical for the refacturation use case: both keys present.
+        let obj = json.as_object().expect("must be object");
+        assert!(obj.contains_key("total_tokens"));
+        assert!(obj.contains_key("total_cost_usd"));
     }
 
     #[test]

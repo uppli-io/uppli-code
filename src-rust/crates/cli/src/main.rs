@@ -1610,6 +1610,7 @@ async fn run_sdk_headless(
                         "is_error": false, "num_turns": 0,
                         "result": "", "stop_reason": "end_turn",
                         "total_tokens": cost_tracker.total_tokens(),
+                        "total_cost_usd": cost_tracker.total_cost_usd(),
                         "usage": {"input_tokens": 0, "output_tokens": 0},
                         "modelUsage": {}, "permission_denials": [],
                     }));
@@ -1721,6 +1722,7 @@ async fn run_sdk_headless(
                     "is_error": false, "num_turns": 0,
                     "result": "", "stop_reason": "end_turn",
                     "total_tokens": cost_tracker.total_tokens(),
+                    "total_cost_usd": cost_tracker.total_cost_usd(),
                     "usage": {"input_tokens": 0, "output_tokens": 0},
                     "modelUsage": {}, "permission_denials": [],
                 }));
@@ -2031,6 +2033,7 @@ async fn run_sdk_headless(
                     "result": &full_text,
                     "stop_reason": &stop_reason,
                     "total_tokens": cost_tracker.total_tokens(),
+                    "total_cost_usd": cost_tracker.total_cost_usd(),
                     "usage": {
                         "input_tokens": usage.input_tokens,
                         "output_tokens": usage.output_tokens,
@@ -2053,6 +2056,7 @@ async fn run_sdk_headless(
                     "num_turns": 0,
                     "stop_reason": null,
                     "total_tokens": cost_tracker.total_tokens(),
+                    "total_cost_usd": cost_tracker.total_cost_usd(),
                     "usage": {"input_tokens":0,"output_tokens":0},
                     "modelUsage": {},
                     "permission_denials": [],
@@ -2071,6 +2075,7 @@ async fn run_sdk_headless(
                     "num_turns": 0,
                     "stop_reason": null,
                     "total_tokens": cost_tracker.total_tokens(),
+                    "total_cost_usd": cost_tracker.total_cost_usd(),
                     "usage": {"input_tokens":0,"output_tokens":0},
                     "modelUsage": {},
                     "permission_denials": [],
@@ -2361,6 +2366,7 @@ async fn run_headless(
                         "cache_read_input_tokens": usage.cache_read_input_tokens,
                     },
                     "tokens": cost_tracker.total_tokens(),
+                    "total_cost_usd": cost_tracker.total_cost_usd(),
                 });
                 println!("{}", out);
             }
@@ -2394,6 +2400,7 @@ async fn run_headless(
                             "output_tokens": usage.output_tokens,
                         },
                         "tokens": cost_tracker.total_tokens(),
+                        "total_cost_usd": cost_tracker.total_cost_usd(),
                     });
                     println!("{}", out);
                 }

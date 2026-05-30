@@ -99,6 +99,12 @@ Why decoupled: pricing drifts (promos, tariff changes), tokens don't. Earlier
 versions used `--max-budget-usd <f64>` which fired at the wrong threshold whenever
 pricing drifted. The flag is now removed (see CHANGELOG).
 
+**Cap is evaluated between turns**, not mid-turn. A `--max-tokens-total 1000`
+session that's mid-way through a turn consuming 50k tokens will complete that
+turn first (the API call is already paid for; the model output is preserved)
+and then abort. The stopping point is "first turn boundary ≥ N", not a hard
+ceiling. Plan a margin if the cap is critical.
+
 ```bash
 # Stop the session after 100k cumulative tokens
 uppli-code --max-tokens-total 100000 --print "do the task"
