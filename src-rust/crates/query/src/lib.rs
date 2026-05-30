@@ -1956,36 +1956,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_result_json_output_schema_lock() {
-        // Schema-lock: the JSON shape emitted by main.rs::CliOutputFormat::Json
-        // and ::StreamJson on a successful EndTurn outcome MUST carry both
-        // `total_tokens` AND `total_cost_usd`. Downstream consumers (bench
-        // pipelines, refacturation) parse one or both. Renaming or removing
-        // either without updating this test breaks them silently.
-        let total_tokens: u64 = 12345;
-        let total_cost_usd: f64 = 0.42;
-        let json = serde_json::json!({
-            "type": "result",
-            "usage": {
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "cache_creation_input_tokens": 10,
-                "cache_read_input_tokens": 5,
-            },
-            "tokens": total_tokens,
-            "total_tokens": total_tokens,
-            "total_cost_usd": total_cost_usd,
-        });
-        assert_eq!(json["type"], "result");
-        assert_eq!(json["tokens"], total_tokens);
-        assert_eq!(json["total_tokens"], total_tokens);
-        assert_eq!(json["total_cost_usd"], total_cost_usd);
-        // Critical for the refacturation use case: both keys present.
-        let obj = json.as_object().expect("must be object");
-        assert!(obj.contains_key("total_tokens"));
-        assert!(obj.contains_key("total_cost_usd"));
-    }
+    // NOTE: The test_result_json_output_schema_lock test was previously here.
+    // It was moved to crates/cli/src/main.rs::tests::test_build_result_json_record_schema_lock
+    // so it exercises the SAME helper (build_result_json_record) that production
+    // uses, not a duplicated literal that could drift. The shape lock now lives
+    // next to the production emission.
 
     #[test]
     fn test_budget_exceeded_json_output_schema_lock() {

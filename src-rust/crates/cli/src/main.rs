@@ -2356,18 +2356,12 @@ async fn run_headless(
                 } else {
                     full_text
                 };
-                let out = serde_json::json!({
-                    "type": "result",
-                    "result": result_text,
-                    "usage": {
-                        "input_tokens": usage.input_tokens,
-                        "output_tokens": usage.output_tokens,
-                        "cache_creation_input_tokens": usage.cache_creation_input_tokens,
-                        "cache_read_input_tokens": usage.cache_read_input_tokens,
-                    },
-                    "tokens": cost_tracker.total_tokens(),
-                    "total_cost_usd": cost_tracker.total_cost_usd(),
-                });
+                let out = build_result_json_record(
+                    Some(&result_text),
+                    &usage,
+                    cost_tracker.total_tokens(),
+                    cost_tracker.total_cost_usd(),
+                );
                 println!("{}", out);
             }
             QueryOutcome::Error(e) => {
@@ -2393,15 +2387,12 @@ async fn run_headless(
             // Already streamed above; emit final result event
             match outcome {
                 QueryOutcome::EndTurn { usage, .. } => {
-                    let out = serde_json::json!({
-                        "type": "result",
-                        "usage": {
-                            "input_tokens": usage.input_tokens,
-                            "output_tokens": usage.output_tokens,
-                        },
-                        "tokens": cost_tracker.total_tokens(),
-                        "total_cost_usd": cost_tracker.total_cost_usd(),
-                    });
+                    let out = build_result_json_record(
+                        None,
+                        &usage,
+                        cost_tracker.total_tokens(),
+                        cost_tracker.total_cost_usd(),
+                    );
                     println!("{}", out);
                 }
                 QueryOutcome::Error(e) => {
@@ -3763,6 +3754,37 @@ fn json_null_or_string(opt: &Option<String>) -> serde_json::Value {
     }
 }
 
+/// Build the canonical "result" JSON record emitted by --output-format json
+/// and --output-format stream-json on a successful EndTurn outcome.
+///
+/// Centralised here so the schema-lock test in the tests module exercises
+/// the SAME function as production. The test asserts on both `total_tokens`
+/// and `total_cost_usd` keys — downstream refacturation pipelines depend on
+/// both, and renaming either silently breaks them.
+fn build_result_json_record(
+    result_text: Option<&str>,
+    usage: &cc_core::types::UsageInfo,
+    total_tokens: u64,
+    total_cost_usd: f64,
+) -> serde_json::Value {
+    let mut obj = serde_json::json!({
+        "type": "result",
+        "usage": {
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+            "cache_read_input_tokens": usage.cache_read_input_tokens,
+        },
+        "tokens": total_tokens,
+        "total_tokens": total_tokens,
+        "total_cost_usd": total_cost_usd,
+    });
+    if let Some(text) = result_text {
+        obj["result"] = serde_json::Value::String(text.to_string());
+    }
+    obj
+}
+
 // ── CLI flag plumbing tests (PR P v2) ──────────────────────────────────────
 //
 // Prove the new --max-tokens-total flag is wired correctly:
@@ -3825,6 +3847,64 @@ mod tests {
         assert_eq!(cli.max_total_tokens, Some(50000));
         assert_eq!(cli.effort.as_deref(), Some("max"));
         assert_eq!(cli.provider.as_deref(), Some("deepseek"));
+    }
+
+    #[test]
+    fn test_build_result_json_record_schema_lock_with_text() {
+        // Schema-lock test for the `result` JSON record emitted by
+        // --output-format json. Exercises the ACTUAL production helper
+        // (build_result_json_record), so any rename / removal of the
+        // total_tokens or total_cost_usd keys breaks here immediately.
+        // Downstream refacturation pipelines parse these fields.
+        let usage = cc_core::types::UsageInfo {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_input_tokens: 10,
+            cache_read_input_tokens: 5,
+        };
+        let json = build_result_json_record(Some("hello world"), &usage, 165, 0.4242);
+
+        assert_eq!(json["type"], "result");
+        assert_eq!(json["result"], "hello world");
+        assert_eq!(json["usage"]["input_tokens"], 100);
+        assert_eq!(json["usage"]["output_tokens"], 50);
+        assert_eq!(json["usage"]["cache_creation_input_tokens"], 10);
+        assert_eq!(json["usage"]["cache_read_input_tokens"], 5);
+        assert_eq!(json["tokens"], 165u64);
+        assert_eq!(json["total_tokens"], 165u64);
+        assert_eq!(json["total_cost_usd"], 0.4242);
+
+        // Lock the top-level keys: drift here breaks consumers.
+        let obj = json.as_object().expect("must be object");
+        let mut keys: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "result",
+                "tokens",
+                "total_cost_usd",
+                "total_tokens",
+                "type",
+                "usage"
+            ],
+            "result JSON top-level shape drifted — refacturation consumers will break. Update this test ONLY if the schema change is intentional."
+        );
+    }
+
+    #[test]
+    fn test_build_result_json_record_schema_lock_stream_json_omits_text() {
+        // StreamJson mode does NOT carry the "result" text (already streamed).
+        // Verify the helper handles this by passing None.
+        let usage = cc_core::types::UsageInfo::default();
+        let json = build_result_json_record(None, &usage, 7, 0.0);
+        assert_eq!(json["type"], "result");
+        assert!(
+            json.as_object().expect("object").get("result").is_none(),
+            "StreamJson result record must NOT carry the 'result' text field"
+        );
+        assert_eq!(json["total_tokens"], 7u64);
+        assert_eq!(json["total_cost_usd"], 0.0);
     }
 
     #[test]
