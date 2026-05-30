@@ -9,7 +9,9 @@
 // query loop and the OpenAI wire protocol.  Streaming uses SSE with
 // `data: [DONE]` termination (standard OpenAI) or NDJSON (Ollama).
 
-use crate::provider::{ApiFormat, AuthConfig, LlmProvider, ModelMetadata, ProviderCapabilities};
+use crate::provider::{
+    ApiFormat, AuthConfig, LlmProvider, ModelMetadata, ModelPricing, ProviderCapabilities,
+};
 use crate::streaming::{ContentDelta, StreamEvent, StreamHandler};
 use crate::types::CreateMessageRequest;
 use crate::{AvailableModel, CreateMessageResponse};
@@ -77,7 +79,8 @@ impl OpenAiProviderConfig {
                 description: "Local model via Ollama".to_string(),
                 context_window: 128_000,
                 max_output_tokens: 8_192,
-                supports_thinking: true, // Local = free
+                supports_thinking: true,
+                pricing: None, // Local = free
             }],
             default_max_tokens: 8_192,
             default_thinking_budget: Some(16_000),
@@ -110,6 +113,12 @@ impl OpenAiProviderConfig {
                 context_window: 1_000_000,
                 max_output_tokens: 32_768,
                 supports_thinking: true,
+                pricing: Some(ModelPricing {
+                    input_per_mtk: 0.325,
+                    output_per_mtk: 1.95,
+                    cache_creation_per_mtk: 0.0,
+                    cache_read_per_mtk: 0.0,
+                }),
             }],
             default_max_tokens: 16_384,
             default_thinking_budget: Some(16_000),
@@ -146,6 +155,12 @@ impl OpenAiProviderConfig {
                     context_window: 1_000_000,
                     max_output_tokens: 32_768,
                     supports_thinking: true,
+                    pricing: Some(ModelPricing {
+                        input_per_mtk: 0.29,
+                        output_per_mtk: 1.73,
+                        cache_creation_per_mtk: 0.0,
+                        cache_read_per_mtk: 0.0,
+                    }),
                 },
                 ModelMetadata {
                     id: "qwen-turbo-latest".to_string(),
@@ -154,6 +169,12 @@ impl OpenAiProviderConfig {
                     context_window: 1_000_000,
                     max_output_tokens: 16_384,
                     supports_thinking: false,
+                    pricing: Some(ModelPricing {
+                        input_per_mtk: 0.05,
+                        output_per_mtk: 0.20,
+                        cache_creation_per_mtk: 0.0,
+                        cache_read_per_mtk: 0.0,
+                    }),
                 },
                 ModelMetadata {
                     id: "qwen3-max".to_string(),
@@ -162,6 +183,12 @@ impl OpenAiProviderConfig {
                     context_window: 131_072,
                     max_output_tokens: 16_384,
                     supports_thinking: true,
+                    pricing: Some(ModelPricing {
+                        input_per_mtk: 0.8,
+                        output_per_mtk: 2.4,
+                        cache_creation_per_mtk: 0.0,
+                        cache_read_per_mtk: 0.0,
+                    }),
                 },
                 ModelMetadata {
                     id: "qwen3-235b-a22b".to_string(),
@@ -170,6 +197,12 @@ impl OpenAiProviderConfig {
                     context_window: 131_072,
                     max_output_tokens: 16_384,
                     supports_thinking: true,
+                    pricing: Some(ModelPricing {
+                        input_per_mtk: 0.8,
+                        output_per_mtk: 2.4,
+                        cache_creation_per_mtk: 0.0,
+                        cache_read_per_mtk: 0.0,
+                    }),
                 },
             ],
             default_max_tokens: 16_384,
@@ -204,6 +237,12 @@ impl OpenAiProviderConfig {
                     context_window: 128_000,
                     max_output_tokens: 32_768,
                     supports_thinking: false,
+                    pricing: Some(ModelPricing {
+                        input_per_mtk: 2.0,
+                        output_per_mtk: 6.0,
+                        cache_creation_per_mtk: 0.0,
+                        cache_read_per_mtk: 0.0,
+                    }),
                 },
                 ModelMetadata {
                     id: "mistral-small-latest".to_string(),
@@ -212,6 +251,12 @@ impl OpenAiProviderConfig {
                     context_window: 128_000,
                     max_output_tokens: 32_768,
                     supports_thinking: false,
+                    pricing: Some(ModelPricing {
+                        input_per_mtk: 0.2,
+                        output_per_mtk: 0.6,
+                        cache_creation_per_mtk: 0.0,
+                        cache_read_per_mtk: 0.0,
+                    }),
                 },
             ],
             default_max_tokens: 32_768,
@@ -245,6 +290,7 @@ impl OpenAiProviderConfig {
                 context_window: 128_000,
                 max_output_tokens: 16_384,
                 supports_thinking: false,
+                pricing: None,
             }],
             default_max_tokens: 16_384,
             default_thinking_budget: None,

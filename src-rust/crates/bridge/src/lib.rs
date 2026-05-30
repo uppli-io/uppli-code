@@ -1256,6 +1256,7 @@ pub enum BridgeOutbound {
     TurnComplete {
         message_id: String,
         stop_reason: String,
+        usage: Option<BridgeUsage>,
     },
     Error {
         message: String,
@@ -1482,12 +1483,12 @@ pub async fn run_bridge_loop(
                             })
                             .await;
                     }
-                    Some(BridgeOutbound::TurnComplete { message_id, stop_reason }) => {
+                    Some(BridgeOutbound::TurnComplete { message_id, stop_reason, usage }) => {
                         let _ = bridge_ev_tx
                             .send(BridgeEvent::TurnComplete {
                                 message_id,
                                 stop_reason,
-                                usage: None,
+                                usage,
                             })
                             .await;
                     }

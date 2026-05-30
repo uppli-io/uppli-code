@@ -901,7 +901,12 @@ async fn main() -> anyhow::Result<()> {
             query_config.max_tokens = client.max_output_tokens(explicit_model);
         }
     }
-    // PR P: pricing tracking removed. cost_tracker accumulates raw tokens only.
+    // Seed pricing from provider metadata for USD cost display + bridge.
+    // Budget enforcement uses tokens (max_total_tokens) — pricing is for
+    // display/persistence only.
+    if let Some(pricing) = client.model_pricing(&query_config.model) {
+        cost_tracker.set_pricing(pricing);
+    }
 
     // Start LSP servers in background (non-blocking).
     // If lsp_servers is empty, try auto-detecting installed language servers.
@@ -1570,10 +1575,18 @@ async fn run_sdk_headless(
                     let total = cost_tracker.total_tokens();
                     let input = cost_tracker.input_tokens();
                     let output = cost_tracker.output_tokens();
-                    let msg = format!(
-                        "Session tokens: {}\n  Input:  {}\n  Output: {}\n(See provider dashboard for USD billing.)",
-                        total, input, output
-                    );
+                    let cost = cost_tracker.total_cost_usd();
+                    let msg = if cost > 0.0 {
+                        format!(
+                            "Session: {} tokens · ${:.4}\n  Input:  {}\n  Output: {}\n(Best-effort cost; see provider dashboard for billing.)",
+                            total, cost, input, output
+                        )
+                    } else {
+                        format!(
+                            "Session tokens: {}\n  Input:  {}\n  Output: {}\n(No pricing configured for this model.)",
+                            total, input, output
+                        )
+                    };
                     emit!(serde_json::json!({
                         "type": "assistant",
                         "uuid": uuid::Uuid::new_v4().to_string(),
@@ -1660,15 +1673,21 @@ async fn run_sdk_headless(
                 "status" => {
                     let caps = client.capabilities();
                     let total_tokens = cost_tracker.total_tokens();
+                    let cost = cost_tracker.total_cost_usd();
+                    let cost_line = if cost > 0.0 {
+                        format!("Session: {} tokens · ${:.4}", total_tokens, cost)
+                    } else {
+                        format!("Session tokens: {}", total_tokens)
+                    };
                     Some(&*format!(
                         "Uppli Code Status:\n\
                         Provider: {}\n\
                         Model: {}\n\
-                        Session tokens: {}\n\
+                        {}\n\
                         Messages: {}\n\
                         Config: ~/.uppli/\n\
                         Memory: UPPLI.md",
-                        caps.name, &active_model, total_tokens, messages.len()
+                        caps.name, &active_model, cost_line, messages.len()
                     ))
                 }
                 "version" => {
@@ -3171,10 +3190,24 @@ async fn run_interactive(
                     }),
                     QueryEvent::TurnComplete {
                         stop_reason, turn, ..
-                    } => Some(BridgeOutbound::TurnComplete {
-                        message_id: format!("turn-{}", turn),
-                        stop_reason: stop_reason.clone(),
-                    }),
+                    } => {
+                        let usage_tokens_in = cost_tracker.input_tokens() as u32;
+                        let usage_tokens_out = cost_tracker.output_tokens() as u32;
+                        let usage_cost = cost_tracker.total_cost_usd();
+                        Some(BridgeOutbound::TurnComplete {
+                            message_id: format!("turn-{}", turn),
+                            stop_reason: stop_reason.clone(),
+                            usage: Some(cc_bridge::BridgeUsage {
+                                input_tokens: usage_tokens_in,
+                                output_tokens: usage_tokens_out,
+                                cost_usd: if usage_cost > 0.0 {
+                                    Some(usage_cost)
+                                } else {
+                                    None
+                                },
+                            }),
+                        })
+                    }
                     QueryEvent::Error(msg) => Some(BridgeOutbound::Error {
                         message: msg.clone(),
                     }),

@@ -2277,28 +2277,69 @@ pub mod cost {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    /// Thread-safe, lock-free token usage tracker.
+    /// Per-model pricing tiers (USD per million tokens).
     ///
-    /// PR P (2026-05-29) removed USD/pricing tracking. Maintaining pricing
-    /// values per model/provider was a perpetual sync burden (drift on every
-    /// provider promo or tariff change), and DeepSeek's promotional pricing
-    /// silently underestimated cost by 4× anyway. For a CLI, the source of
-    /// truth for spend is the provider dashboard; uppli-code now tracks
-    /// what's objective and free: token counts reported in each response.
+    /// PR P v2 (2026-05-30) restored pricing after the initial drop in v1 was
+    /// reverted on review: exposing per-run cost is a product differentiator
+    /// downstream apps rely on (e.g. catalog enrichment that refactures to a
+    /// client). Pricing is BEST EFFORT — provider promos and tariff changes
+    /// cause drift; the provider dashboard remains the source of truth for
+    /// billing. Budget enforcement is **separate** and uses tokens
+    /// (see `QueryConfig.max_total_tokens` / `--max-tokens-total`).
+    #[derive(Debug, Clone, Copy)]
+    pub struct ModelPricing {
+        pub input_per_mtk: f64,
+        pub output_per_mtk: f64,
+        pub cache_creation_per_mtk: f64,
+        pub cache_read_per_mtk: f64,
+    }
+
+    impl ModelPricing {
+        /// Zero pricing (used when provider doesn't report pricing, e.g., Ollama).
+        pub const FREE: Self = Self {
+            input_per_mtk: 0.0,
+            output_per_mtk: 0.0,
+            cache_creation_per_mtk: 0.0,
+            cache_read_per_mtk: 0.0,
+        };
+    }
+
+    impl Default for ModelPricing {
+        fn default() -> Self {
+            Self::FREE
+        }
+    }
+
+    /// Thread-safe, lock-free token + cost tracker.
     ///
-    /// Budget enforcement was migrated from `--max-budget-usd <f64>` to
-    /// `--max-tokens-total <u64>` (see QueryConfig.max_total_tokens).
+    /// Tokens are objective (provider-reported) and drive budget enforcement.
+    /// USD cost is derived from configured pricing and exposed for display
+    /// and downstream consumption (bridge, session storage, stats).
     #[derive(Debug, Default)]
     pub struct CostTracker {
         input_tokens: AtomicU64,
         output_tokens: AtomicU64,
         cache_creation_tokens: AtomicU64,
         cache_read_tokens: AtomicU64,
+        pricing: parking_lot::RwLock<ModelPricing>,
     }
 
     impl CostTracker {
         pub fn new() -> Arc<Self> {
             Arc::new(Self::default())
+        }
+
+        /// Create a tracker with explicit pricing (from provider.model_pricing()).
+        pub fn with_pricing(pricing: ModelPricing) -> Arc<Self> {
+            Arc::new(Self {
+                pricing: parking_lot::RwLock::new(pricing),
+                ..Default::default()
+            })
+        }
+
+        /// Update pricing (e.g., when the model changes mid-session).
+        pub fn set_pricing(&self, pricing: ModelPricing) {
+            *self.pricing.write() = pricing;
         }
 
         pub fn add_usage(&self, input: u64, output: u64, cache_creation: u64, cache_read: u64) {
@@ -2333,12 +2374,36 @@ pub mod cost {
             self.cache_read_tokens.load(Ordering::Relaxed)
         }
 
+        /// Computed USD cost from accumulated tokens × current pricing.
+        /// Returns 0.0 when no pricing is configured (Ollama or unknown model).
+        pub fn total_cost_usd(&self) -> f64 {
+            let pricing = *self.pricing.read();
+            let input = self.input_tokens.load(Ordering::Relaxed) as f64;
+            let output = self.output_tokens.load(Ordering::Relaxed) as f64;
+            let cache_creation = self.cache_creation_tokens.load(Ordering::Relaxed) as f64;
+            let cache_read = self.cache_read_tokens.load(Ordering::Relaxed) as f64;
+
+            (input * pricing.input_per_mtk
+                + output * pricing.output_per_mtk
+                + cache_creation * pricing.cache_creation_per_mtk
+                + cache_read * pricing.cache_read_per_mtk)
+                / 1_000_000.0
+        }
+
         /// Produce a human-readable summary string, e.g. for display in the TUI.
         pub fn summary(&self) -> String {
             let total = self.total_tokens();
             let input = self.input_tokens();
             let output = self.output_tokens();
-            format!("{} tokens ({} in, {} out)", total, input, output)
+            let cost = self.total_cost_usd();
+            if cost > 0.0 {
+                format!(
+                    "{} tokens ({} in, {} out) · ${:.4}",
+                    total, input, output, cost
+                )
+            } else {
+                format!("{} tokens ({} in, {} out)", total, input, output)
+            }
         }
     }
 }

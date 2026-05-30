@@ -145,12 +145,15 @@ src-rust/crates/
 
 ## Adding a provider
 
-Two changes:
+Three changes today:
 
-1. Add a `ProviderPreset` in `crates/api/src/provider_factory.rs`
-2. If the wire format is new, add a provider impl (most reuse `OpenAiProvider`)
+1. Add a `ProviderType` variant in `crates/core/src/config.rs`
+2. Add a `ProviderPreset` in `crates/api/src/provider_factory.rs` and a match arm in `default_model_for`
+3. If the wire format is new, add a provider impl (most reuse `OpenAiProvider`)
 
-Nothing else. The registry drives the CLI, onboarding, and model picker.
+The registry drives the CLI, onboarding, and model picker.
+
+(An upcoming PR S consolidates this to one TOML file per provider — see issue tracker.)
 
 ## Build
 

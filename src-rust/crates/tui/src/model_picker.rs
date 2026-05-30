@@ -703,6 +703,7 @@ mod tests {
                     context_window: 128_000,
                     max_output_tokens: 64_000,
                     supports_thinking: true,
+                    pricing: None,
                 },
                 ModelMetadata {
                     id: "test-chat".to_string(),
@@ -711,6 +712,7 @@ mod tests {
                     context_window: 128_000,
                     max_output_tokens: 8_192,
                     supports_thinking: false,
+                    pricing: None,
                 },
                 ModelMetadata {
                     id: "test-mini".to_string(),
@@ -719,6 +721,7 @@ mod tests {
                     context_window: 32_000,
                     max_output_tokens: 4_096,
                     supports_thinking: false,
+                    pricing: None,
                 },
             ],
             default_max_tokens: 64_000,

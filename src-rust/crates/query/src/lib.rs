@@ -842,17 +842,37 @@ pub async fn run_query_loop(
             "Turn completed"
         );
 
-        let (assistant_msg, usage, stop_reason) = accumulator.finish();
+        let (mut assistant_msg, usage, stop_reason) = accumulator.finish();
 
-        // Track costs
+        // Track costs (session-cumulative)
+        let prev_cost = cost_tracker.total_cost_usd();
         cost_tracker.add_usage(
             usage.input_tokens,
             usage.output_tokens,
             usage.cache_creation_input_tokens,
             usage.cache_read_input_tokens,
         );
+        let turn_cost = cost_tracker.total_cost_usd() - prev_cost;
+
+        // Stamp per-message cost so session storage / consumers downstream
+        // can attribute spend to individual messages.
+        assistant_msg.cost = Some(cc_core::types::MessageCost {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_creation_input_tokens: usage.cache_creation_input_tokens,
+            cache_read_input_tokens: usage.cache_read_input_tokens,
+            cost_usd: turn_cost,
+        });
+
+        // Append assistant message to conversation FIRST — before the budget
+        // guard. Otherwise a budget hit on this turn loses the assistant's
+        // last response (the API call already happened and was paid for; the
+        // user must still see the text). PR P v2 fix (was reversed in v1).
+        messages.push(assistant_msg.clone());
 
         // Budget guard: abort the loop if the configured token cap is exceeded.
+        // Runs AFTER the message is persisted so the conversation history
+        // reflects what the model actually produced.
         if let Some(limit) = config.max_total_tokens {
             let spent = cost_tracker.total_tokens();
             if spent >= limit {
@@ -868,9 +888,6 @@ pub async fn run_query_loop(
                 };
             }
         }
-
-        // Append assistant message to conversation
-        messages.push(assistant_msg.clone());
 
         let stop = stop_reason.as_deref().unwrap_or("end_turn");
 

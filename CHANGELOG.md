@@ -1,0 +1,24 @@
+# Changelog
+
+All notable changes to uppli-code are documented in this file.
+
+## Unreleased
+
+### Breaking changes
+
+- **`--max-budget-usd <f64>` removed.** Replaced by **`--max-tokens-total <u64>`** as the session-level abort cap. Scripts relying on the old flag will fail with "unknown flag" — migrate by passing a token budget instead.
+  - **Why:** USD enforcement depended on per-provider pricing that drifts (DeepSeek's promo, provider tariff changes, etc.). Token counts are objective and provider-reported, so the cap fires at a deterministic threshold regardless of pricing accuracy.
+  - **What's preserved:** USD cost is still exposed everywhere (slash commands, status bar, bridge, session storage) — best-effort from configured pricing — because downstream apps depend on it for refacturation and reporting. Cap enforcement and cost display are now decoupled.
+
+- **`QueryOutcome::BudgetExceeded` field rename.** Was `{ cost_usd, limit_usd }`, now `{ tokens, limit_tokens }`. JSON output schema for `--output-format json`/`stream-json` emits `{"type": "budget_exceeded", "tokens": N, "limit_tokens": N}` on stderr with exit code 2.
+
+### Bug fixes
+
+- The budget guard previously aborted **before** appending the assistant's last response to the conversation, losing the model's final message on the turn that triggered the cap. Now the message is persisted first, then the cap is evaluated — consumers see the response the API already paid for.
+
+### Internals
+
+- `CostTracker` keeps `total_cost_usd()` (derived from per-model pricing) alongside `total_tokens()`. Pricing is seeded from `LlmProvider::model_pricing()` at session start.
+- `ModelMetadata.pricing: Option<ModelPricing>` is back on every model. `None` means free/unknown (Ollama, generic OpenAI-compat endpoints).
+- Assistant messages now stamp their per-turn `cost_usd` into `MessageCost` so session storage (`~/.uppli/sessions/*.jsonl`) attributes spend per message.
+- `BridgeEvent::TurnComplete` payload includes `usage: Option<BridgeUsage>` with `{input_tokens, output_tokens, cost_usd}` for the web UI / SDK consumers.

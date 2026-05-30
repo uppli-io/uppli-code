@@ -546,19 +546,26 @@ impl SlashCommand for CostCommand {
         "cost"
     }
     fn description(&self) -> &str {
-        "Show token usage for this session"
+        "Show token usage and estimated cost for this session"
     }
 
     async fn execute(&self, _args: &str, ctx: &mut CommandContext) -> CommandResult {
         let tracker = &ctx.cost_tracker;
+        let cost = tracker.total_cost_usd();
+        let cost_line = if cost > 0.0 {
+            format!("\n  Estimated cost: ${:.4} (best-effort)", cost)
+        } else {
+            String::new()
+        };
         CommandResult::Message(format!(
             "Session token usage:\n  Input:          {}\n  Output:         {}\n  \
-             Cache creation: {}\n  Cache read:     {}\n  Total:          {}",
+             Cache creation: {}\n  Cache read:     {}\n  Total:          {}{}",
             tracker.input_tokens(),
             tracker.output_tokens(),
             tracker.cache_creation_tokens(),
             tracker.cache_read_tokens(),
             tracker.total_tokens(),
+            cost_line,
         ))
     }
 }
@@ -1440,6 +1447,7 @@ impl SlashCommand for UsageCommand {
         let cache_creation = ctx.cost_tracker.cache_creation_tokens();
         let cache_read = ctx.cost_tracker.cache_read_tokens();
         let total = ctx.cost_tracker.total_tokens();
+        let cost = ctx.cost_tracker.total_cost_usd();
 
         // Try to get account tier from OAuth tokens
         let account_info = match cc_core::oauth::OAuthTokens::load().await {
@@ -1456,6 +1464,12 @@ impl SlashCommand for UsageCommand {
             }
         };
 
+        let cost_line = if cost > 0.0 {
+            format!("Estimated cost: ${cost:.4} (best-effort)\n\n", cost = cost)
+        } else {
+            String::new()
+        };
+
         CommandResult::Message(format!(
             "API Usage — Current Session\n\
              ────────────────────────────\n\
@@ -1467,7 +1481,7 @@ impl SlashCommand for UsageCommand {
                Cache write:  {cache_creation:>10}\n\
                Cache read:   {cache_read:>10}\n\
                Total:        {total:>10}\n\n\
-             For cost in USD, see your provider dashboard.\n\
+             {cost_line}For authoritative billing, see your provider dashboard.\n\
              Use /extra-usage for per-call breakdown.\n\
              Use /rate-limit-options to see your plan limits.",
             account_info = account_info,
@@ -1477,6 +1491,7 @@ impl SlashCommand for UsageCommand {
             cache_creation = cache_creation,
             cache_read = cache_read,
             total = total,
+            cost_line = cost_line,
         ))
     }
 }
