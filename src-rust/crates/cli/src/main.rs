@@ -3755,3 +3755,79 @@ fn json_null_or_string(opt: &Option<String>) -> serde_json::Value {
         None => serde_json::Value::Null,
     }
 }
+
+// ── CLI flag plumbing tests (PR P v2) ──────────────────────────────────────
+//
+// Prove the new --max-tokens-total flag is wired correctly:
+//   1. It parses to Cli.max_total_tokens (Some(N) on present, None on absent)
+//   2. The renamed (was --max-budget-usd) flag is REMOVED so old scripts fail
+//      loudly instead of silently being ignored
+//   3. Parses combine cleanly with --effort and --provider
+//
+// These complement the runtime budget-check tests in cc-query.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_max_tokens_total_flag_parses_to_some() {
+        let cli = Cli::try_parse_from(["uppli-code", "--max-tokens-total", "12345"])
+            .expect("--max-tokens-total should parse");
+        assert_eq!(cli.max_total_tokens, Some(12345));
+    }
+
+    #[test]
+    fn test_max_tokens_total_absent_yields_none() {
+        let cli = Cli::try_parse_from(["uppli-code"]).expect("no flags should parse");
+        assert_eq!(cli.max_total_tokens, None);
+    }
+
+    #[test]
+    fn test_max_budget_usd_is_removed_old_flag_fails_loudly() {
+        // Breaking change validation: --max-budget-usd MUST NOT be accepted.
+        // If clap silently accepted it, old scripts would proceed with no cap,
+        // which is exactly the regression we're guarding against.
+        let res = Cli::try_parse_from(["uppli-code", "--max-budget-usd", "5.00"]);
+        assert!(
+            res.is_err(),
+            "--max-budget-usd must error (was removed in PR P); got: {:?}",
+            res.map(|c| c.max_total_tokens)
+        );
+        let err = res.unwrap_err().to_string();
+        assert!(
+            err.contains("unexpected") || err.contains("unknown") || err.contains("found"),
+            "Error must indicate the flag is unrecognised, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_max_tokens_total_combines_with_effort_and_provider() {
+        let cli = Cli::try_parse_from([
+            "uppli-code",
+            "--max-tokens-total",
+            "50000",
+            "--effort",
+            "max",
+            "--provider",
+            "deepseek",
+        ])
+        .expect("flag combo should parse");
+        assert_eq!(cli.max_total_tokens, Some(50000));
+        assert_eq!(cli.effort.as_deref(), Some("max"));
+        assert_eq!(cli.provider.as_deref(), Some("deepseek"));
+    }
+
+    #[test]
+    fn test_effort_max_flag_parses() {
+        // Pin that --effort still accepts the documented values after
+        // the output_config.effort revert in PR B.
+        for level in ["low", "medium", "high", "max"] {
+            let cli = Cli::try_parse_from(["uppli-code", "--effort", level])
+                .unwrap_or_else(|e| panic!("--effort {} must parse: {}", level, e));
+            assert_eq!(cli.effort.as_deref(), Some(level));
+        }
+    }
+}
