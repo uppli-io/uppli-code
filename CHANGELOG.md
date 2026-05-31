@@ -25,3 +25,21 @@ All notable changes to uppli-code are documented in this file.
 - JSON output (`--output-format json` / `stream-json`) `result` records carry both `total_tokens` (u64) and `total_cost_usd` (f64). Schema-locked in `cc-query` tests so downstream consumers (refacturation pipelines) don't break silently on a rename.
 - TUI status bar live shows `${cost:.4}` when pricing is configured, blank when unknown (Ollama).
 - Slash commands `/cost`, `/status`, `/usage`, `/stats`, `/insights`, `/extra-usage` all surface cost consistently when available.
+
+### Known limitations
+
+- **Asymmetric loss on budget hit during a `tool_use` turn.** If the cap fires
+  on a turn whose `stop_reason == "tool_use"`, the assistant message (model's
+  reasoning text + tool_use blocks) is intentionally NOT persisted, because
+  pushing a `tool_use` without its `tool_result` would create an orphan the
+  Anthropic API rejects on resume/replay (see fix for review finding #3).
+  The trade-off is that the final pre-cap reasoning is lost from session
+  history — symmetric to bug #4's fix preserving text on `end_turn`, but
+  inverted for `tool_use`. There is no clean solution without synthesising
+  a fake `tool_result`, which we explicitly chose not to do.
+
+- **JSON `result` record carries both `tokens` and `total_tokens` keys with
+  the same value.** `tokens` is the v1 key, `total_tokens` is the v2 key
+  matching the format of other emissions. Both are kept for one release
+  cycle to ease consumer migration. `tokens` will be removed in a future
+  release; consumers should migrate to `total_tokens`.

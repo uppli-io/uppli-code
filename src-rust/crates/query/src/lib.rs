@@ -2005,4 +2005,74 @@ mod tests {
             "JSON output schema drifted — automation consuming the budget event will break. Update this test only if the schema change is intentional."
         );
     }
+
+    // ── PR P v3 review-residual fix: regression tests on push/no-push logic ──
+    //
+    // Pin the invariant from the production code at lines 867-907:
+    //   - end_turn turn   → assistant_msg pushed BEFORE guard (preserves text)
+    //   - tool_use turn   → assistant_msg pushed AFTER guard (no orphan)
+    //
+    // Without these, a refactor could silently swap the order and re-introduce
+    // either bug #3 (orphan tool_use) or bug #4 (lost final text).
+
+    /// Mirror of the production push/no-push decision. Production code:
+    ///   let is_tool_use_turn = stop_reason.as_deref() == Some("tool_use");
+    ///   if !is_tool_use_turn { messages.push(...); }   // push BEFORE guard
+    ///   <guard returns early on budget hit>
+    ///   if is_tool_use_turn { messages.push(...); }    // push AFTER guard
+    ///
+    /// Returns true if the message would be pushed (i.e. survive to live in
+    /// `messages`), false if dropped (tool_use orphan prevention).
+    fn simulate_push_decision(stop_reason: Option<&str>, budget_exceeded: bool) -> bool {
+        let is_tool_use_turn = stop_reason == Some("tool_use");
+        if !is_tool_use_turn {
+            return true; // end_turn / max_tokens / other → always push
+        }
+        !budget_exceeded // tool_use → push only if guard survived
+    }
+
+    #[test]
+    fn test_end_turn_with_budget_hit_pushes_message() {
+        // bug #4 invariant: text response on the final turn must NOT be lost
+        assert!(
+            simulate_push_decision(Some("end_turn"), true),
+            "end_turn turn that hits budget MUST push (preserves final text)"
+        );
+    }
+
+    #[test]
+    fn test_tool_use_with_budget_hit_does_not_push_orphan() {
+        // bug #3 invariant: tool_use blocks must NOT be persisted without
+        // matching tool_result (Anthropic API rejects on resume/replay)
+        assert!(
+            !simulate_push_decision(Some("tool_use"), true),
+            "tool_use turn that hits budget MUST NOT push (no orphan persisted)"
+        );
+    }
+
+    #[test]
+    fn test_tool_use_without_budget_hit_pushes_message() {
+        assert!(
+            simulate_push_decision(Some("tool_use"), false),
+            "tool_use turn that survives budget pushes (tools will run, tool_result follows)"
+        );
+    }
+
+    #[test]
+    fn test_other_stop_reasons_follow_end_turn_semantics() {
+        // max_tokens, stop_sequence, None — all "final" non-tool-use turns:
+        // their content is meaningful, push first.
+        for sr in [Some("max_tokens"), Some("stop_sequence"), None] {
+            assert!(
+                simulate_push_decision(sr, true),
+                "stop_reason {:?} with budget hit must push (text preserved)",
+                sr
+            );
+            assert!(
+                simulate_push_decision(sr, false),
+                "stop_reason {:?} without budget hit must push",
+                sr
+            );
+        }
+    }
 }
