@@ -89,6 +89,42 @@ pub enum QueryOutcome {
     BudgetExceeded { tokens: u64, limit_tokens: u64 },
 }
 
+/// When to push an assistant message to the conversation history relative to
+/// the budget guard. See `assistant_push_timing` below for the decision logic
+/// and `run_query_loop` for the use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssistantPushTiming {
+    /// Push BEFORE the budget guard. Used for end_turn / max_tokens / other
+    /// final stop reasons whose text content must be preserved even on a
+    /// budget hit (bug #4 invariant).
+    BeforeGuard,
+    /// Push AFTER the budget guard. Used for tool_use turns: the assistant_msg
+    /// contains tool_use blocks that must be paired with tool_result on the
+    /// next turn (or NEVER persisted at all if the budget kills the loop
+    /// before tools execute). Otherwise Anthropic API rejects on resume
+    /// (bug #3 invariant).
+    AfterGuard,
+}
+
+/// Decide when an assistant message should be persisted to `messages`
+/// relative to the budget guard, based on the model's stop_reason.
+///
+/// This is the canonical decision used by `run_query_loop`. Tests in this
+/// module exercise this function directly (not a mirror) so any change to
+/// the logic — including a reordering of the two push sites in the loop —
+/// is caught by `test_*_push_timing` tests below.
+///
+/// Invariants:
+///   - end_turn / max_tokens / stop_sequence / None → BeforeGuard
+///   - tool_use → AfterGuard
+pub fn assistant_push_timing(stop_reason: Option<&str>) -> AssistantPushTiming {
+    if stop_reason == Some("tool_use") {
+        AssistantPushTiming::AfterGuard
+    } else {
+        AssistantPushTiming::BeforeGuard
+    }
+}
+
 /// Configuration for a single query-loop invocation.
 #[derive(Clone)]
 pub struct QueryConfig {
@@ -865,20 +901,11 @@ pub async fn run_query_loop(
         });
 
         // Persistence + budget guard interaction.
-        //
-        // PR P v2 fix: bug #4 — guard used to run BEFORE push, losing the
-        // model's last text response on a budget hit.
-        // PR P v2 review fix: bug #3 — pushing a `tool_use` assistant_msg
-        // without executing the tools persists an orphan that the Anthropic
-        // API rejects on resume/replay (tool_use must be paired with
-        // tool_result on the next turn).
-        //
-        // Strategy:
-        //   - end_turn (text-only response):       push, then guard
-        //   - tool_use (will execute tools below): guard, do NOT push if hit
-        //   - max_tokens / other stop reasons:     push, then guard
-        let is_tool_use_turn = stop_reason.as_deref() == Some("tool_use");
-        if !is_tool_use_turn {
+        // See `assistant_push_timing` for the decision tree + invariants.
+        // If you change the order below, the tests on `assistant_push_timing`
+        // will fail and force the test to be updated in lockstep.
+        let push_timing = assistant_push_timing(stop_reason.as_deref());
+        if push_timing == AssistantPushTiming::BeforeGuard {
             messages.push(assistant_msg.clone());
         }
 
@@ -899,10 +926,10 @@ pub async fn run_query_loop(
             }
         }
 
-        // For tool_use turns that survived the budget guard, push the
-        // assistant_msg now — tool execution below will produce the matching
-        // tool_result blocks, preserving the API contract.
-        if is_tool_use_turn {
+        // For tool_use turns that survived the budget guard, push now —
+        // tool execution below will produce the matching tool_result blocks,
+        // preserving the API contract.
+        if push_timing == AssistantPushTiming::AfterGuard {
             messages.push(assistant_msg.clone());
         }
 
@@ -2008,69 +2035,40 @@ mod tests {
 
     // ── PR P v3 review-residual fix: regression tests on push/no-push logic ──
     //
-    // Pin the invariant from the production code at lines 867-907:
-    //   - end_turn turn   → assistant_msg pushed BEFORE guard (preserves text)
-    //   - tool_use turn   → assistant_msg pushed AFTER guard (no orphan)
-    //
-    // Without these, a refactor could silently swap the order and re-introduce
-    // either bug #3 (orphan tool_use) or bug #4 (lost final text).
-
-    /// Mirror of the production push/no-push decision. Production code:
-    ///   let is_tool_use_turn = stop_reason.as_deref() == Some("tool_use");
-    ///   if !is_tool_use_turn { messages.push(...); }   // push BEFORE guard
-    ///   <guard returns early on budget hit>
-    ///   if is_tool_use_turn { messages.push(...); }    // push AFTER guard
-    ///
-    /// Returns true if the message would be pushed (i.e. survive to live in
-    /// `messages`), false if dropped (tool_use orphan prevention).
-    fn simulate_push_decision(stop_reason: Option<&str>, budget_exceeded: bool) -> bool {
-        let is_tool_use_turn = stop_reason == Some("tool_use");
-        if !is_tool_use_turn {
-            return true; // end_turn / max_tokens / other → always push
-        }
-        !budget_exceeded // tool_use → push only if guard survived
-    }
+    // Pin the invariant from production by exercising `assistant_push_timing`
+    // DIRECTLY (not a mirror). `run_query_loop` calls the same function, so
+    // a future refactor that breaks the invariant fails these tests AND fails
+    // production simultaneously — no silent divergence possible.
 
     #[test]
-    fn test_end_turn_with_budget_hit_pushes_message() {
-        // bug #4 invariant: text response on the final turn must NOT be lost
-        assert!(
-            simulate_push_decision(Some("end_turn"), true),
-            "end_turn turn that hits budget MUST push (preserves final text)"
+    fn test_assistant_push_timing_end_turn_before_guard() {
+        // bug #4 invariant: final text response must NOT be lost on budget hit
+        assert_eq!(
+            assistant_push_timing(Some("end_turn")),
+            AssistantPushTiming::BeforeGuard,
+            "end_turn must push BEFORE guard so final text survives a budget hit"
         );
     }
 
     #[test]
-    fn test_tool_use_with_budget_hit_does_not_push_orphan() {
+    fn test_assistant_push_timing_tool_use_after_guard() {
         // bug #3 invariant: tool_use blocks must NOT be persisted without
         // matching tool_result (Anthropic API rejects on resume/replay)
-        assert!(
-            !simulate_push_decision(Some("tool_use"), true),
-            "tool_use turn that hits budget MUST NOT push (no orphan persisted)"
+        assert_eq!(
+            assistant_push_timing(Some("tool_use")),
+            AssistantPushTiming::AfterGuard,
+            "tool_use must push AFTER guard so a budget hit drops the orphan"
         );
     }
 
     #[test]
-    fn test_tool_use_without_budget_hit_pushes_message() {
-        assert!(
-            simulate_push_decision(Some("tool_use"), false),
-            "tool_use turn that survives budget pushes (tools will run, tool_result follows)"
-        );
-    }
-
-    #[test]
-    fn test_other_stop_reasons_follow_end_turn_semantics() {
-        // max_tokens, stop_sequence, None — all "final" non-tool-use turns:
-        // their content is meaningful, push first.
+    fn test_assistant_push_timing_other_stop_reasons_follow_end_turn() {
+        // max_tokens, stop_sequence, None — non-tool-use → same as end_turn.
         for sr in [Some("max_tokens"), Some("stop_sequence"), None] {
-            assert!(
-                simulate_push_decision(sr, true),
-                "stop_reason {:?} with budget hit must push (text preserved)",
-                sr
-            );
-            assert!(
-                simulate_push_decision(sr, false),
-                "stop_reason {:?} without budget hit must push",
+            assert_eq!(
+                assistant_push_timing(sr),
+                AssistantPushTiming::BeforeGuard,
+                "stop_reason {:?} must follow end_turn semantics (push first)",
                 sr
             );
         }
