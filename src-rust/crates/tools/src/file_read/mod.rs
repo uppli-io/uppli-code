@@ -11,7 +11,9 @@
 mod caption;
 mod detect;
 mod image;
+mod legacy_office;
 mod limits;
+mod odf;
 mod ooxml;
 mod output;
 mod pdf;
