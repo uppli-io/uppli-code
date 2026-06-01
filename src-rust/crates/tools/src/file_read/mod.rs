@@ -91,6 +91,30 @@ impl Tool for FileReadTool {
             ));
         }
 
+        // Pre-flight size cap — the most important fix in PR B. The legacy
+        // code path slurped the whole file into memory via read_to_string
+        // with no guard, so a multi-GB log file would OOM the agent.
+        // Bound the maximum size BEFORE any byte is read.
+        match tokio::fs::metadata(&path).await {
+            Ok(meta) if meta.len() > limits::MAX_FILE_BYTES => {
+                return ToolResult::error(format!(
+                    "[File too large: {} = {} > {} cap. \
+                     Use Bash with head/tail/sed to read a slice, or split the file.]",
+                    path.display(),
+                    limits::human_bytes(meta.len()),
+                    limits::human_bytes(limits::MAX_FILE_BYTES),
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                return ToolResult::error(format!(
+                    "Failed to read file metadata for {}: {}",
+                    path.display(),
+                    e
+                ));
+            }
+        }
+
         // Detect binary / image files by extension
         let ext = path
             .extension()
@@ -168,5 +192,79 @@ impl Tool for FileReadTool {
         }
 
         ToolResult::success(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cc_core::config::Config;
+    use cc_core::permissions::AutoPermissionHandler;
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    fn test_ctx(working_dir: PathBuf) -> ToolContext {
+        let handler = Arc::new(AutoPermissionHandler {
+            mode: cc_core::config::PermissionMode::Default,
+        });
+        ToolContext {
+            working_dir,
+            permission_mode: cc_core::config::PermissionMode::Default,
+            permission_handler: handler,
+            cost_tracker: cc_core::cost::CostTracker::new(),
+            session_id: "test".to_string(),
+            file_history: Arc::new(parking_lot::Mutex::new(
+                cc_core::file_history::FileHistory::new(),
+            )),
+            current_turn: Arc::new(AtomicUsize::new(0)),
+            non_interactive: true,
+            mcp_manager: None,
+            config: Config::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_rejects_file_larger_than_cap() {
+        // Create a sparse file just over MAX_FILE_BYTES so the cap fires.
+        // `seek` + 1-byte write is enough — metadata().len() reads the
+        // declared length, not the on-disk allocation, so the test
+        // doesn't actually write 100 MiB.
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("huge.txt");
+        let file = std::fs::File::create(&path).expect("create");
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = file;
+        f.seek(SeekFrom::Start(limits::MAX_FILE_BYTES + 1))
+            .expect("seek");
+        f.write_all(b"x").expect("write 1 byte at the end");
+        drop(f);
+
+        let ctx = test_ctx(tmp.path().to_path_buf());
+        let tool = FileReadTool;
+        let input = json!({ "file_path": path.to_str().unwrap() });
+        let result = tool.execute(input, &ctx).await;
+        assert!(result.is_error, "huge file must be refused");
+        assert!(
+            result.content.contains("File too large"),
+            "error must mention size cap, got: {}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn preflight_passes_small_file() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("small.txt");
+        std::fs::write(&path, "line one\nline two\n").expect("write");
+
+        let ctx = test_ctx(tmp.path().to_path_buf());
+        let tool = FileReadTool;
+        let input = json!({ "file_path": path.to_str().unwrap() });
+        let result = tool.execute(input, &ctx).await;
+        assert!(!result.is_error, "small file must pass: {}", result.content);
+        assert!(result.content.contains("line one"));
+        assert!(result.content.contains("line two"));
     }
 }
