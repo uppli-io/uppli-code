@@ -1,4 +1,9 @@
 //! Analytics and telemetry (OpenTelemetry-compatible counters)
+//!
+//! PR P (2026-05-29): USD/cost tracking removed. Provider pricing was the
+//! perpetual maintenance burden (silently underrated 4× under DeepSeek's
+//! promo). The provider dashboard is the source of truth for actual spend.
+//! Tokens (objective, provider-reported) are tracked instead.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -6,12 +11,9 @@ use std::sync::Arc;
 /// Session-level metrics counters (mirrors TypeScript bootstrap state).
 ///
 /// All counters use `AtomicU64` so they can be shared across threads without
-/// a mutex.  Cost is stored as integer millicents (cost_usd × 100_000) to
-/// avoid floating-point atomic arithmetic.
+/// a mutex.
 #[derive(Debug, Default)]
 pub struct SessionMetrics {
-    /// Total cost in units of 1/100_000 USD (i.e. millicents).
-    pub total_cost_usd_millicents: AtomicU64,
     pub total_input_tokens: AtomicU64,
     pub total_output_tokens: AtomicU64,
     pub total_api_duration_ms: AtomicU64,
@@ -27,16 +29,6 @@ pub struct SessionMetrics {
 impl SessionMetrics {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
-    }
-
-    pub fn add_cost(&self, usd: f64) {
-        let millicents = (usd * 100_000.0) as u64;
-        self.total_cost_usd_millicents
-            .fetch_add(millicents, Ordering::Relaxed);
-    }
-
-    pub fn total_cost_usd(&self) -> f64 {
-        self.total_cost_usd_millicents.load(Ordering::Relaxed) as f64 / 100_000.0
     }
 
     pub fn add_tokens(&self, input: u32, output: u32) {
@@ -79,7 +71,6 @@ impl SessionMetrics {
 
     pub fn summary(&self) -> MetricsSummary {
         MetricsSummary {
-            cost_usd: self.total_cost_usd(),
             input_tokens: self.total_input_tokens.load(Ordering::Relaxed),
             output_tokens: self.total_output_tokens.load(Ordering::Relaxed),
             api_duration_ms: self.total_api_duration_ms.load(Ordering::Relaxed),
@@ -96,7 +87,6 @@ impl SessionMetrics {
 /// A point-in-time snapshot of session metrics.
 #[derive(Debug, Clone)]
 pub struct MetricsSummary {
-    pub cost_usd: f64,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub api_duration_ms: u64,
@@ -109,15 +99,6 @@ pub struct MetricsSummary {
 }
 
 impl MetricsSummary {
-    /// Format cost as a dollar amount string with appropriate precision.
-    pub fn format_cost(&self) -> String {
-        if self.cost_usd < 0.01 {
-            format!("${:.5}", self.cost_usd)
-        } else {
-            format!("${:.4}", self.cost_usd)
-        }
-    }
-
     /// Format total token count with K/M suffix.
     pub fn format_tokens(&self) -> String {
         let total = self.input_tokens + self.output_tokens;
@@ -140,7 +121,7 @@ pub enum AnalyticsEvent {
     },
     SessionEnded {
         turn_count: u32,
-        cost_usd: f64,
+        total_tokens: u64,
         duration_ms: u64,
         had_errors: bool,
     },
@@ -193,27 +174,8 @@ mod tests {
     #[test]
     fn test_session_metrics_initial_zero() {
         let m = SessionMetrics::new();
-        assert_eq!(m.total_cost_usd(), 0.0);
         assert_eq!(m.total_input_tokens.load(Ordering::Relaxed), 0);
         assert_eq!(m.total_output_tokens.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn test_add_cost_single() {
-        let m = SessionMetrics::new();
-        m.add_cost(0.01);
-        let cost = m.total_cost_usd();
-        // Allow small floating-point tolerance
-        assert!((cost - 0.01).abs() < 1e-9, "cost = {}", cost);
-    }
-
-    #[test]
-    fn test_add_cost_accumulates() {
-        let m = SessionMetrics::new();
-        m.add_cost(1.0);
-        m.add_cost(2.5);
-        let cost = m.total_cost_usd();
-        assert!((cost - 3.5).abs() < 1e-9, "cost = {}", cost);
     }
 
     #[test]
@@ -271,7 +233,6 @@ mod tests {
     #[test]
     fn test_summary_snapshot() {
         let m = SessionMetrics::new();
-        m.add_cost(1.23456);
         m.add_tokens(100, 50);
         m.add_api_duration(300);
         m.add_tool_duration(150);
@@ -281,7 +242,6 @@ mod tests {
         m.increment_tool_use();
 
         let s = m.summary();
-        assert!((s.cost_usd - 1.23456).abs() < 1e-9);
         assert_eq!(s.input_tokens, 100);
         assert_eq!(s.output_tokens, 50);
         assert_eq!(s.api_duration_ms, 300);
@@ -294,46 +254,8 @@ mod tests {
     }
 
     #[test]
-    fn test_format_cost_small() {
-        let s = MetricsSummary {
-            cost_usd: 0.001,
-            input_tokens: 0,
-            output_tokens: 0,
-            api_duration_ms: 0,
-            tool_duration_ms: 0,
-            lines_added: 0,
-            lines_removed: 0,
-            commits: 0,
-            prs: 0,
-            tool_uses: 0,
-        };
-        let formatted = s.format_cost();
-        assert!(formatted.starts_with('$'));
-        // Should have 5 decimal places for small cost
-        assert!(formatted.contains('.'));
-    }
-
-    #[test]
-    fn test_format_cost_large() {
-        let s = MetricsSummary {
-            cost_usd: 1.5,
-            input_tokens: 0,
-            output_tokens: 0,
-            api_duration_ms: 0,
-            tool_duration_ms: 0,
-            lines_added: 0,
-            lines_removed: 0,
-            commits: 0,
-            prs: 0,
-            tool_uses: 0,
-        };
-        assert_eq!(s.format_cost(), "$1.5000");
-    }
-
-    #[test]
     fn test_format_tokens_exact() {
         let s = MetricsSummary {
-            cost_usd: 0.0,
             input_tokens: 500,
             output_tokens: 300,
             api_duration_ms: 0,
@@ -350,7 +272,6 @@ mod tests {
     #[test]
     fn test_format_tokens_kilo() {
         let s = MetricsSummary {
-            cost_usd: 0.0,
             input_tokens: 5_000,
             output_tokens: 3_000,
             api_duration_ms: 0,
@@ -367,7 +288,6 @@ mod tests {
     #[test]
     fn test_format_tokens_mega() {
         let s = MetricsSummary {
-            cost_usd: 0.0,
             input_tokens: 1_500_000,
             output_tokens: 500_000,
             api_duration_ms: 0,

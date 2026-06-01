@@ -1,15 +1,6 @@
-//! Formatting utilities for cost, duration, and token counts.
+//! Formatting utilities for duration and token counts.
 //! Mirrors src/utils/formatters.ts and related TS helpers.
-
-/// Format a cost in USD cents as a human-readable string.
-/// 0 → "$0.00", 150 → "$1.50", 0.5 → "$0.01"
-pub fn format_cost_usd(cents: f64) -> String {
-    if cents < 0.01 {
-        "<$0.01".to_string()
-    } else {
-        format!("${:.2}", cents / 100.0)
-    }
-}
+//! (PR P, 2026-05-29: cost formatting removed — tokens-only.)
 
 /// Format a duration in milliseconds as a human-readable string.
 /// < 1000ms → "Xms", < 60s → "Xs", < 60m → "Xm Ys", else "Xh Ym"
@@ -42,14 +33,10 @@ pub fn format_tokens(count: u64) -> String {
     }
 }
 
-/// Format a token/cost summary line for the status bar.
-/// Example: "3.2K tokens · $0.04"
-pub fn format_usage_summary(tokens: u64, cost_cents: f64) -> String {
-    format!(
-        "{} tokens · {}",
-        format_tokens(tokens),
-        format_cost_usd(cost_cents)
-    )
+/// Format a token usage summary line for the status bar.
+/// Example: "3.2K tokens"
+pub fn format_usage_summary(tokens: u64) -> String {
+    format!("{} tokens", format_tokens(tokens))
 }
 
 /// Format a relative time string (for session listings).
@@ -82,13 +69,6 @@ pub fn format_relative_time(ts_ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn format_cost() {
-        assert_eq!(format_cost_usd(0.0), "<$0.01");
-        assert_eq!(format_cost_usd(150.0), "$1.50");
-        assert_eq!(format_cost_usd(2.0), "$0.02");
-    }
 
     #[test]
     fn format_duration() {

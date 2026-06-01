@@ -116,7 +116,8 @@ impl OpenAiProviderConfig {
                 pricing: Some(ModelPricing {
                     input_per_mtk: 0.325,
                     output_per_mtk: 1.95,
-                    ..Default::default()
+                    cache_creation_per_mtk: 0.0,
+                    cache_read_per_mtk: 0.0,
                 }),
             }],
             default_max_tokens: 16_384,
@@ -157,7 +158,8 @@ impl OpenAiProviderConfig {
                     pricing: Some(ModelPricing {
                         input_per_mtk: 0.29,
                         output_per_mtk: 1.73,
-                        ..Default::default()
+                        cache_creation_per_mtk: 0.0,
+                        cache_read_per_mtk: 0.0,
                     }),
                 },
                 ModelMetadata {
@@ -170,7 +172,8 @@ impl OpenAiProviderConfig {
                     pricing: Some(ModelPricing {
                         input_per_mtk: 0.05,
                         output_per_mtk: 0.20,
-                        ..Default::default()
+                        cache_creation_per_mtk: 0.0,
+                        cache_read_per_mtk: 0.0,
                     }),
                 },
                 ModelMetadata {
@@ -182,8 +185,9 @@ impl OpenAiProviderConfig {
                     supports_thinking: true,
                     pricing: Some(ModelPricing {
                         input_per_mtk: 0.8,
-                        output_per_mtk: 2.0,
-                        ..Default::default()
+                        output_per_mtk: 2.4,
+                        cache_creation_per_mtk: 0.0,
+                        cache_read_per_mtk: 0.0,
                     }),
                 },
                 ModelMetadata {
@@ -195,8 +199,9 @@ impl OpenAiProviderConfig {
                     supports_thinking: true,
                     pricing: Some(ModelPricing {
                         input_per_mtk: 0.8,
-                        output_per_mtk: 2.0,
-                        ..Default::default()
+                        output_per_mtk: 2.4,
+                        cache_creation_per_mtk: 0.0,
+                        cache_read_per_mtk: 0.0,
                     }),
                 },
             ],
@@ -235,7 +240,8 @@ impl OpenAiProviderConfig {
                     pricing: Some(ModelPricing {
                         input_per_mtk: 2.0,
                         output_per_mtk: 6.0,
-                        ..Default::default()
+                        cache_creation_per_mtk: 0.0,
+                        cache_read_per_mtk: 0.0,
                     }),
                 },
                 ModelMetadata {
@@ -248,7 +254,8 @@ impl OpenAiProviderConfig {
                     pricing: Some(ModelPricing {
                         input_per_mtk: 0.2,
                         output_per_mtk: 0.6,
-                        ..Default::default()
+                        cache_creation_per_mtk: 0.0,
+                        cache_read_per_mtk: 0.0,
                     }),
                 },
             ],

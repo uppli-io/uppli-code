@@ -534,7 +534,6 @@ pub fn render_app(frame: &mut Frame, app: &App) {
             app.context_window_size,
             app.rate_limit_5h_pct,
             app.rate_limit_7day_pct,
-            app.cost_usd,
         );
     }
 
@@ -1617,13 +1616,14 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             }
         }
 
-        // 3. Cost
+        // 3. Cost — best-effort USD from current pricing.
+        //    Hidden when 0.0 (no pricing configured, e.g. Ollama).
         if app.cost_usd > 0.0 {
             if !parts.is_empty() {
                 parts.push(Span::raw("  "));
             }
             parts.push(Span::styled(
-                format!("${:.2}", app.cost_usd),
+                format!("${:.4}", app.cost_usd),
                 Style::default().fg(Color::DarkGray),
             ));
         }
@@ -2036,6 +2036,8 @@ pub struct StatusLineData {
     pub model: String,
     pub tokens_used: u64,
     pub tokens_total: u64,
+    /// Session USD cost (best-effort from current pricing).
+    /// Zero when pricing is None (Ollama, unknown model).
     pub cost_cents: f64,
     pub compact_warning_pct: Option<f64>, // None = no warning; Some(pct) = show warning
     pub vim_mode: Option<String>,         // None = no vim mode; Some("NORMAL") etc.
@@ -2088,13 +2090,13 @@ pub fn render_full_status_line(
         spans.push(Span::styled(" â”‚ ", Style::default().fg(Color::DarkGray)));
     }
 
-    // Cost
+    // Cost — best-effort USD from current pricing (cap enforcement uses tokens).
     if data.cost_cents > 0.0 {
         spans.push(Span::styled(
             format!("${:.2}", data.cost_cents / 100.0),
             Style::default().fg(Color::White),
         ));
-        spans.push(Span::styled(" â”‚ ", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
     }
 
     // Compact warning

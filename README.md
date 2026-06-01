@@ -62,13 +62,14 @@ First time you launch it, it asks you to pick a provider and enter your API key.
 
 ## Providers
 
-| Provider | Models | Thinking | Key env var |
-|----------|--------|----------|-------------|
-| Alibaba (Qwen) | qwen3.6-plus, qwen-turbo | yes | `DASHSCOPE_API_KEY` |
-| DeepSeek | deepseek-reasoner, deepseek-chat | yes | `DEEPSEEK_API_KEY` |
-| Mistral | mistral-large, mistral-small | no | `MISTRAL_API_KEY` |
-| Ollama | any local model | depends | none |
-| OpenAI-compat | anything | depends | `OPENAI_API_KEY` |
+| Provider | Default model | Fast model | Thinking | Key env var |
+|----------|---------------|------------|----------|-------------|
+| DeepSeek | deepseek-v4-pro | deepseek-v4-flash | yes | `DEEPSEEK_API_KEY` |
+| Alibaba (Qwen) | qwen3.6-plus | qwen-turbo-latest | yes | `DASHSCOPE_API_KEY` |
+| OpenRouter | qwen/qwen3.6-plus | — | yes | `OPENROUTER_API_KEY` |
+| Mistral | mistral-large-latest | mistral-small-latest | no | `MISTRAL_API_KEY` |
+| Ollama | (passed via `--model`) | — | depends on model | none |
+| OpenAI-compat | (passed via `--model`) | — | depends | `OPENAI_API_KEY` |
 
 Switch with `--provider`:
 
@@ -76,6 +77,52 @@ Switch with `--provider`:
 uppli-code --provider alibaba
 uppli-code --provider ollama
 uppli-code --provider deepseek
+```
+
+## Budget & cost
+
+uppli-code **caps in tokens** and **reports cost in USD**. They are two independent signals:
+
+- **Cap (tokens)** — `--max-tokens-total <N>` aborts the session when
+  cumulative tokens (input + output + cache creation + cache read) reach `N`.
+  Objective, provider-reported, never drifts. Exit code `2`.
+- **Cap (USD)** — `--max-budget-usd <N>` aborts when estimated USD spend
+  reaches `N`. Best-effort from configured pricing — drifts with provider
+  promos. Use this when refacturation needs a € cap (catalog enrichment
+  billed per-run to a client).
+- **Both caps together** — set both; whichever fires first triggers the
+  abort. The JSON event on stderr indicates which cap fired via a `trigger`
+  field: `{"type":"budget_exceeded","trigger":"tokens"|"usd","spent_tokens":...,
+  "spent_cost_usd":...,"limit_tokens":...,"limit_cost_usd":...}`.
+
+- **Cost display** — best-effort USD from configured per-model pricing.
+  Shown in the TUI status bar, `/cost`, `/status`, `/usage` slash commands,
+  attached to `BridgeEvent::TurnComplete.usage` (web UI / SDK consumers),
+  and stamped into each assistant `MessageCost.cost_usd` for session
+  storage. **Not authoritative — see your provider dashboard for billing.**
+
+Why decoupled: pricing drifts (promos, tariff changes), tokens don't. Earlier
+versions used `--max-budget-usd <f64>` which fired at the wrong threshold whenever
+pricing drifted. The flag is now removed (see CHANGELOG).
+
+**Cap is evaluated between turns**, not mid-turn. A `--max-tokens-total 1000`
+session that's mid-way through a turn consuming 50k tokens will complete that
+turn first (the API call is already paid for; the model output is preserved)
+and then abort. The stopping point is "first turn boundary ≥ N", not a hard
+ceiling. Plan a margin if the cap is critical.
+
+```bash
+# Stop the session after 100k cumulative tokens
+uppli-code --max-tokens-total 100000 --print "do the task"
+
+# Stop the session at $5 estimated spend (refacturation use case)
+uppli-code --max-budget-usd 5.00 --print "do the task"
+
+# Combine both caps — whichever fires first wins
+uppli-code --max-tokens-total 100000 --max-budget-usd 5.00 --print "do the task"
+
+# Combine with --effort: caps are independent of reasoning depth
+uppli-code --max-tokens-total 50000 --effort max --print "deep task"
 ```
 
 ## Key features
@@ -145,12 +192,42 @@ src-rust/crates/
 
 ## Adding a provider
 
-Two changes:
+Three changes today:
 
-1. Add a `ProviderPreset` in `crates/api/src/provider_factory.rs`
-2. If the wire format is new, add a provider impl (most reuse `OpenAiProvider`)
+1. Add a `ProviderType` variant in `crates/core/src/config.rs`
+2. Add a `ProviderPreset` in `crates/api/src/provider_factory.rs` and a match arm in `default_model_for`
+3. If the wire format is new, add a provider impl (most reuse `OpenAiProvider`)
 
-Nothing else. The registry drives the CLI, onboarding, and model picker.
+The registry drives the CLI, onboarding, and model picker.
+
+### Adding a model with pricing
+
+Each entry in `known_models` carries optional pricing for the cost display:
+
+```rust
+ModelMetadata {
+    id: "deepseek-v4-pro".to_string(),
+    display_name: "DeepSeek V4 Pro".to_string(),
+    description: "...".to_string(),
+    context_window: 1_000_000,
+    max_output_tokens: 384_000,
+    supports_thinking: true,
+    pricing: Some(ModelPricing {
+        input_per_mtk: 0.435,          // USD per million input tokens
+        output_per_mtk: 0.87,
+        cache_creation_per_mtk: 0.0,
+        cache_read_per_mtk: 0.003625,
+    }),
+}
+```
+
+Set `pricing: None` for local/free models (Ollama). When `None`, the cost line
+is hidden across the UI and the bridge sends `cost_usd: null`. Pricing values
+are best-effort; provider promos and tariff changes will drift them — they
+don't affect the token-based budget cap.
+
+(An upcoming PR S consolidates the per-provider hardcoded blocks into one
+declarative TOML file per provider — see issue tracker.)
 
 ## Build
 

@@ -49,7 +49,6 @@ pub fn render_context_viz(
     context_total: u64,
     rate_5h: Option<f32>,
     rate_7d: Option<f32>,
-    cost_usd: f64,
 ) {
     if !state.visible {
         return;
@@ -163,16 +162,7 @@ pub fn render_context_viz(
 
     lines.push(Line::from(""));
 
-    // -- Cost --------------------------------------------------------------------
-    lines.push(Line::from(vec![
-        Span::styled("  Session cost:  ", Style::default().fg(Color::White)),
-        Span::styled(
-            format!("${:.4}", cost_usd),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
+    // PR P (2026-05-29): cost line removed — see provider dashboard for USD.
 
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::styled(
@@ -237,7 +227,6 @@ mod tests {
                     200_000,
                     Some(0.3),
                     Some(0.1),
-                    0.42,
                 );
             })
             .unwrap();
@@ -259,7 +248,7 @@ mod tests {
         let before = terminal.backend().buffer().clone();
         terminal
             .draw(|frame| {
-                render_context_viz(frame, &state, frame.area(), 0, 0, None, None, 0.0);
+                render_context_viz(frame, &state, frame.area(), 0, 0, None, None);
             })
             .unwrap();
         assert_eq!(terminal.backend().buffer().content(), before.content());

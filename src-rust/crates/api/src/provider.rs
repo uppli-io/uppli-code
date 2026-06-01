@@ -20,6 +20,10 @@ use tokio::sync::mpsc;
 pub use cc_core::cost::ModelPricing;
 
 /// Complete metadata for a single model offered by a provider.
+///
+/// PR P v2 (2026-05-30): pricing restored (best-effort USD cost is a
+/// product differentiator). Budget enforcement uses tokens via
+/// `--max-tokens-total`; pricing display is decoupled and informational.
 #[derive(Debug, Clone)]
 pub struct ModelMetadata {
     /// Model identifier sent in API requests (e.g., "qwen3-235b-a22b").
@@ -34,7 +38,7 @@ pub struct ModelMetadata {
     pub max_output_tokens: u32,
     /// Whether this model supports thinking/reasoning blocks.
     pub supports_thinking: bool,
-    /// Token pricing (None = free / local / unknown).
+    /// Token pricing (None = free / local / unknown — display shows "—").
     pub pricing: Option<ModelPricing>,
 }
 
@@ -233,7 +237,9 @@ pub trait LlmProvider: Send + Sync {
             .unwrap_or(self.capabilities().default_max_tokens)
     }
 
-    /// Pricing for a specific model (None = free/unknown).
+    /// Pricing for a specific model (None = free/unknown). Used to seed the
+    /// CostTracker so USD cost can be displayed and persisted (cap enforcement
+    /// uses tokens — see QueryConfig.max_total_tokens).
     fn model_pricing(&self, model: &str) -> Option<ModelPricing> {
         self.capabilities()
             .known_models

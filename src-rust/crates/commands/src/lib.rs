@@ -546,21 +546,26 @@ impl SlashCommand for CostCommand {
         "cost"
     }
     fn description(&self) -> &str {
-        "Show token usage and cost for this session"
+        "Show token usage and estimated cost for this session"
     }
 
     async fn execute(&self, _args: &str, ctx: &mut CommandContext) -> CommandResult {
         let tracker = &ctx.cost_tracker;
+        let cost = tracker.total_cost_usd();
+        let cost_line = if cost > 0.0 {
+            format!("\n  Estimated cost: ${:.4} (best-effort)", cost)
+        } else {
+            String::new()
+        };
         CommandResult::Message(format!(
-            "Session cost:\n  Input tokens:  {}\n  Output tokens: {}\n  \
-             Cache creation: {}\n  Cache read:    {}\n  Total tokens:  {}\n  \
-             Estimated cost: ${:.4}",
+            "Session token usage:\n  Input:          {}\n  Output:         {}\n  \
+             Cache creation: {}\n  Cache read:     {}\n  Total:          {}{}",
             tracker.input_tokens(),
             tracker.output_tokens(),
             tracker.cache_creation_tokens(),
             tracker.cache_read_tokens(),
             tracker.total_tokens(),
-            tracker.total_cost_usd(),
+            cost_line,
         ))
     }
 }
@@ -1459,6 +1464,12 @@ impl SlashCommand for UsageCommand {
             }
         };
 
+        let cost_line = if cost > 0.0 {
+            format!("Estimated cost: ${cost:.4} (best-effort)\n\n", cost = cost)
+        } else {
+            String::new()
+        };
+
         CommandResult::Message(format!(
             "API Usage — Current Session\n\
              ────────────────────────────\n\
@@ -1470,7 +1481,7 @@ impl SlashCommand for UsageCommand {
                Cache write:  {cache_creation:>10}\n\
                Cache read:   {cache_read:>10}\n\
                Total:        {total:>10}\n\n\
-             Estimated cost: ${cost:.4}\n\n\
+             {cost_line}For authoritative billing, see your provider dashboard.\n\
              Use /extra-usage for per-call breakdown.\n\
              Use /rate-limit-options to see your plan limits.",
             account_info = account_info,
@@ -1480,7 +1491,7 @@ impl SlashCommand for UsageCommand {
             cache_creation = cache_creation,
             cache_read = cache_read,
             total = total,
-            cost = cost,
+            cost_line = cost_line,
         ))
     }
 }
@@ -3253,9 +3264,14 @@ impl SlashCommand for StatsCommand {
     async fn execute(&self, _args: &str, ctx: &mut CommandContext) -> CommandResult {
         let input = ctx.cost_tracker.input_tokens();
         let output = ctx.cost_tracker.output_tokens();
-        let cost = ctx.cost_tracker.total_cost_usd();
         let turns = ctx.messages.len();
         let model = ctx.config.effective_model();
+        let cost = ctx.cost_tracker.total_cost_usd();
+        let cost_line = if cost > 0.0 {
+            format!("\n             Estimated cost: ${:.4} (best-effort)", cost)
+        } else {
+            String::new()
+        };
 
         CommandResult::Message(format!(
             "Session statistics\n\
@@ -3264,14 +3280,13 @@ impl SlashCommand for StatsCommand {
              Messages:       {}\n\
              Input tokens:   {}\n\
              Output tokens:  {}\n\
-             Total tokens:   {}\n\
-             Estimated cost: ${:.4}",
+             Total tokens:   {}{}",
             model,
             turns,
             input,
             output,
             input + output,
-            cost
+            cost_line,
         ))
     }
 }
@@ -4629,8 +4644,6 @@ impl SlashCommand for ExtraUsageCommand {
         let cache_creation = ctx.cost_tracker.cache_creation_tokens();
         let cache_read = ctx.cost_tracker.cache_read_tokens();
         let total = ctx.cost_tracker.total_tokens();
-        let cost = ctx.cost_tracker.total_cost_usd();
-
         // Estimate API calls from messages (each assistant message ~ 1 API call)
         let api_calls = ctx
             .messages
@@ -4647,17 +4660,36 @@ impl SlashCommand for ExtraUsageCommand {
             0.0
         };
 
-        let cost_per_call = if api_calls > 0 {
+        let tokens_per_call = if api_calls > 0 {
+            total / api_calls as u64
+        } else {
+            0
+        };
+        let cost = ctx.cost_tracker.total_cost_usd();
+        let avg_cost_per_call = if cost > 0.0 && api_calls > 0 {
             cost / api_calls as f64
         } else {
             0.0
+        };
+
+        let cost_block = if cost > 0.0 {
+            format!(
+                "             Cost:\n\
+                   Estimated total:   ${cost:.4} (best-effort)\n\
+                   Avg cost / call:   ${avg:.4}\n\n\
+                 ",
+                cost = cost,
+                avg = avg_cost_per_call,
+            )
+        } else {
+            String::new()
         };
 
         CommandResult::Message(format!(
             "Detailed Usage Statistics\n\
              ─────────────────────────\n\
              API calls:           {api_calls}\n\
-             Avg cost/call:       ${cost_per_call:.4}\n\n\
+             Avg tokens/call:     {tokens_per_call}\n\n\
              Token Breakdown:\n\
                Input tokens:      {input:>10}\n\
                Output tokens:     {output:>10}\n\
@@ -4667,17 +4699,16 @@ impl SlashCommand for ExtraUsageCommand {
              Cache Performance:\n\
                Cache hit rate:    {cache_hit_pct:.1}%\n\
                Cache efficiency:  {cache_eff}\n\n\
-             Cost:\n\
-               Total cost:        ${cost:.4}\n\
-               Cost/1k tokens:    ${cost_per_k:.4}",
+             {cost_block}For authoritative billing, see your provider dashboard.",
             api_calls = api_calls,
-            cost_per_call = cost_per_call,
+            tokens_per_call = tokens_per_call,
             input = input,
             output = output,
             cache_creation = cache_creation,
             cache_read = cache_read,
             total = total,
             cache_hit_pct = cache_hit_pct,
+            cost_block = cost_block,
             cache_eff = if cache_hit_pct > 70.0 {
                 "Excellent"
             } else if cache_hit_pct > 40.0 {
@@ -4686,12 +4717,6 @@ impl SlashCommand for ExtraUsageCommand {
                 "Low — prompts may not be stable enough to cache"
             } else {
                 "No cache activity"
-            },
-            cost = cost,
-            cost_per_k = if total > 0 {
-                cost / (total as f64 / 1000.0)
-            } else {
-                0.0
             },
         ))
     }
@@ -5564,6 +5589,16 @@ impl SlashCommand for InsightsCommand {
             0
         };
 
+        let cost_block = if total_cost > 0.0 {
+            format!(
+                "Cost\n             \
+                 └─ Estimated USD       : ${:.4} (best-effort)\n             \n             ",
+                total_cost
+            )
+        } else {
+            String::new()
+        };
+
         CommandResult::Message(format!(
             "Session Insights\n\
              ──────────────────────────────────────\n\
@@ -5578,10 +5613,7 @@ impl SlashCommand for InsightsCommand {
              ├─ Total               : {total_tokens}\n\
              └─ Avg per exchange    : {avg_tokens_per_turn}\n\
              \n\
-             Cost\n\
-             └─ Estimated USD       : ${total_cost:.4}\n\
-             \n\
-             Tools\n\
+             {cost_block}Tools\n\
              ├─ Total calls         : {total_tool_calls}\n\
              └─ Most used           : {most_frequent_tool}",
             user_turns = user_turns,
@@ -5591,7 +5623,7 @@ impl SlashCommand for InsightsCommand {
             output_tokens = output_tokens,
             total_tokens = total_tokens,
             avg_tokens_per_turn = avg_tokens_per_turn,
-            total_cost = total_cost,
+            cost_block = cost_block,
             total_tool_calls = total_tool_calls,
             most_frequent_tool = most_frequent_tool,
         ))

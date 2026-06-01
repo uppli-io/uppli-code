@@ -158,11 +158,18 @@ async fn run_one_turn(
             anyhow::bail!("{label}: {e}");
         }
         QueryOutcome::BudgetExceeded {
-            cost_usd,
-            limit_usd,
-        } => {
-            anyhow::bail!("{label}: budget exceeded ${cost_usd:.4} > ${limit_usd:.4}");
-        }
+            spent_tokens,
+            spent_cost_usd,
+            trigger,
+            ..
+        } => match trigger {
+            cc_query::BudgetTrigger::Tokens => {
+                anyhow::bail!("{label}: token budget exceeded ({spent_tokens} tokens)");
+            }
+            cc_query::BudgetTrigger::CostUsd => {
+                anyhow::bail!("{label}: USD budget exceeded (${spent_cost_usd:.4} spent)");
+            }
+        },
     }
 }
 

@@ -331,6 +331,8 @@ pub struct App {
     pub permission_request: Option<PermissionRequest>,
     pub frame_count: u64,
     pub token_count: u32,
+    /// Session USD cost (best-effort from current pricing).
+    /// Zero when pricing is None (Ollama, unknown model).
     pub cost_usd: f64,
     pub model_name: String,
     /// Current effort level (controls extended-thinking budget_tokens).
@@ -3123,9 +3125,9 @@ impl App {
         loop {
             self.frame_count = self.frame_count.wrapping_add(1);
 
-            // Sync cost/token counters from the shared tracker
-            self.cost_usd = self.cost_tracker.total_cost_usd();
+            // Sync token + cost counters from the shared tracker.
             self.token_count = self.cost_tracker.total_tokens() as u32;
+            self.cost_usd = self.cost_tracker.total_cost_usd();
 
             // Expire old notifications
             self.notifications.tick();

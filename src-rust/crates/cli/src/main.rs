@@ -256,7 +256,16 @@ struct Cli {
     #[arg(long = "workload", value_name = "TAG")]
     workload: Option<String>,
 
-    /// Maximum spend in USD before aborting the query loop
+    /// Maximum total tokens (input+output+cache) before aborting the query loop.
+    /// Objective cap, never drifts with pricing.
+    #[arg(long = "max-tokens-total", value_name = "TOKENS")]
+    max_total_tokens: Option<u64>,
+
+    /// Maximum estimated USD spend before aborting the query loop.
+    /// Best-effort from configured per-model pricing — drifts with provider
+    /// promos. Use alongside `--max-tokens-total`; whichever cap is hit
+    /// first triggers the abort. For authoritative billing, see provider
+    /// dashboard.
     #[arg(long = "max-budget-usd", value_name = "USD")]
     max_budget_usd: Option<f64>,
 
@@ -899,7 +908,9 @@ async fn main() -> anyhow::Result<()> {
             query_config.max_tokens = client.max_output_tokens(explicit_model);
         }
     }
-    // Set cost tracker pricing from provider metadata (same type, no conversion).
+    // Seed pricing from provider metadata for USD cost display + bridge.
+    // Budget enforcement uses tokens (max_total_tokens) — pricing is for
+    // display/persistence only.
     if let Some(pricing) = client.model_pricing(&query_config.model) {
         cost_tracker.set_pricing(pricing);
     }
@@ -957,6 +968,9 @@ async fn main() -> anyhow::Result<()> {
                 level_str
             );
         }
+    }
+    if let Some(tokens) = cli.max_total_tokens {
+        query_config.max_total_tokens = Some(tokens);
     }
     if let Some(usd) = cli.max_budget_usd {
         query_config.max_budget_usd = Some(usd);
@@ -1568,13 +1582,21 @@ async fn run_sdk_headless(
                     Some("Conversation cleared.")
                 }
                 "cost" => {
-                    let cost = cost_tracker.total_cost_usd();
+                    let total = cost_tracker.total_tokens();
                     let input = cost_tracker.input_tokens();
                     let output = cost_tracker.output_tokens();
-                    let msg = format!(
-                        "Session cost: ${:.4}\nTokens: {} input, {} output",
-                        cost, input, output
-                    );
+                    let cost = cost_tracker.total_cost_usd();
+                    let msg = if cost > 0.0 {
+                        format!(
+                            "Session: {} tokens · ${:.4}\n  Input:  {}\n  Output: {}\n(Best-effort cost; see provider dashboard for billing.)",
+                            total, cost, input, output
+                        )
+                    } else {
+                        format!(
+                            "Session tokens: {}\n  Input:  {}\n  Output: {}\n(No pricing configured for this model.)",
+                            total, input, output
+                        )
+                    };
                     emit!(serde_json::json!({
                         "type": "assistant",
                         "uuid": uuid::Uuid::new_v4().to_string(),
@@ -1597,6 +1619,7 @@ async fn run_sdk_headless(
                         "duration_ms": 0, "duration_api_ms": 0,
                         "is_error": false, "num_turns": 0,
                         "result": "", "stop_reason": "end_turn",
+                        "total_tokens": cost_tracker.total_tokens(),
                         "total_cost_usd": cost_tracker.total_cost_usd(),
                         "usage": {"input_tokens": 0, "output_tokens": 0},
                         "modelUsage": {}, "permission_denials": [],
@@ -1660,16 +1683,22 @@ async fn run_sdk_headless(
                 }
                 "status" => {
                     let caps = client.capabilities();
+                    let total_tokens = cost_tracker.total_tokens();
                     let cost = cost_tracker.total_cost_usd();
+                    let cost_line = if cost > 0.0 {
+                        format!("Session: {} tokens · ${:.4}", total_tokens, cost)
+                    } else {
+                        format!("Session tokens: {}", total_tokens)
+                    };
                     Some(&*format!(
                         "Uppli Code Status:\n\
                         Provider: {}\n\
                         Model: {}\n\
-                        Session cost: ${:.4}\n\
+                        {}\n\
                         Messages: {}\n\
                         Config: ~/.uppli/\n\
                         Memory: UPPLI.md",
-                        caps.name, &active_model, cost, messages.len()
+                        caps.name, &active_model, cost_line, messages.len()
                     ))
                 }
                 "version" => {
@@ -1702,6 +1731,7 @@ async fn run_sdk_headless(
                     "duration_ms": 0, "duration_api_ms": 0,
                     "is_error": false, "num_turns": 0,
                     "result": "", "stop_reason": "end_turn",
+                    "total_tokens": cost_tracker.total_tokens(),
                     "total_cost_usd": cost_tracker.total_cost_usd(),
                     "usage": {"input_tokens": 0, "output_tokens": 0},
                     "modelUsage": {}, "permission_denials": [],
@@ -2012,6 +2042,7 @@ async fn run_sdk_headless(
                     "num_turns": 1,
                     "result": &full_text,
                     "stop_reason": &stop_reason,
+                    "total_tokens": cost_tracker.total_tokens(),
                     "total_cost_usd": cost_tracker.total_cost_usd(),
                     "usage": {
                         "input_tokens": usage.input_tokens,
@@ -2034,6 +2065,7 @@ async fn run_sdk_headless(
                     "is_error": true,
                     "num_turns": 0,
                     "stop_reason": null,
+                    "total_tokens": cost_tracker.total_tokens(),
                     "total_cost_usd": cost_tracker.total_cost_usd(),
                     "usage": {"input_tokens":0,"output_tokens":0},
                     "modelUsage": {},
@@ -2052,6 +2084,7 @@ async fn run_sdk_headless(
                     "is_error": true,
                     "num_turns": 0,
                     "stop_reason": null,
+                    "total_tokens": cost_tracker.total_tokens(),
                     "total_cost_usd": cost_tracker.total_cost_usd(),
                     "usage": {"input_tokens":0,"output_tokens":0},
                     "modelUsage": {},
@@ -2333,17 +2366,12 @@ async fn run_headless(
                 } else {
                     full_text
                 };
-                let out = serde_json::json!({
-                    "type": "result",
-                    "result": result_text,
-                    "usage": {
-                        "input_tokens": usage.input_tokens,
-                        "output_tokens": usage.output_tokens,
-                        "cache_creation_input_tokens": usage.cache_creation_input_tokens,
-                        "cache_read_input_tokens": usage.cache_read_input_tokens,
-                    },
-                    "cost_usd": cost_tracker.total_cost_usd(),
-                });
+                let out = build_result_json_record(
+                    Some(&result_text),
+                    &usage,
+                    cost_tracker.total_tokens(),
+                    cost_tracker.total_cost_usd(),
+                );
                 println!("{}", out);
             }
             QueryOutcome::Error(e) => {
@@ -2351,26 +2379,58 @@ async fn run_headless(
                 eprintln!("{}", out);
                 std::process::exit(1);
             }
+            QueryOutcome::BudgetExceeded {
+                spent_tokens,
+                spent_cost_usd,
+                limit_tokens,
+                limit_cost_usd,
+                trigger,
+            } => {
+                let out = build_budget_exceeded_json_record(
+                    spent_tokens,
+                    spent_cost_usd,
+                    limit_tokens,
+                    limit_cost_usd,
+                    trigger,
+                );
+                eprintln!("{}", out);
+                std::process::exit(2);
+            }
             _ => {}
         },
         CliOutputFormat::StreamJson => {
             // Already streamed above; emit final result event
             match outcome {
                 QueryOutcome::EndTurn { usage, .. } => {
-                    let out = serde_json::json!({
-                        "type": "result",
-                        "usage": {
-                            "input_tokens": usage.input_tokens,
-                            "output_tokens": usage.output_tokens,
-                        },
-                        "cost_usd": cost_tracker.total_cost_usd(),
-                    });
+                    let out = build_result_json_record(
+                        None,
+                        &usage,
+                        cost_tracker.total_tokens(),
+                        cost_tracker.total_cost_usd(),
+                    );
                     println!("{}", out);
                 }
                 QueryOutcome::Error(e) => {
                     let out = serde_json::json!({ "type": "error", "error": e.to_string() });
                     eprintln!("{}", out);
                     std::process::exit(1);
+                }
+                QueryOutcome::BudgetExceeded {
+                    spent_tokens,
+                    spent_cost_usd,
+                    limit_tokens,
+                    limit_cost_usd,
+                    trigger,
+                } => {
+                    let out = build_budget_exceeded_json_record(
+                        spent_tokens,
+                        spent_cost_usd,
+                        limit_tokens,
+                        limit_cost_usd,
+                        trigger,
+                    );
+                    eprintln!("{}", out);
+                    std::process::exit(2);
                 }
                 _ => {}
             }
@@ -2380,10 +2440,10 @@ async fn run_headless(
             println!();
             if cli.verbose {
                 eprintln!(
-                    "\nTokens: {} in / {} out | Cost: ${:.4}",
+                    "\nTokens: {} in / {} out / {} total",
                     cost_tracker.input_tokens(),
                     cost_tracker.output_tokens(),
-                    cost_tracker.total_cost_usd(),
+                    cost_tracker.total_tokens(),
                 );
             }
             match outcome {
@@ -2392,13 +2452,24 @@ async fn run_headless(
                     std::process::exit(1);
                 }
                 QueryOutcome::BudgetExceeded {
-                    cost_usd,
-                    limit_usd,
+                    spent_tokens,
+                    spent_cost_usd,
+                    limit_tokens,
+                    limit_cost_usd,
+                    trigger,
                 } => {
-                    eprintln!(
-                        "Budget limit ${:.4} reached (spent ${:.4}). Stopping.",
-                        limit_usd, cost_usd
-                    );
+                    match trigger {
+                        cc_query::BudgetTrigger::Tokens => eprintln!(
+                            "Token budget {} reached ({} used). Stopping.",
+                            limit_tokens.unwrap_or(0),
+                            spent_tokens
+                        ),
+                        cc_query::BudgetTrigger::CostUsd => eprintln!(
+                            "USD budget ${:.4} reached (${:.4} spent). Stopping.",
+                            limit_cost_usd.unwrap_or(0.0),
+                            spent_cost_usd
+                        ),
+                    }
                     std::process::exit(2);
                 }
                 _ => {}
@@ -3148,10 +3219,24 @@ async fn run_interactive(
                     }),
                     QueryEvent::TurnComplete {
                         stop_reason, turn, ..
-                    } => Some(BridgeOutbound::TurnComplete {
-                        message_id: format!("turn-{}", turn),
-                        stop_reason: stop_reason.clone(),
-                    }),
+                    } => {
+                        let usage_tokens_in = cost_tracker.input_tokens() as u32;
+                        let usage_tokens_out = cost_tracker.output_tokens() as u32;
+                        let usage_cost = cost_tracker.total_cost_usd();
+                        Some(BridgeOutbound::TurnComplete {
+                            message_id: format!("turn-{}", turn),
+                            stop_reason: stop_reason.clone(),
+                            usage: Some(cc_bridge::BridgeUsage {
+                                input_tokens: usage_tokens_in,
+                                output_tokens: usage_tokens_out,
+                                cost_usd: if usage_cost > 0.0 {
+                                    Some(usage_cost)
+                                } else {
+                                    None
+                                },
+                            }),
+                        })
+                    }
                     QueryEvent::Error(msg) => Some(BridgeOutbound::Error {
                         message: msg.clone(),
                     }),
@@ -3697,5 +3782,249 @@ fn json_null_or_string(opt: &Option<String>) -> serde_json::Value {
     match opt {
         Some(s) => serde_json::Value::String(s.clone()),
         None => serde_json::Value::Null,
+    }
+}
+
+/// Build the canonical "budget_exceeded" JSON record emitted by
+/// --output-format json and --output-format stream-json on a BudgetExceeded
+/// outcome. Centralised so the schema-lock test exercises the SAME
+/// function as production.
+fn build_budget_exceeded_json_record(
+    spent_tokens: u64,
+    spent_cost_usd: f64,
+    limit_tokens: Option<u64>,
+    limit_cost_usd: Option<f64>,
+    trigger: cc_query::BudgetTrigger,
+) -> serde_json::Value {
+    serde_json::json!({
+        "type": "budget_exceeded",
+        "trigger": trigger.as_str(),
+        "spent_tokens": spent_tokens,
+        "spent_cost_usd": spent_cost_usd,
+        "limit_tokens": limit_tokens,
+        "limit_cost_usd": limit_cost_usd,
+    })
+}
+
+/// Build the canonical "result" JSON record emitted by --output-format json
+/// and --output-format stream-json on a successful EndTurn outcome.
+///
+/// Centralised here so the schema-lock test in the tests module exercises
+/// the SAME function as production. The test asserts on both `total_tokens`
+/// and `total_cost_usd` keys — downstream refacturation pipelines depend on
+/// both, and renaming either silently breaks them.
+fn build_result_json_record(
+    result_text: Option<&str>,
+    usage: &cc_core::types::UsageInfo,
+    total_tokens: u64,
+    total_cost_usd: f64,
+) -> serde_json::Value {
+    let mut obj = serde_json::json!({
+        "type": "result",
+        "usage": {
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+            "cache_read_input_tokens": usage.cache_read_input_tokens,
+        },
+        "tokens": total_tokens,
+        "total_tokens": total_tokens,
+        "total_cost_usd": total_cost_usd,
+    });
+    if let Some(text) = result_text {
+        obj["result"] = serde_json::Value::String(text.to_string());
+    }
+    obj
+}
+
+// ── CLI flag plumbing tests (PR P v2) ──────────────────────────────────────
+//
+// Prove the new --max-tokens-total flag is wired correctly:
+//   1. It parses to Cli.max_total_tokens (Some(N) on present, None on absent)
+//   2. The renamed (was --max-budget-usd) flag is REMOVED so old scripts fail
+//      loudly instead of silently being ignored
+//   3. Parses combine cleanly with --effort and --provider
+//
+// These complement the runtime budget-check tests in cc-query.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_max_tokens_total_flag_parses_to_some() {
+        let cli = Cli::try_parse_from(["uppli-code", "--max-tokens-total", "12345"])
+            .expect("--max-tokens-total should parse");
+        assert_eq!(cli.max_total_tokens, Some(12345));
+    }
+
+    #[test]
+    fn test_max_tokens_total_absent_yields_none() {
+        let cli = Cli::try_parse_from(["uppli-code"]).expect("no flags should parse");
+        assert_eq!(cli.max_total_tokens, None);
+    }
+
+    #[test]
+    fn test_max_budget_usd_flag_parses_to_some() {
+        // PR P v3.4: --max-budget-usd reinstated for refacturation use case.
+        let cli = Cli::try_parse_from(["uppli-code", "--max-budget-usd", "5.00"])
+            .expect("--max-budget-usd should parse");
+        assert_eq!(cli.max_budget_usd, Some(5.00));
+    }
+
+    #[test]
+    fn test_max_budget_usd_and_max_tokens_total_can_coexist() {
+        // Both caps may be set; whichever fires first triggers BudgetExceeded.
+        let cli = Cli::try_parse_from([
+            "uppli-code",
+            "--max-tokens-total",
+            "100000",
+            "--max-budget-usd",
+            "5.00",
+        ])
+        .expect("both flags together should parse");
+        assert_eq!(cli.max_total_tokens, Some(100000));
+        assert_eq!(cli.max_budget_usd, Some(5.00));
+    }
+
+    #[test]
+    fn test_max_tokens_total_combines_with_effort_and_provider() {
+        let cli = Cli::try_parse_from([
+            "uppli-code",
+            "--max-tokens-total",
+            "50000",
+            "--effort",
+            "max",
+            "--provider",
+            "deepseek",
+        ])
+        .expect("flag combo should parse");
+        assert_eq!(cli.max_total_tokens, Some(50000));
+        assert_eq!(cli.effort.as_deref(), Some("max"));
+        assert_eq!(cli.provider.as_deref(), Some("deepseek"));
+    }
+
+    #[test]
+    fn test_build_result_json_record_schema_lock_with_text() {
+        // Schema-lock test for the `result` JSON record emitted by
+        // --output-format json. Exercises the ACTUAL production helper
+        // (build_result_json_record), so any rename / removal of the
+        // total_tokens or total_cost_usd keys breaks here immediately.
+        // Downstream refacturation pipelines parse these fields.
+        let usage = cc_core::types::UsageInfo {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_input_tokens: 10,
+            cache_read_input_tokens: 5,
+        };
+        let json = build_result_json_record(Some("hello world"), &usage, 165, 0.4242);
+
+        assert_eq!(json["type"], "result");
+        assert_eq!(json["result"], "hello world");
+        assert_eq!(json["usage"]["input_tokens"], 100);
+        assert_eq!(json["usage"]["output_tokens"], 50);
+        assert_eq!(json["usage"]["cache_creation_input_tokens"], 10);
+        assert_eq!(json["usage"]["cache_read_input_tokens"], 5);
+        assert_eq!(json["tokens"], 165u64);
+        assert_eq!(json["total_tokens"], 165u64);
+        assert_eq!(json["total_cost_usd"], 0.4242);
+
+        // Lock the top-level keys: drift here breaks consumers.
+        let obj = json.as_object().expect("must be object");
+        let mut keys: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "result",
+                "tokens",
+                "total_cost_usd",
+                "total_tokens",
+                "type",
+                "usage"
+            ],
+            "result JSON top-level shape drifted — refacturation consumers will break. Update this test ONLY if the schema change is intentional."
+        );
+    }
+
+    #[test]
+    fn test_build_result_json_record_schema_lock_stream_json_omits_text() {
+        // StreamJson mode does NOT carry the "result" text (already streamed).
+        // Verify the helper handles this by passing None.
+        let usage = cc_core::types::UsageInfo::default();
+        let json = build_result_json_record(None, &usage, 7, 0.0);
+        assert_eq!(json["type"], "result");
+        assert!(
+            json.as_object().expect("object").get("result").is_none(),
+            "StreamJson result record must NOT carry the 'result' text field"
+        );
+        assert_eq!(json["total_tokens"], 7u64);
+        assert_eq!(json["total_cost_usd"], 0.0);
+    }
+
+    #[test]
+    fn test_build_budget_exceeded_json_record_schema_lock_tokens_trigger() {
+        // Schema-lock for the budget_exceeded event JSON shape, exercising
+        // the production helper directly (no mirror).
+        let json = build_budget_exceeded_json_record(
+            12345,
+            0.4242,
+            Some(10000),
+            Some(0.30),
+            cc_query::BudgetTrigger::Tokens,
+        );
+        assert_eq!(json["type"], "budget_exceeded");
+        assert_eq!(json["trigger"], "tokens");
+        assert_eq!(json["spent_tokens"], 12345u64);
+        assert_eq!(json["spent_cost_usd"], 0.4242);
+        assert_eq!(json["limit_tokens"], 10000u64);
+        assert_eq!(json["limit_cost_usd"], 0.30);
+
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "limit_cost_usd",
+                "limit_tokens",
+                "spent_cost_usd",
+                "spent_tokens",
+                "trigger",
+                "type"
+            ],
+            "budget_exceeded JSON schema drifted — automation parsing this event will break. Update only on intentional schema change."
+        );
+    }
+
+    #[test]
+    fn test_build_budget_exceeded_json_record_usd_trigger_with_no_token_cap() {
+        // USD cap set, token cap None → limit_tokens serialises as null
+        let json = build_budget_exceeded_json_record(
+            50000,
+            1.50,
+            None,
+            Some(1.0),
+            cc_query::BudgetTrigger::CostUsd,
+        );
+        assert_eq!(json["trigger"], "usd");
+        assert!(json["limit_tokens"].is_null());
+        assert_eq!(json["limit_cost_usd"], 1.0);
+    }
+
+    #[test]
+    fn test_effort_max_flag_parses() {
+        // Pin that --effort still accepts the documented values after
+        // the output_config.effort revert in PR B.
+        for level in ["low", "medium", "high", "max"] {
+            let cli = Cli::try_parse_from(["uppli-code", "--effort", level])
+                .unwrap_or_else(|e| panic!("--effort {} must parse: {}", level, e));
+            assert_eq!(cli.effort.as_deref(), Some(level));
+        }
     }
 }

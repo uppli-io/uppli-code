@@ -2278,6 +2278,14 @@ pub mod cost {
     use std::sync::Arc;
 
     /// Per-model pricing tiers (USD per million tokens).
+    ///
+    /// PR P v2 (2026-05-30) restored pricing after the initial drop in v1 was
+    /// reverted on review: exposing per-run cost is a product differentiator
+    /// downstream apps rely on (e.g. catalog enrichment that refactures to a
+    /// client). Pricing is BEST EFFORT — provider promos and tariff changes
+    /// cause drift; the provider dashboard remains the source of truth for
+    /// billing. Budget enforcement is **separate** and uses tokens
+    /// (see `QueryConfig.max_total_tokens` / `--max-tokens-total`).
     #[derive(Debug, Clone, Copy)]
     pub struct ModelPricing {
         pub input_per_mtk: f64,
@@ -2302,7 +2310,11 @@ pub mod cost {
         }
     }
 
-    /// Thread-safe, lock-free cost tracker that accumulates token usage.
+    /// Thread-safe, lock-free token + cost tracker.
+    ///
+    /// Tokens are objective (provider-reported) and drive budget enforcement.
+    /// USD cost is derived from configured pricing and exposed for display
+    /// and downstream consumption (bridge, session storage, stats).
     #[derive(Debug, Default)]
     pub struct CostTracker {
         input_tokens: AtomicU64,
@@ -2330,17 +2342,6 @@ pub mod cost {
             *self.pricing.write() = pricing;
         }
 
-        /// Legacy: create with model name. Uses FREE pricing since provider
-        /// pricing is not available at this call site.
-        #[deprecated(note = "use with_pricing() instead")]
-        pub fn with_model(_model: &str) -> Arc<Self> {
-            Self::new()
-        }
-
-        /// Legacy: set model. No-op since pricing is now provider-driven.
-        #[deprecated(note = "use set_pricing() instead")]
-        pub fn set_model(&self, _model: &str) {}
-
         pub fn add_usage(&self, input: u64, output: u64, cache_creation: u64, cache_read: u64) {
             self.input_tokens.fetch_add(input, Ordering::Relaxed);
             self.output_tokens.fetch_add(output, Ordering::Relaxed);
@@ -2348,20 +2349,6 @@ pub mod cost {
                 .fetch_add(cache_creation, Ordering::Relaxed);
             self.cache_read_tokens
                 .fetch_add(cache_read, Ordering::Relaxed);
-        }
-
-        pub fn total_cost_usd(&self) -> f64 {
-            let pricing = *self.pricing.read();
-            let input = self.input_tokens.load(Ordering::Relaxed) as f64;
-            let output = self.output_tokens.load(Ordering::Relaxed) as f64;
-            let cache_creation = self.cache_creation_tokens.load(Ordering::Relaxed) as f64;
-            let cache_read = self.cache_read_tokens.load(Ordering::Relaxed) as f64;
-
-            (input * pricing.input_per_mtk
-                + output * pricing.output_per_mtk
-                + cache_creation * pricing.cache_creation_per_mtk
-                + cache_read * pricing.cache_read_per_mtk)
-                / 1_000_000.0
         }
 
         pub fn total_tokens(&self) -> u64 {
@@ -2387,14 +2374,35 @@ pub mod cost {
             self.cache_read_tokens.load(Ordering::Relaxed)
         }
 
+        /// Computed USD cost from accumulated tokens × current pricing.
+        /// Returns 0.0 when no pricing is configured (Ollama or unknown model).
+        pub fn total_cost_usd(&self) -> f64 {
+            let pricing = *self.pricing.read();
+            let input = self.input_tokens.load(Ordering::Relaxed) as f64;
+            let output = self.output_tokens.load(Ordering::Relaxed) as f64;
+            let cache_creation = self.cache_creation_tokens.load(Ordering::Relaxed) as f64;
+            let cache_read = self.cache_read_tokens.load(Ordering::Relaxed) as f64;
+
+            (input * pricing.input_per_mtk
+                + output * pricing.output_per_mtk
+                + cache_creation * pricing.cache_creation_per_mtk
+                + cache_read * pricing.cache_read_per_mtk)
+                / 1_000_000.0
+        }
+
         /// Produce a human-readable summary string, e.g. for display in the TUI.
         pub fn summary(&self) -> String {
-            let cost = self.total_cost_usd();
             let total = self.total_tokens();
-            if cost < 0.01 {
-                format!("{} tokens (<$0.01)", total)
+            let input = self.input_tokens();
+            let output = self.output_tokens();
+            let cost = self.total_cost_usd();
+            if cost > 0.0 {
+                format!(
+                    "{} tokens ({} in, {} out) · ${:.4}",
+                    total, input, output, cost
+                )
             } else {
-                format!("{} tokens (${:.2})", total, cost)
+                format!("{} tokens ({} in, {} out)", total, input, output)
             }
         }
     }
@@ -2926,17 +2934,39 @@ mod tests {
     }
 
     #[test]
-    fn test_cost_tracker() {
-        let tracker = CostTracker::with_pricing(cost::ModelPricing {
-            input_per_mtk: 1.0,
-            output_per_mtk: 2.0,
-            cache_creation_per_mtk: 0.5,
-            cache_read_per_mtk: 0.1,
-        });
+    fn test_cost_tracker_token_accumulation() {
+        let tracker = CostTracker::new();
         tracker.add_usage(1000, 500, 200, 100);
         assert_eq!(tracker.input_tokens(), 1000);
         assert_eq!(tracker.output_tokens(), 500);
-        assert!(tracker.total_cost_usd() > 0.0);
+        assert_eq!(tracker.cache_creation_tokens(), 200);
+        assert_eq!(tracker.cache_read_tokens(), 100);
+        assert_eq!(tracker.total_tokens(), 1800);
+    }
+
+    /// PR P regression: total_tokens MUST sum input+output+cache_creation+cache_read.
+    /// The previous (decorative) version asserted nothing; this one validates
+    /// the actual accumulation contract.
+    #[test]
+    fn test_cost_tracker_total_tokens_is_sum_of_all_components() {
+        let tracker = CostTracker::new();
+        tracker.add_usage(11, 23, 47, 59);
+        assert_eq!(tracker.input_tokens(), 11);
+        assert_eq!(tracker.output_tokens(), 23);
+        assert_eq!(tracker.cache_creation_tokens(), 47);
+        assert_eq!(tracker.cache_read_tokens(), 59);
+        assert_eq!(
+            tracker.total_tokens(),
+            11 + 23 + 47 + 59,
+            "total_tokens must include input+output+cache_creation+cache_read"
+        );
+        // Add more usage and verify accumulation
+        tracker.add_usage(1, 2, 3, 4);
+        assert_eq!(
+            tracker.total_tokens(),
+            11 + 23 + 47 + 59 + 1 + 2 + 3 + 4,
+            "total_tokens must accumulate across multiple add_usage calls"
+        );
     }
 
     #[test]
@@ -3383,6 +3413,6 @@ mod tests {
         let tracker = CostTracker::new();
         assert_eq!(tracker.input_tokens(), 0);
         assert_eq!(tracker.output_tokens(), 0);
-        assert_eq!(tracker.total_cost_usd(), 0.0);
+        assert_eq!(tracker.total_tokens(), 0);
     }
 }
