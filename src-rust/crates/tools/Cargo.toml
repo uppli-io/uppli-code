@@ -37,5 +37,15 @@ open = { workspace = true }
 enigo = { workspace = true, optional = true }
 xcap = { workspace = true, optional = true }
 
+# File ingestion (PR B)
+encoding_rs = { workspace = true }
+image = { workspace = true }
+pdf-extract = { workspace = true }
+quick-xml = { workspace = true }
+zip = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+sha2 = { workspace = true }
+
 [features]
 computer-use = ["dep:enigo", "dep:xcap"]
