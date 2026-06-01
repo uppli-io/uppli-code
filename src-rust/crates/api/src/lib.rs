@@ -39,6 +39,12 @@ pub use types::*;
 pub mod provider;
 
 // ---------------------------------------------------------------------------
+// Provider TOML registry (replaces the hardcoded preset functions and the
+// static REGISTRY array). One .toml file per provider in crates/api/presets/.
+// ---------------------------------------------------------------------------
+pub mod providers;
+
+// ---------------------------------------------------------------------------
 // OpenAI-compatible provider (Ollama, Alibaba/DashScope, generic)
 // ---------------------------------------------------------------------------
 pub mod openai_provider;

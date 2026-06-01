@@ -1,0 +1,76 @@
+schema_version = 1
+
+[provider]
+name = "glm"
+aliases = ["zhipu", "bigmodel"]
+display_name = "Zhipu (GLM)"
+description = "GLM 4.6 — Zhipu AI, OpenAI-compatible"
+attribution = "powered by Zhipu AI (GLM)"
+provider_type = "openai_compat"
+api_format = "openai"
+api_base = "https://open.bigmodel.cn/api/paas/v4"
+
+[auth]
+env_vars = ["ZHIPU_API_KEY", "GLM_API_KEY"]
+keychain_key = "glm"
+display_label = "Zhipu (GLM)"
+required = true
+
+[defaults]
+max_tokens = 16384
+thinking_budget = 16000
+request_timeout_sec = 600
+max_retries = 5
+
+# Pricing per Zhipu public price sheet. Verify at https://open.bigmodel.cn/pricing
+# before relying on these for refacturation.
+
+[[models]]
+id = "glm-4.6v"
+display_name = "GLM 4.6 Vision"
+description = "Multimodal GLM — accepts image + PDF inputs (default for this provider)"
+context_window = 128000
+max_output_tokens = 16384
+supports_thinking = false
+default = true
+
+[models.pricing]
+input_per_mtk = 0.30
+output_per_mtk = 0.90
+
+[[models]]
+id = "glm-4.6"
+display_name = "GLM 4.6"
+description = "Flagship GLM reasoning model (text-only)"
+context_window = 128000
+max_output_tokens = 16384
+supports_thinking = true
+
+[models.pricing]
+input_per_mtk = 0.50
+output_per_mtk = 1.50
+
+[[models]]
+id = "glm-4.6-flash"
+display_name = "GLM 4.6 Flash"
+description = "Fast GLM model for tool-result turns"
+context_window = 128000
+max_output_tokens = 16384
+supports_thinking = false
+fast = true
+
+[models.pricing]
+input_per_mtk = 0.10
+output_per_mtk = 0.30
+
+[[models]]
+id = "glm-4.5"
+display_name = "GLM 4.5"
+description = "Previous generation, kept for back-compat"
+context_window = 128000
+max_output_tokens = 8192
+supports_thinking = false
+
+[models.pricing]
+input_per_mtk = 0.20
+output_per_mtk = 0.50

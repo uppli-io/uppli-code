@@ -1,0 +1,73 @@
+schema_version = 1
+
+[provider]
+name = "alibaba"
+aliases = ["dashscope", "qwen"]
+display_name = "Qwen"
+description = "Qwen 3.6 Plus — agentic coding, 1M context"
+attribution = "powered by Qwen (Alibaba Cloud)"
+provider_type = "alibaba"
+api_format = "openai"
+api_base = "https://dashscope-intl.aliyuncs.com/compatible-mode"
+
+[auth]
+env_vars = ["DASHSCOPE_API_KEY"]
+keychain_key = "alibaba"
+display_label = "DashScope"
+required = true
+
+[defaults]
+max_tokens = 16384
+thinking_budget = 16000
+request_timeout_sec = 600
+max_retries = 5
+
+[[models]]
+id = "qwen3.6-plus-2026-04-02"
+display_name = "Qwen 3.6 Plus"
+description = "Agentic coding model, 1M context"
+context_window = 1000000
+max_output_tokens = 32768
+supports_thinking = true
+default = true
+
+[models.pricing]
+input_per_mtk = 0.29
+output_per_mtk = 1.73
+
+[[models]]
+id = "qwen-turbo-latest"
+display_name = "Qwen Turbo"
+description = "Fast model for tool-result turns"
+context_window = 1000000
+max_output_tokens = 16384
+supports_thinking = false
+fast = true
+
+[models.pricing]
+input_per_mtk = 0.05
+output_per_mtk = 0.20
+
+[[models]]
+id = "qwen3-max"
+display_name = "Qwen 3 Max"
+description = "Flagship Qwen3"
+context_window = 131072
+max_output_tokens = 16384
+supports_thinking = true
+
+[models.pricing]
+input_per_mtk = 0.8
+output_per_mtk = 2.4
+
+[[models]]
+id = "qwen3-235b-a22b"
+display_name = "Qwen 3 235B"
+description = "MoE 235B (22B active) — reasoning"
+context_window = 131072
+max_output_tokens = 16384
+supports_thinking = true
+
+[models.pricing]
+input_per_mtk = 0.8
+output_per_mtk = 2.4

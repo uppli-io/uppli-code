@@ -9,9 +9,7 @@
 // query loop and the OpenAI wire protocol.  Streaming uses SSE with
 // `data: [DONE]` termination (standard OpenAI) or NDJSON (Ollama).
 
-use crate::provider::{
-    ApiFormat, AuthConfig, LlmProvider, ModelMetadata, ModelPricing, ProviderCapabilities,
-};
+use crate::provider::{ApiFormat, AuthConfig, LlmProvider, ModelMetadata, ProviderCapabilities};
 use crate::streaming::{ContentDelta, StreamEvent, StreamHandler};
 use crate::types::CreateMessageRequest;
 use crate::{AvailableModel, CreateMessageResponse};
@@ -60,246 +58,40 @@ pub struct OpenAiProviderConfig {
 }
 
 impl OpenAiProviderConfig {
-    /// Preset for Ollama (local).
-    pub fn ollama(model: &str) -> Self {
+    /// Construct an OpenAiProviderConfig from a TOML-loaded provider, an
+    /// API key, and an optional model override. This is the only way to
+    /// build a config — the previous hardcoded preset functions (ollama,
+    /// openrouter, alibaba, mistral, generic) were deleted in PR S.
+    ///
+    /// `model_override`: if Some, use it as default_model; otherwise use
+    /// the model marked `default = true` in the TOML.
+    pub fn from_loaded(
+        loaded: &crate::providers::LoadedProvider,
+        api_key: String,
+        model_override: Option<String>,
+    ) -> Self {
+        let caps = &loaded.capabilities;
+        let default_model = model_override.unwrap_or_else(|| caps.default_model.clone());
         Self {
-            name: "Ollama".to_string(),
-            api_base: "http://localhost:11434".to_string(),
-            api_key: String::new(),
-            default_model: model.to_string(),
-            fast_model: None,
-            supports_thinking: true,
-            api_format: ApiFormat::Ollama,
-            max_retries: 3,
-            request_timeout: Duration::from_secs(600),
-            attribution: "powered by Ollama (local)".to_string(),
-            known_models: vec![ModelMetadata {
-                id: model.to_string(),
-                display_name: model.to_string(),
-                description: "Local model via Ollama".to_string(),
-                context_window: 128_000,
-                max_output_tokens: 8_192,
-                supports_thinking: true,
-                pricing: None, // Local = free
-            }],
-            default_max_tokens: 8_192,
-            default_thinking_budget: Some(16_000),
-            auth: AuthConfig {
-                env_vars: &[],
-                keychain_key: "ollama",
-                display_label: "Ollama",
-                required: false,
-            },
-        }
-    }
-
-    /// Preset for OpenRouter (any model, OpenAI-compatible proxy).
-    pub fn openrouter(api_key: &str, model: &str) -> Self {
-        Self {
-            name: "OpenRouter".to_string(),
-            api_base: "https://openrouter.ai/api".to_string(),
-            api_key: api_key.to_string(),
-            default_model: model.to_string(),
-            fast_model: None,
-            supports_thinking: true,
-            api_format: ApiFormat::OpenAI,
-            max_retries: 5,
-            request_timeout: Duration::from_secs(600),
-            attribution: "powered by OpenRouter".to_string(),
-            known_models: vec![ModelMetadata {
-                id: "qwen/qwen3.6-plus".to_string(),
-                display_name: "Qwen 3.6 Plus".to_string(),
-                description: "Agentic coding model, 1M context".to_string(),
-                context_window: 1_000_000,
-                max_output_tokens: 32_768,
-                supports_thinking: true,
-                pricing: Some(ModelPricing {
-                    input_per_mtk: 0.325,
-                    output_per_mtk: 1.95,
-                    cache_creation_per_mtk: 0.0,
-                    cache_read_per_mtk: 0.0,
-                }),
-            }],
-            default_max_tokens: 16_384,
-            default_thinking_budget: Some(16_000),
-            auth: AuthConfig {
-                env_vars: &["OPENROUTER_API_KEY"],
-                keychain_key: "openrouter",
-                display_label: "OpenRouter",
-                required: true,
-            },
-        }
-    }
-
-    /// Preset for Alibaba Cloud DashScope (Qwen).
-    pub fn alibaba(api_key: &str, model: &str) -> Self {
-        Self {
-            name: "Qwen".to_string(),
-            api_base: "https://dashscope-intl.aliyuncs.com/compatible-mode".to_string(),
-            api_key: api_key.to_string(),
-            default_model: model.to_string(),
-            // qwen-turbo-latest: 1M context, $0.05/M in, $0.20/M out.
-            // Note: Alibaba recommends qwen-flash as replacement, but turbo
-            // has generous free tier and works well for tool-result turns.
-            fast_model: Some("qwen-turbo-latest".to_string()),
-            supports_thinking: true,
-            api_format: ApiFormat::OpenAI,
-            max_retries: 5,
-            request_timeout: Duration::from_secs(600),
-            attribution: "powered by Qwen (Alibaba Cloud)".to_string(),
-            known_models: vec![
-                ModelMetadata {
-                    id: "qwen3.6-plus-2026-04-02".to_string(),
-                    display_name: "Qwen 3.6 Plus".to_string(),
-                    description: "Agentic coding model, 1M context".to_string(),
-                    context_window: 1_000_000,
-                    max_output_tokens: 32_768,
-                    supports_thinking: true,
-                    pricing: Some(ModelPricing {
-                        input_per_mtk: 0.29,
-                        output_per_mtk: 1.73,
-                        cache_creation_per_mtk: 0.0,
-                        cache_read_per_mtk: 0.0,
-                    }),
-                },
-                ModelMetadata {
-                    id: "qwen-turbo-latest".to_string(),
-                    display_name: "Qwen Turbo".to_string(),
-                    description: "Fast model for tool-result turns".to_string(),
-                    context_window: 1_000_000,
-                    max_output_tokens: 16_384,
-                    supports_thinking: false,
-                    pricing: Some(ModelPricing {
-                        input_per_mtk: 0.05,
-                        output_per_mtk: 0.20,
-                        cache_creation_per_mtk: 0.0,
-                        cache_read_per_mtk: 0.0,
-                    }),
-                },
-                ModelMetadata {
-                    id: "qwen3-max".to_string(),
-                    display_name: "Qwen 3 Max".to_string(),
-                    description: "Flagship Qwen3".to_string(),
-                    context_window: 131_072,
-                    max_output_tokens: 16_384,
-                    supports_thinking: true,
-                    pricing: Some(ModelPricing {
-                        input_per_mtk: 0.8,
-                        output_per_mtk: 2.4,
-                        cache_creation_per_mtk: 0.0,
-                        cache_read_per_mtk: 0.0,
-                    }),
-                },
-                ModelMetadata {
-                    id: "qwen3-235b-a22b".to_string(),
-                    display_name: "Qwen 3 235B".to_string(),
-                    description: "MoE 235B (22B active) — reasoning".to_string(),
-                    context_window: 131_072,
-                    max_output_tokens: 16_384,
-                    supports_thinking: true,
-                    pricing: Some(ModelPricing {
-                        input_per_mtk: 0.8,
-                        output_per_mtk: 2.4,
-                        cache_creation_per_mtk: 0.0,
-                        cache_read_per_mtk: 0.0,
-                    }),
-                },
-            ],
-            default_max_tokens: 16_384,
-            default_thinking_budget: Some(16_000),
-            auth: AuthConfig {
-                env_vars: &["DASHSCOPE_API_KEY"],
-                keychain_key: "alibaba",
-                display_label: "DashScope",
-                required: true,
-            },
-        }
-    }
-
-    /// Preset for Mistral AI.
-    pub fn mistral(api_key: &str, model: &str) -> Self {
-        Self {
-            name: "Mistral".to_string(),
-            api_base: "https://api.mistral.ai/v1".to_string(),
-            api_key: api_key.to_string(),
-            default_model: model.to_string(),
-            fast_model: Some("mistral-small-latest".to_string()),
-            supports_thinking: false,
-            api_format: ApiFormat::OpenAI,
-            max_retries: 5,
-            request_timeout: Duration::from_secs(600),
-            attribution: "powered by Mistral AI".to_string(),
-            known_models: vec![
-                ModelMetadata {
-                    id: "mistral-large-latest".to_string(),
-                    display_name: "Mistral Large".to_string(),
-                    description: "Most capable Mistral model".to_string(),
-                    context_window: 128_000,
-                    max_output_tokens: 32_768,
-                    supports_thinking: false,
-                    pricing: Some(ModelPricing {
-                        input_per_mtk: 2.0,
-                        output_per_mtk: 6.0,
-                        cache_creation_per_mtk: 0.0,
-                        cache_read_per_mtk: 0.0,
-                    }),
-                },
-                ModelMetadata {
-                    id: "mistral-small-latest".to_string(),
-                    display_name: "Mistral Small".to_string(),
-                    description: "Fast and efficient".to_string(),
-                    context_window: 128_000,
-                    max_output_tokens: 32_768,
-                    supports_thinking: false,
-                    pricing: Some(ModelPricing {
-                        input_per_mtk: 0.2,
-                        output_per_mtk: 0.6,
-                        cache_creation_per_mtk: 0.0,
-                        cache_read_per_mtk: 0.0,
-                    }),
-                },
-            ],
-            default_max_tokens: 32_768,
-            default_thinking_budget: None,
-            auth: AuthConfig {
-                env_vars: &["MISTRAL_API_KEY"],
-                keychain_key: "mistral",
-                display_label: "Mistral",
-                required: true,
-            },
-        }
-    }
-
-    /// Generic OpenAI-compatible endpoint.
-    pub fn generic(name: &str, api_base: &str, api_key: &str, model: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            api_base: api_base.to_string(),
-            api_key: api_key.to_string(),
-            default_model: model.to_string(),
-            fast_model: None,
-            supports_thinking: false,
-            api_format: ApiFormat::OpenAI,
-            max_retries: 5,
-            request_timeout: Duration::from_secs(600),
-            attribution: format!("powered by {}", name),
-            known_models: vec![ModelMetadata {
-                id: model.to_string(),
-                display_name: model.to_string(),
-                description: format!("Model via {}", name),
-                context_window: 128_000,
-                max_output_tokens: 16_384,
-                supports_thinking: false,
-                pricing: None,
-            }],
-            default_max_tokens: 16_384,
-            default_thinking_budget: None,
-            auth: AuthConfig {
-                env_vars: &["OPENAI_API_KEY"],
-                keychain_key: "openai",
-                display_label: "OpenAI",
-                required: false,
-            },
+            name: caps.display_name.clone(),
+            api_base: caps.default_api_base.clone(),
+            api_key,
+            default_model,
+            fast_model: caps.fast_model.clone(),
+            // PR S: `supports_thinking` at the provider level was redundant
+            // with per-model supports_thinking. We keep the field for
+            // back-compat with existing callers but populate it from
+            // default_thinking_budget.is_some() — a provider that has a
+            // thinking budget supports thinking at the provider level.
+            supports_thinking: caps.default_thinking_budget.is_some(),
+            api_format: caps.api_format,
+            max_retries: loaded.max_retries,
+            request_timeout: Duration::from_secs(loaded.request_timeout_sec),
+            attribution: caps.attribution.clone(),
+            known_models: caps.known_models.clone(),
+            default_max_tokens: caps.default_max_tokens,
+            default_thinking_budget: caps.default_thinking_budget,
+            auth: caps.auth,
         }
     }
 }
@@ -615,6 +407,12 @@ impl OpenAiProvider {
         if let Some(blocks) = msg.content.as_array() {
             let mut result = Vec::new();
             let mut text_parts = Vec::new();
+            // Image parts as OpenAI vision-format parts:
+            //   {"type": "image_url", "image_url": {"url": "data:<media>;base64,<data>"}}
+            // Used when the target provider supports OpenAI-compatible vision
+            // (GLM-4.6v, Qwen-VL, etc.). Falls back to dropping for providers
+            // that don't (we don't try to OCR client-side).
+            let mut image_parts: Vec<Value> = Vec::new();
             let mut tool_calls = Vec::new();
             let mut tool_results = Vec::new();
 
@@ -625,6 +423,58 @@ impl OpenAiProvider {
                     "text" => {
                         if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
                             text_parts.push(t.to_string());
+                        }
+                    }
+                    "image" | "document" => {
+                        // Anthropic image/document source → OpenAI vision part.
+                        // Both block types funnel through the same path because
+                        // vision-capable providers (GLM-4.6v, Qwen-VL) accept
+                        // PDF data via the same `image_url` mechanism — only
+                        // the data: URI media_type differs (image/png vs
+                        // application/pdf).
+                        // Two source shapes supported:
+                        //   { "type": "base64", "media_type": "...", "data": "..." }
+                        //     → emit "data:<media>;base64,<data>"
+                        //   { "type": "url", "url": "https://..." }
+                        //     → emit the URL directly
+                        if let Some(source) = block.get("source") {
+                            let source_type =
+                                source.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            let url = match source_type {
+                                "base64" => {
+                                    // Default media_type by block kind so a
+                                    // malformed image block doesn't accidentally
+                                    // claim PDF.
+                                    let default_media = if block_type == "document" {
+                                        "application/pdf"
+                                    } else {
+                                        "image/png"
+                                    };
+                                    let media_type = source
+                                        .get("media_type")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or(default_media);
+                                    let data =
+                                        source.get("data").and_then(|v| v.as_str()).unwrap_or("");
+                                    if data.is_empty() {
+                                        continue;
+                                    }
+                                    format!("data:{};base64,{}", media_type, data)
+                                }
+                                "url" => source
+                                    .get("url")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                _ => continue,
+                            };
+                            if url.is_empty() {
+                                continue;
+                            }
+                            image_parts.push(serde_json::json!({
+                                "type": "image_url",
+                                "image_url": { "url": url }
+                            }));
                         }
                     }
                     "thinking" => {
@@ -734,9 +584,27 @@ impl OpenAiProvider {
                     });
                 }
             } else {
-                // Regular user message with text blocks
+                // Regular user message with text and/or image blocks.
+                // OpenAI vision format requires content to be a list of parts
+                // (text + image_url) when images are present. With text only,
+                // we stick with the simple string form for compatibility with
+                // non-vision endpoints.
                 let text = text_parts.join("");
-                if !text.is_empty() {
+                let has_images = !image_parts.is_empty();
+                if has_images {
+                    let mut parts: Vec<Value> = Vec::new();
+                    if !text.is_empty() {
+                        parts.push(serde_json::json!({ "type": "text", "text": text }));
+                    }
+                    parts.extend(image_parts);
+                    result.push(OpenAiMessage {
+                        role: role.clone(),
+                        content: Some(Value::Array(parts)),
+                        tool_calls: None,
+                        tool_call_id: None,
+                        name: None,
+                    });
+                } else if !text.is_empty() {
                     result.push(OpenAiMessage {
                         role: role.clone(),
                         content: Some(Value::String(text)),
@@ -1590,7 +1458,12 @@ mod tests {
 
     #[test]
     fn test_translate_simple_request() {
-        let provider = OpenAiProvider::new(OpenAiProviderConfig::ollama("gemma4")).unwrap();
+        let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry().find("ollama").unwrap(),
+            String::new(),
+            Some("gemma4".to_string()),
+        ))
+        .unwrap();
 
         let req = CreateMessageRequest {
             model: "gemma4".to_string(),
@@ -1622,9 +1495,161 @@ mod tests {
     }
 
     #[test]
+    fn test_translate_user_message_with_image_block() {
+        // PR S follow-up: image blocks must NOT be silently dropped. They
+        // must be serialised as OpenAI vision-format parts so multimodal
+        // providers (GLM-4.6v, Qwen-VL) actually receive the image bytes.
+        let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry().find("glm").unwrap(),
+            "test-key-long-enough".to_string(),
+            Some("glm-4.6v".to_string()),
+        ))
+        .unwrap();
+
+        let req = CreateMessageRequest {
+            model: "glm-4.6v".to_string(),
+            max_tokens: 4096,
+            messages: vec![crate::types::ApiMessage {
+                role: "user".to_string(),
+                content: serde_json::json!([
+                    { "type": "text", "text": "Read this invoice" },
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "iVBORw0KGgo=" // tiny fake PNG payload
+                        }
+                    }
+                ]),
+            }],
+            system: None,
+            tools: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: true,
+            thinking: None,
+            output_config: None,
+        };
+
+        let openai_req = provider.translate_request(&req);
+        // Find the user message and confirm its content is a list of parts
+        // including the image_url.
+        let user_msg = openai_req
+            .messages
+            .iter()
+            .find(|m| m.role == "user")
+            .expect("user message present");
+        let content = user_msg
+            .content
+            .as_ref()
+            .expect("content must be set when image is present");
+        let parts = content
+            .as_array()
+            .expect("content must be a list of parts when images are present (not a plain string)");
+        assert_eq!(parts.len(), 2, "should have one text part + one image part");
+        // Find the image_url part
+        let image_part = parts
+            .iter()
+            .find(|p| p.get("type").and_then(|v| v.as_str()) == Some("image_url"))
+            .expect("image_url part must be present (was silently dropped before)");
+        let url = image_part
+            .get("image_url")
+            .and_then(|v| v.get("url"))
+            .and_then(|v| v.as_str())
+            .expect("image_url.url must be a string");
+        assert!(
+            url.starts_with("data:image/png;base64,"),
+            "url must be a data URI with the correct media type, got: {}",
+            url
+        );
+        assert!(
+            url.contains("iVBORw0KGgo="),
+            "url must contain the base64 payload, got: {}",
+            url
+        );
+    }
+
+    #[test]
+    fn test_translate_user_message_with_pdf_document_block() {
+        // PR S follow-up #2: `document` blocks (Anthropic format, used for
+        // PDFs) must also be serialised. They share the image_url emission
+        // path with `image` blocks — only the media_type changes.
+        let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry().find("glm").unwrap(),
+            "test-key-long-enough".to_string(),
+            Some("glm-4.6v".to_string()),
+        ))
+        .unwrap();
+
+        let req = CreateMessageRequest {
+            model: "glm-4.6v".to_string(),
+            max_tokens: 4096,
+            messages: vec![crate::types::ApiMessage {
+                role: "user".to_string(),
+                content: serde_json::json!([
+                    { "type": "text", "text": "Read this invoice" },
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": "JVBERi0xLjQK"
+                        }
+                    }
+                ]),
+            }],
+            system: None,
+            tools: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: true,
+            thinking: None,
+            output_config: None,
+        };
+
+        let openai_req = provider.translate_request(&req);
+        let user_msg = openai_req
+            .messages
+            .iter()
+            .find(|m| m.role == "user")
+            .expect("user message present");
+        let parts = user_msg
+            .content
+            .as_ref()
+            .expect("content set")
+            .as_array()
+            .expect("multi-part content (PDF present)");
+        let image_part = parts
+            .iter()
+            .find(|p| p.get("type").and_then(|v| v.as_str()) == Some("image_url"))
+            .expect("image_url part present (PDF was silently dropped before)");
+        let url = image_part
+            .get("image_url")
+            .and_then(|v| v.get("url"))
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert!(
+            url.starts_with("data:application/pdf;base64,"),
+            "PDF data URI must carry application/pdf media type, got: {}",
+            url
+        );
+    }
+
+    #[test]
     fn test_translate_with_thinking() {
-        let provider =
-            OpenAiProvider::new(OpenAiProviderConfig::alibaba("key", "qwen3-235b")).unwrap();
+        let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry()
+                .find("alibaba")
+                .unwrap(),
+            "test-key-long-enough".to_string(),
+            Some("qwen3-235b".to_string()),
+        ))
+        .unwrap();
 
         let req = CreateMessageRequest {
             model: "qwen3-235b".to_string(),
@@ -1651,7 +1676,12 @@ mod tests {
 
     #[test]
     fn test_translate_tool_use_message() {
-        let provider = OpenAiProvider::new(OpenAiProviderConfig::ollama("gemma4")).unwrap();
+        let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry().find("ollama").unwrap(),
+            String::new(),
+            Some("gemma4".to_string()),
+        ))
+        .unwrap();
 
         let tool_use_msg = crate::types::ApiMessage {
             role: "assistant".to_string(),
@@ -1672,7 +1702,12 @@ mod tests {
 
     #[test]
     fn test_translate_tool_result_message() {
-        let provider = OpenAiProvider::new(OpenAiProviderConfig::ollama("gemma4")).unwrap();
+        let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry().find("ollama").unwrap(),
+            String::new(),
+            Some("gemma4".to_string()),
+        ))
+        .unwrap();
 
         let tool_result_msg = crate::types::ApiMessage {
             role: "user".to_string(),

@@ -1,0 +1,32 @@
+schema_version = 1
+
+[provider]
+name = "openai"
+aliases = ["openai-compat", "custom"]
+display_name = "Custom endpoint"
+description = "Any OpenAI-compatible API (vLLM, LiteLLM, etc.)"
+attribution = "powered by OpenAI-compatible endpoint"
+provider_type = "openai_compat"
+api_format = "openai"
+api_base = "http://localhost:8080/v1"
+
+[auth]
+env_vars = ["OPENAI_API_KEY"]
+keychain_key = "openai"
+display_label = "API"
+required = false
+
+[defaults]
+max_tokens = 16384
+request_timeout_sec = 600
+max_retries = 5
+
+[[models]]
+id = "default"
+display_name = "Default model"
+description = "Whatever you pass via --model"
+context_window = 128000
+max_output_tokens = 16384
+supports_thinking = false
+default = true
+# No pricing — unknown model on a user-supplied endpoint.

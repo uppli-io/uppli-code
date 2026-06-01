@@ -1,0 +1,48 @@
+schema_version = 1
+
+[provider]
+name = "mistral"
+aliases = []
+display_name = "Mistral"
+description = "Mistral Large (cloud, API key)"
+attribution = "powered by Mistral AI"
+provider_type = "openai_compat"
+api_format = "openai"
+api_base = "https://api.mistral.ai/v1"
+
+[auth]
+env_vars = ["MISTRAL_API_KEY"]
+keychain_key = "mistral"
+display_label = "Mistral"
+required = true
+
+[defaults]
+max_tokens = 32768
+request_timeout_sec = 600
+max_retries = 5
+
+[[models]]
+id = "mistral-large-latest"
+display_name = "Mistral Large"
+description = "Most capable Mistral model"
+context_window = 128000
+max_output_tokens = 32768
+supports_thinking = false
+default = true
+
+[models.pricing]
+input_per_mtk = 2.0
+output_per_mtk = 6.0
+
+[[models]]
+id = "mistral-small-latest"
+display_name = "Mistral Small"
+description = "Fast and efficient"
+context_window = 128000
+max_output_tokens = 32768
+supports_thinking = false
+fast = true
+
+[models.pricing]
+input_per_mtk = 0.2
+output_per_mtk = 0.6
