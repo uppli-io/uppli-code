@@ -66,6 +66,10 @@ pub struct LoadedProvider {
     pub aliases: Vec<String>,
     pub provider_type: ProviderType,
     pub description: String,
+    /// Wire-time settings from [defaults]: surface them so the OpenAI/Anthropic
+    /// clients can read them without re-parsing the TOML.
+    pub max_retries: u32,
+    pub request_timeout_sec: u64,
 }
 
 impl LoadedProvider {
@@ -117,9 +121,8 @@ pub fn load_all_bundled() -> Result<ProviderRegistry, LoadError> {
 pub fn registry() -> &'static ProviderRegistry {
     static CACHED: OnceLock<ProviderRegistry> = OnceLock::new();
     CACHED.get_or_init(|| {
-        load_all_bundled().unwrap_or_else(|e| {
-            panic!("BUG: bundled provider TOML failed to load at startup: {e}")
-        })
+        load_all_bundled()
+            .unwrap_or_else(|e| panic!("BUG: bundled provider TOML failed to load at startup: {e}"))
     })
 }
 
@@ -260,11 +263,16 @@ fn into_loaded(cfg: ProviderConfigFile, provider_type: ProviderType) -> LoadedPr
         },
     };
 
+    let max_retries = cfg.defaults.max_retries;
+    let request_timeout_sec = cfg.defaults.request_timeout_sec;
+
     LoadedProvider {
         capabilities,
         aliases: cfg.provider.aliases.clone(),
         provider_type,
         description: cfg.provider.description.clone(),
+        max_retries,
+        request_timeout_sec,
     }
 }
 
@@ -294,7 +302,10 @@ mod tests {
         let registry = load_all_bundled().unwrap();
         let ds = registry.find("deepseek").expect("deepseek present");
         assert_eq!(ds.capabilities.default_model, "deepseek-v4-pro");
-        assert_eq!(ds.capabilities.fast_model.as_deref(), Some("deepseek-v4-flash"));
+        assert_eq!(
+            ds.capabilities.fast_model.as_deref(),
+            Some("deepseek-v4-flash")
+        );
         let v4_pro = ds
             .capabilities
             .known_models

@@ -745,24 +745,28 @@ async fn main() -> anyhow::Result<()> {
                     Some("ollama"), // Ollama needs no key, safest placeholder
                 )
                 .unwrap_or_else(|_| {
-                    // Last resort: create Ollama provider with defaults.
-                    // Use the Ollama preset's default model, not a hardcoded name.
-                    let default_model = cc_api::find_preset("ollama")
-                        .map(|p| p.default_model.to_string())
-                        .unwrap_or_else(|| "llama3".to_string());
-                    match cc_api::OpenAiProvider::new(cc_api::OpenAiProviderConfig::ollama(
-                        &default_model,
-                    )) {
+                    // Last resort: create Ollama provider from the TOML registry.
+                    let loaded = cc_api::providers::loader::registry()
+                        .find("ollama")
+                        .expect("ollama TOML must be bundled");
+                    let cfg =
+                        cc_api::OpenAiProviderConfig::from_loaded(loaded, String::new(), None);
+                    match cc_api::OpenAiProvider::new(cfg) {
                         Ok(p) => Box::new(p),
                         Err(e) => {
                             warn!(error = %e, "Failed to create fallback Ollama provider");
-                            // Absolute last resort — will fail on first API call
-                            // but at least won't panic at startup.
+                            let loaded = cc_api::providers::loader::registry()
+                                .find("ollama")
+                                .expect("ollama TOML must be bundled");
                             Box::new(
-                                cc_api::OpenAiProvider::new(cc_api::OpenAiProviderConfig::ollama(
-                                    "llama3",
-                                ))
-                                .unwrap_or_else(|_| unreachable!("static config")),
+                                cc_api::OpenAiProvider::new(
+                                    cc_api::OpenAiProviderConfig::from_loaded(
+                                        loaded,
+                                        String::new(),
+                                        None,
+                                    ),
+                                )
+                                .unwrap_or_else(|_| unreachable!("loaded config")),
                             )
                         }
                     }

@@ -31,7 +31,7 @@
 pub mod loader;
 pub mod schema;
 
-pub use loader::{load_all_bundled, ProviderRegistry};
+pub use loader::{load_all_bundled, LoadedProvider, ProviderRegistry};
 pub use schema::{
     ApiFormatToml, AuthToml, ProviderConfigFile, ProviderDefaultsToml, ProviderModelToml,
     ProviderPricingToml, ProviderToml,
