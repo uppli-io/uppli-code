@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use cc_core::config::PermissionMode;
 use cc_core::cost::CostTracker;
 use cc_core::permissions::{PermissionDecision, PermissionHandler, PermissionRequest};
-use cc_core::types::ToolDefinition;
+use cc_core::types::{ContentBlock, ToolDefinition};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -98,10 +98,25 @@ pub use worktree::{EnterWorktreeTool, ExitWorktreeTool};
 // ---------------------------------------------------------------------------
 
 /// The result of executing a tool.
+///
+/// `content` is the textual fallback — ALWAYS populated. Providers that
+/// don't understand structured tool_result payloads receive this string
+/// as-is, so it must be self-sufficient (caption an image, summarise a
+/// PDF, etc.).
+///
+/// `blocks` is the optional structured payload (image, document, mixed
+/// text + image). The query loop only forwards it when the active
+/// provider advertises `supports_tool_result_blocks = true`.
 #[derive(Debug, Clone)]
 pub struct ToolResult {
-    /// Content to send back to the model as the tool result.
+    /// Textual fallback content. Always populated, even when `blocks` is
+    /// `Some` — providers without structured tool_result support read
+    /// this and the user-facing TUI renders it too.
     pub content: String,
+    /// Optional structured payload. When `Some`, the query loop emits
+    /// `ToolResultContent::Blocks(...)` for capable providers; otherwise
+    /// the textual fallback is sent.
+    pub blocks: Option<Vec<ContentBlock>>,
     /// Whether this invocation was an error.
     pub is_error: bool,
     /// Optional structured metadata (for the TUI to render diffs, etc.).
@@ -112,6 +127,7 @@ impl ToolResult {
     pub fn success(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
+            blocks: None,
             is_error: false,
             metadata: None,
         }
@@ -120,7 +136,23 @@ impl ToolResult {
     pub fn error(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
+            blocks: None,
             is_error: true,
+            metadata: None,
+        }
+    }
+
+    /// Construct a successful result that carries both a textual fallback
+    /// and a structured payload. The query loop chooses which one to
+    /// forward based on the active provider's capabilities.
+    pub fn success_with_blocks(
+        content: impl Into<String>,
+        blocks: Vec<ContentBlock>,
+    ) -> Self {
+        Self {
+            content: content.into(),
+            blocks: Some(blocks),
+            is_error: false,
             metadata: None,
         }
     }
@@ -355,6 +387,55 @@ pub fn find_tool(name: &str) -> Option<Box<dyn Tool>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cc_core::types::ImageSource;
+
+    // ---- ToolResult constructor invariants ---------------------------------
+    //
+    // Pin the textual-fallback contract: every constructor MUST populate
+    // `content` with a string the model can read even when the wire format
+    // doesn't accept structured blocks. Otherwise providers without vision
+    // would receive an empty tool_result and silently drop the payload.
+
+    #[test]
+    fn tool_result_success_has_no_blocks() {
+        let r = ToolResult::success("ok");
+        assert_eq!(r.content, "ok");
+        assert!(r.blocks.is_none(), "success() must not populate blocks");
+        assert!(!r.is_error);
+    }
+
+    #[test]
+    fn tool_result_error_has_no_blocks() {
+        let r = ToolResult::error("boom");
+        assert_eq!(r.content, "boom");
+        assert!(r.blocks.is_none());
+        assert!(r.is_error);
+    }
+
+    #[test]
+    fn tool_result_success_with_blocks_keeps_textual_fallback() {
+        let img = ContentBlock::Image {
+            source: ImageSource {
+                source_type: "base64".to_string(),
+                media_type: Some("image/png".to_string()),
+                data: Some("iVBORw0KGgo=".to_string()),
+                url: None,
+            },
+        };
+        let r = ToolResult::success_with_blocks(
+            "[1 image attached]",
+            vec![img.clone()],
+        );
+        assert_eq!(
+            r.content, "[1 image attached]",
+            "textual fallback must survive — providers without structured \
+             tool_result support read this exact string"
+        );
+        let blocks = r.blocks.expect("blocks must be Some");
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], ContentBlock::Image { .. }));
+        assert!(!r.is_error);
+    }
 
     // ---- Tool registry tests ------------------------------------------------
 
