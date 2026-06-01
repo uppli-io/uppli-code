@@ -5,7 +5,7 @@
 //!
 //! # Layout
 //!
-//! ```
+//! ```text
 //! crates/api/presets/
 //!   deepseek.toml
 //!   alibaba.toml
