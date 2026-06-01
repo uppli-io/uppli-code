@@ -13,6 +13,7 @@ mod detect;
 mod image;
 mod limits;
 mod output;
+mod pdf;
 mod text;
 
 use crate::{PermissionLevel, Tool, ToolContext, ToolResult};
