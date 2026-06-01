@@ -83,11 +83,17 @@ uppli-code --provider deepseek
 
 uppli-code **caps in tokens** and **reports cost in USD**. They are two independent signals:
 
-- **Cap** — `--max-tokens-total <N>` aborts the session when cumulative tokens
-  (input + output + cache creation + cache read) reach `N`. Objective,
-  provider-reported, never drifts. Exit code `2`. In `--output-format json`
-  or `stream-json` mode a `{"type":"budget_exceeded","tokens":N,"limit_tokens":N}`
-  event is emitted on stderr.
+- **Cap (tokens)** — `--max-tokens-total <N>` aborts the session when
+  cumulative tokens (input + output + cache creation + cache read) reach `N`.
+  Objective, provider-reported, never drifts. Exit code `2`.
+- **Cap (USD)** — `--max-budget-usd <N>` aborts when estimated USD spend
+  reaches `N`. Best-effort from configured pricing — drifts with provider
+  promos. Use this when refacturation needs a € cap (catalog enrichment
+  billed per-run to a client).
+- **Both caps together** — set both; whichever fires first triggers the
+  abort. The JSON event on stderr indicates which cap fired via a `trigger`
+  field: `{"type":"budget_exceeded","trigger":"tokens"|"usd","spent_tokens":...,
+  "spent_cost_usd":...,"limit_tokens":...,"limit_cost_usd":...}`.
 
 - **Cost display** — best-effort USD from configured per-model pricing.
   Shown in the TUI status bar, `/cost`, `/status`, `/usage` slash commands,
@@ -109,7 +115,13 @@ ceiling. Plan a margin if the cap is critical.
 # Stop the session after 100k cumulative tokens
 uppli-code --max-tokens-total 100000 --print "do the task"
 
-# Combine with --effort: cap is independent of reasoning depth
+# Stop the session at $5 estimated spend (refacturation use case)
+uppli-code --max-budget-usd 5.00 --print "do the task"
+
+# Combine both caps — whichever fires first wins
+uppli-code --max-tokens-total 100000 --max-budget-usd 5.00 --print "do the task"
+
+# Combine with --effort: caps are independent of reasoning depth
 uppli-code --max-tokens-total 50000 --effort max --print "deep task"
 ```
 

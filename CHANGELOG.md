@@ -6,9 +6,13 @@ All notable changes to uppli-code are documented in this file.
 
 ### Breaking changes
 
-- **`--max-budget-usd <f64>` removed.** Replaced by **`--max-tokens-total <u64>`** as the session-level abort cap. Scripts relying on the old flag will fail with "unknown flag" — migrate by passing a token budget instead.
-  - **Why:** USD enforcement depended on per-provider pricing that drifts (DeepSeek's promo, provider tariff changes, etc.). Token counts are objective and provider-reported, so the cap fires at a deterministic threshold regardless of pricing accuracy.
-  - **What's preserved:** USD cost is still exposed everywhere (slash commands, status bar, bridge, session storage) — best-effort from configured pricing — because downstream apps depend on it for refacturation and reporting. Cap enforcement and cost display are now decoupled.
+- **`QueryOutcome::BudgetExceeded` shape changed.** Was `{ tokens, limit_tokens }`, now `{ spent_tokens, spent_cost_usd, limit_tokens, limit_cost_usd, trigger }`. The JSON event for `--output-format json` / `stream-json` carries the same keys + a `trigger: "tokens" | "usd"` field that says which cap fired.
+
+### Flag changes
+
+- **`--max-tokens-total <u64>`** — abort the session when cumulative tokens reach N. Objective cap, never drifts. New in this release.
+- **`--max-budget-usd <f64>`** — abort the session when estimated USD cost reaches N (best-effort from configured pricing). Restored after the v1 removal: refacturation use cases (catalog enrichment with per-run cost billed to a client) need a € cap. Both caps may be set simultaneously; whichever fires first triggers `BudgetExceeded`. The event carries both `spent_tokens` and `spent_cost_usd` plus a `trigger` field.
+  - Why we kept both: tokens are objective (cap fires deterministically), USD is the refacturation unit (best-effort but matches the billing contract). Decoupled by design.
 
 - **`QueryOutcome::BudgetExceeded` field rename.** Was `{ cost_usd, limit_usd }`, now `{ tokens, limit_tokens }`. JSON output schema for `--output-format json`/`stream-json` emits `{"type": "budget_exceeded", "tokens": N, "limit_tokens": N}` on stderr with exit code 2.
 

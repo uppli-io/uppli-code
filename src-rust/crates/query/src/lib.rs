@@ -85,8 +85,36 @@ pub enum QueryOutcome {
     Cancelled,
     /// An unrecoverable error occurred.
     Error(ClaudeError),
-    /// The configured total-token budget was exceeded.
-    BudgetExceeded { tokens: u64, limit_tokens: u64 },
+    /// A configured budget cap was exceeded. The trigger field says which
+    /// cap fired. Both spent_tokens and spent_cost_usd are populated
+    /// regardless of trigger; the corresponding limit field is None if that
+    /// cap wasn't configured.
+    BudgetExceeded {
+        spent_tokens: u64,
+        spent_cost_usd: f64,
+        limit_tokens: Option<u64>,
+        limit_cost_usd: Option<f64>,
+        trigger: BudgetTrigger,
+    },
+}
+
+/// Which configured cap caused the BudgetExceeded outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetTrigger {
+    /// `--max-tokens-total` reached.
+    Tokens,
+    /// `--max-budget-usd` reached.
+    CostUsd,
+}
+
+impl BudgetTrigger {
+    /// Wire-format string for JSON output and slash-command messages.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BudgetTrigger::Tokens => "tokens",
+            BudgetTrigger::CostUsd => "usd",
+        }
+    }
 }
 
 /// When to push an assistant message to the conversation history relative to
@@ -160,14 +188,12 @@ pub struct QueryConfig {
     /// the resulting index is used to inject a skill listing attachment into
     /// the conversation context.
     pub skill_index: Option<SharedSkillIndex>,
-    /// Optional total-token cap. The query loop checks accumulated tokens
-    /// after each turn and aborts with `QueryOutcome::BudgetExceeded` when
-    /// exceeded.
-    ///
-    /// PR P (2026-05-29): replaces the previous `max_budget_usd: Option<f64>`.
-    /// USD tracking was removed because per-provider pricing drift made the
-    /// cap unreliable; token counts are objective and provider-reported.
+    /// Optional total-token cap (objective, never drifts).
     pub max_total_tokens: Option<u64>,
+    /// Optional USD spend cap (best-effort, drifts with provider pricing).
+    /// Used for refacturation use cases where the customer is billed in €/$.
+    /// Both caps can be set simultaneously; whichever fires first aborts.
+    pub max_budget_usd: Option<f64>,
     /// Fallback model name. Used when the primary model returns overloaded /
     /// rate-limit errors (mirrors TS `--fallback-model`).
     pub fallback_model: Option<String>,
@@ -204,6 +230,7 @@ impl Default for QueryConfig {
             command_queue: None,
             skill_index: None,
             max_total_tokens: None,
+            max_budget_usd: None,
             fallback_model: fallback,
         }
     }
@@ -909,19 +936,48 @@ pub async fn run_query_loop(
             messages.push(assistant_msg.clone());
         }
 
-        // Budget guard: abort the loop if the configured token cap is exceeded.
-        if let Some(limit) = config.max_total_tokens {
-            let spent = cost_tracker.total_tokens();
-            if spent >= limit {
+        // Budget guard: abort if EITHER configured cap (tokens or USD) is
+        // exceeded. Tokens checked first (cheaper); USD second (best-effort,
+        // depends on pricing). Both caps may be set simultaneously.
+        {
+            let spent_tokens = cost_tracker.total_tokens();
+            let spent_cost_usd = cost_tracker.total_cost_usd();
+            let trigger = if config
+                .max_total_tokens
+                .is_some_and(|limit| spent_tokens >= limit)
+            {
+                Some(BudgetTrigger::Tokens)
+            } else if config
+                .max_budget_usd
+                .is_some_and(|limit| spent_cost_usd >= limit)
+            {
+                Some(BudgetTrigger::CostUsd)
+            } else {
+                None
+            };
+
+            if let Some(trigger) = trigger {
                 if let Some(ref tx) = event_tx {
-                    let _ = tx.send(QueryEvent::Status(format!(
-                        "Token budget {} exceeded ({} used) — stopping.",
-                        limit, spent
-                    )));
+                    let msg = match trigger {
+                        BudgetTrigger::Tokens => format!(
+                            "Token budget {} exceeded ({} used) — stopping.",
+                            config.max_total_tokens.unwrap_or(0),
+                            spent_tokens
+                        ),
+                        BudgetTrigger::CostUsd => format!(
+                            "USD budget ${:.4} exceeded (${:.4} spent) — stopping.",
+                            config.max_budget_usd.unwrap_or(0.0),
+                            spent_cost_usd
+                        ),
+                    };
+                    let _ = tx.send(QueryEvent::Status(msg));
                 }
                 return QueryOutcome::BudgetExceeded {
-                    tokens: spent,
-                    limit_tokens: limit,
+                    spent_tokens,
+                    spent_cost_usd,
+                    limit_tokens: config.max_total_tokens,
+                    limit_cost_usd: config.max_budget_usd,
+                    trigger,
                 };
             }
         }
@@ -1720,6 +1776,7 @@ mod tests {
             command_queue: None,
             skill_index: None,
             max_total_tokens: None,
+            max_budget_usd: None,
             fallback_model: None,
         }
     }
@@ -1910,53 +1967,66 @@ mod tests {
     // shape — any future change to the variant fields or the comparison
     // breaks this test.
 
+    /// Mirror of the dual-cap budget guard in run_query_loop (lines ~939-984).
+    /// Tokens checked first; USD second. Returns Some(QueryOutcome::BudgetExceeded)
+    /// with the appropriate trigger when either cap fires.
     fn check_budget(
         cost_tracker: &cc_core::cost::CostTracker,
         max_total_tokens: Option<u64>,
+        max_budget_usd: Option<f64>,
     ) -> Option<QueryOutcome> {
-        if let Some(limit) = max_total_tokens {
-            let spent = cost_tracker.total_tokens();
-            if spent >= limit {
-                return Some(QueryOutcome::BudgetExceeded {
-                    tokens: spent,
-                    limit_tokens: limit,
-                });
-            }
-        }
-        None
+        let spent_tokens = cost_tracker.total_tokens();
+        let spent_cost_usd = cost_tracker.total_cost_usd();
+        let trigger = if max_total_tokens.is_some_and(|limit| spent_tokens >= limit) {
+            Some(BudgetTrigger::Tokens)
+        } else if max_budget_usd.is_some_and(|limit| spent_cost_usd >= limit) {
+            Some(BudgetTrigger::CostUsd)
+        } else {
+            None
+        };
+        trigger.map(|t| QueryOutcome::BudgetExceeded {
+            spent_tokens,
+            spent_cost_usd,
+            limit_tokens: max_total_tokens,
+            limit_cost_usd: max_budget_usd,
+            trigger: t,
+        })
     }
 
     #[test]
-    fn test_budget_check_under_limit_returns_none() {
+    fn test_budget_check_under_both_limits_returns_none() {
         let tracker = cc_core::cost::CostTracker::new();
-        tracker.add_usage(100, 200, 0, 0); // 300 tokens
-        let res = check_budget(&tracker, Some(1000));
-        assert!(res.is_none(), "Under limit should not trip budget");
+        tracker.add_usage(100, 200, 0, 0);
+        let res = check_budget(&tracker, Some(1000), Some(10.0));
+        assert!(res.is_none(), "Under both limits should not trip");
     }
 
     #[test]
     fn test_budget_check_no_limit_returns_none() {
         let tracker = cc_core::cost::CostTracker::new();
         tracker.add_usage(1_000_000, 1_000_000, 0, 0);
-        let res = check_budget(&tracker, None);
-        assert!(res.is_none(), "No limit configured should never trip");
+        let res = check_budget(&tracker, None, None);
+        assert!(res.is_none(), "No caps configured should never trip");
     }
 
     #[test]
-    fn test_budget_check_at_limit_returns_budget_exceeded() {
+    fn test_budget_check_at_token_limit_returns_budget_exceeded_with_tokens_trigger() {
         let tracker = cc_core::cost::CostTracker::new();
-        tracker.add_usage(500, 500, 0, 0); // exactly 1000
-        let res = check_budget(&tracker, Some(1000));
+        tracker.add_usage(500, 500, 0, 0); // exactly 1000 tokens
+        let res = check_budget(&tracker, Some(1000), None);
         match res {
             Some(QueryOutcome::BudgetExceeded {
-                tokens,
+                spent_tokens,
                 limit_tokens,
+                trigger,
+                ..
             }) => {
-                assert_eq!(tokens, 1000, "spent must report actual total_tokens");
-                assert_eq!(limit_tokens, 1000, "limit must report the configured cap");
+                assert_eq!(spent_tokens, 1000);
+                assert_eq!(limit_tokens, Some(1000));
+                assert_eq!(trigger, BudgetTrigger::Tokens);
             }
             other => panic!(
-                "Expected QueryOutcome::BudgetExceeded {{ tokens: 1000, limit_tokens: 1000 }}, got: {:?}",
+                "Expected BudgetExceeded with Tokens trigger, got: {:?}",
                 other
             ),
         }
@@ -1966,20 +2036,68 @@ mod tests {
     fn test_budget_check_over_limit_reports_actual_overshoot() {
         let tracker = cc_core::cost::CostTracker::new();
         tracker.add_usage(800, 700, 0, 0); // 1500
-        let res = check_budget(&tracker, Some(1000));
+        let res = check_budget(&tracker, Some(1000), None);
         match res {
             Some(QueryOutcome::BudgetExceeded {
-                tokens,
+                spent_tokens,
                 limit_tokens,
+                trigger,
+                ..
             }) => {
-                assert_eq!(tokens, 1500, "spent must equal actual usage, not the limit");
-                assert_eq!(limit_tokens, 1000, "limit must reflect the user-set cap");
-                assert!(
-                    tokens >= limit_tokens,
-                    "BudgetExceeded invariant: spent >= limit must always hold"
-                );
+                assert_eq!(spent_tokens, 1500);
+                assert_eq!(limit_tokens, Some(1000));
+                assert_eq!(trigger, BudgetTrigger::Tokens);
+                assert!(spent_tokens >= limit_tokens.unwrap());
             }
             other => panic!("Expected BudgetExceeded, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_budget_check_usd_cap_alone_fires_with_costusd_trigger() {
+        // pricing set via with_pricing; 1M input tokens × $1/Mtk = $1.00 spent
+        let tracker = cc_core::cost::CostTracker::with_pricing(cc_core::cost::ModelPricing {
+            input_per_mtk: 1.0,
+            output_per_mtk: 0.0,
+            cache_creation_per_mtk: 0.0,
+            cache_read_per_mtk: 0.0,
+        });
+        tracker.add_usage(1_000_000, 0, 0, 0);
+        let res = check_budget(&tracker, None, Some(0.50));
+        match res {
+            Some(QueryOutcome::BudgetExceeded {
+                spent_cost_usd,
+                limit_cost_usd,
+                limit_tokens,
+                trigger,
+                ..
+            }) => {
+                assert!((spent_cost_usd - 1.0).abs() < 1e-9);
+                assert_eq!(limit_cost_usd, Some(0.50));
+                assert_eq!(limit_tokens, None);
+                assert_eq!(trigger, BudgetTrigger::CostUsd);
+            }
+            other => panic!(
+                "Expected BudgetExceeded with CostUsd trigger, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn test_budget_check_both_caps_set_tokens_fires_first() {
+        // Both caps set, tokens hit first → trigger = Tokens
+        let tracker = cc_core::cost::CostTracker::with_pricing(cc_core::cost::ModelPricing {
+            input_per_mtk: 0.001, // very cheap so USD cap won't fire
+            ..cc_core::cost::ModelPricing::FREE
+        });
+        tracker.add_usage(1000, 0, 0, 0);
+        let res = check_budget(&tracker, Some(1000), Some(100.0));
+        match res {
+            Some(QueryOutcome::BudgetExceeded { trigger, .. }) => {
+                assert_eq!(trigger, BudgetTrigger::Tokens);
+            }
+            other => panic!("Expected Tokens trigger, got: {:?}", other),
         }
     }
 
@@ -1989,49 +2107,11 @@ mod tests {
     // uses, not a duplicated literal that could drift. The shape lock now lives
     // next to the production emission.
 
-    #[test]
-    fn test_budget_exceeded_json_output_schema_lock() {
-        // Schema-lock: the JSON shape emitted by main.rs::CliOutputFormat::Json
-        // and ::StreamJson on a BudgetExceeded outcome MUST be
-        // `{"type": "budget_exceeded", "tokens": N, "limit_tokens": N}`.
-        //
-        // If a future refactor renames variant fields, this test still passes
-        // if the JSON output structure is preserved. The failure case is
-        // someone adding/removing keys silently, which automation parsing the
-        // CLI output would break on.
-        let outcome = QueryOutcome::BudgetExceeded {
-            tokens: 1500,
-            limit_tokens: 1000,
-        };
-        let json = match outcome {
-            QueryOutcome::BudgetExceeded {
-                tokens,
-                limit_tokens,
-            } => serde_json::json!({
-                "type": "budget_exceeded",
-                "tokens": tokens,
-                "limit_tokens": limit_tokens,
-            }),
-            _ => panic!("Wrong variant"),
-        };
-        assert_eq!(json["type"], "budget_exceeded");
-        assert_eq!(json["tokens"], 1500);
-        assert_eq!(json["limit_tokens"], 1000);
-        // Lock the exact set of keys — no more, no less.
-        let keys: Vec<&str> = json
-            .as_object()
-            .expect("must be an object")
-            .keys()
-            .map(|s| s.as_str())
-            .collect();
-        let mut sorted = keys.clone();
-        sorted.sort();
-        assert_eq!(
-            sorted,
-            vec!["limit_tokens", "tokens", "type"],
-            "JSON output schema drifted — automation consuming the budget event will break. Update this test only if the schema change is intentional."
-        );
-    }
+    // NOTE: The budget_exceeded JSON schema-lock test moved to
+    // crates/cli/src/main.rs::tests because it now exercises the production
+    // helper build_budget_exceeded_json_record (which carries the dual-cap
+    // fields). The shape lock lives next to the emission, eliminating the
+    // mirror-divergence trap.
 
     // ── PR P v3 review-residual fix: regression tests on push/no-push logic ──
     //

@@ -109,14 +109,29 @@ async fn run_scheduler_loop(
                         debug!(id = %task_id, "Cron task cancelled");
                     }
                     QueryOutcome::BudgetExceeded {
-                        tokens,
+                        spent_tokens,
+                        spent_cost_usd,
                         limit_tokens,
-                    } => {
-                        eprintln!(
-                            "[cron] task {} token budget exceeded: spent {} of {} tokens",
-                            task_id, tokens, limit_tokens
-                        );
-                    }
+                        limit_cost_usd,
+                        trigger,
+                    } => match trigger {
+                        crate::BudgetTrigger::Tokens => {
+                            eprintln!(
+                                "[cron] task {} token budget exceeded: spent {} of {} tokens",
+                                task_id,
+                                spent_tokens,
+                                limit_tokens.unwrap_or(0)
+                            );
+                        }
+                        crate::BudgetTrigger::CostUsd => {
+                            eprintln!(
+                                "[cron] task {} USD budget exceeded: spent ${:.4} of ${:.4}",
+                                task_id,
+                                spent_cost_usd,
+                                limit_cost_usd.unwrap_or(0.0)
+                            );
+                        }
+                    },
                 }
             });
         }

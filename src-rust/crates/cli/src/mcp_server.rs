@@ -471,6 +471,7 @@ async fn tool_query(conn: &Conn, args: &Value) -> Result<Value, JsonRpcError> {
         command_queue: None,
         skill_index: None,
         max_total_tokens: None,
+        max_budget_usd: None,
         fallback_model: None,
     };
 

@@ -257,10 +257,17 @@ struct Cli {
     workload: Option<String>,
 
     /// Maximum total tokens (input+output+cache) before aborting the query loop.
-    /// Replaces the previous `--max-budget-usd` (PR P, 2026-05-29) — see PR
-    /// description for rationale (pricing drift made USD cap unreliable).
+    /// Objective cap, never drifts with pricing.
     #[arg(long = "max-tokens-total", value_name = "TOKENS")]
     max_total_tokens: Option<u64>,
+
+    /// Maximum estimated USD spend before aborting the query loop.
+    /// Best-effort from configured per-model pricing — drifts with provider
+    /// promos. Use alongside `--max-tokens-total`; whichever cap is hit
+    /// first triggers the abort. For authoritative billing, see provider
+    /// dashboard.
+    #[arg(long = "max-budget-usd", value_name = "USD")]
+    max_budget_usd: Option<f64>,
 
     /// Fallback model to use if the primary model is overloaded or unavailable
     #[arg(long = "fallback-model")]
@@ -964,6 +971,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(tokens) = cli.max_total_tokens {
         query_config.max_total_tokens = Some(tokens);
+    }
+    if let Some(usd) = cli.max_budget_usd {
+        query_config.max_budget_usd = Some(usd);
     }
     if let Some(ref fb) = cli.fallback_model {
         query_config.fallback_model = Some(fb.clone());
@@ -2370,14 +2380,19 @@ async fn run_headless(
                 std::process::exit(1);
             }
             QueryOutcome::BudgetExceeded {
-                tokens,
+                spent_tokens,
+                spent_cost_usd,
                 limit_tokens,
+                limit_cost_usd,
+                trigger,
             } => {
-                let out = serde_json::json!({
-                    "type": "budget_exceeded",
-                    "tokens": tokens,
-                    "limit_tokens": limit_tokens,
-                });
+                let out = build_budget_exceeded_json_record(
+                    spent_tokens,
+                    spent_cost_usd,
+                    limit_tokens,
+                    limit_cost_usd,
+                    trigger,
+                );
                 eprintln!("{}", out);
                 std::process::exit(2);
             }
@@ -2401,14 +2416,19 @@ async fn run_headless(
                     std::process::exit(1);
                 }
                 QueryOutcome::BudgetExceeded {
-                    tokens,
+                    spent_tokens,
+                    spent_cost_usd,
                     limit_tokens,
+                    limit_cost_usd,
+                    trigger,
                 } => {
-                    let out = serde_json::json!({
-                        "type": "budget_exceeded",
-                        "tokens": tokens,
-                        "limit_tokens": limit_tokens,
-                    });
+                    let out = build_budget_exceeded_json_record(
+                        spent_tokens,
+                        spent_cost_usd,
+                        limit_tokens,
+                        limit_cost_usd,
+                        trigger,
+                    );
                     eprintln!("{}", out);
                     std::process::exit(2);
                 }
@@ -2432,13 +2452,24 @@ async fn run_headless(
                     std::process::exit(1);
                 }
                 QueryOutcome::BudgetExceeded {
-                    tokens,
+                    spent_tokens,
+                    spent_cost_usd,
                     limit_tokens,
+                    limit_cost_usd,
+                    trigger,
                 } => {
-                    eprintln!(
-                        "Token budget {} reached ({} used). Stopping.",
-                        limit_tokens, tokens
-                    );
+                    match trigger {
+                        cc_query::BudgetTrigger::Tokens => eprintln!(
+                            "Token budget {} reached ({} used). Stopping.",
+                            limit_tokens.unwrap_or(0),
+                            spent_tokens
+                        ),
+                        cc_query::BudgetTrigger::CostUsd => eprintln!(
+                            "USD budget ${:.4} reached (${:.4} spent). Stopping.",
+                            limit_cost_usd.unwrap_or(0.0),
+                            spent_cost_usd
+                        ),
+                    }
                     std::process::exit(2);
                 }
                 _ => {}
@@ -3754,6 +3785,27 @@ fn json_null_or_string(opt: &Option<String>) -> serde_json::Value {
     }
 }
 
+/// Build the canonical "budget_exceeded" JSON record emitted by
+/// --output-format json and --output-format stream-json on a BudgetExceeded
+/// outcome. Centralised so the schema-lock test exercises the SAME
+/// function as production.
+fn build_budget_exceeded_json_record(
+    spent_tokens: u64,
+    spent_cost_usd: f64,
+    limit_tokens: Option<u64>,
+    limit_cost_usd: Option<f64>,
+    trigger: cc_query::BudgetTrigger,
+) -> serde_json::Value {
+    serde_json::json!({
+        "type": "budget_exceeded",
+        "trigger": trigger.as_str(),
+        "spent_tokens": spent_tokens,
+        "spent_cost_usd": spent_cost_usd,
+        "limit_tokens": limit_tokens,
+        "limit_cost_usd": limit_cost_usd,
+    })
+}
+
 /// Build the canonical "result" JSON record emitted by --output-format json
 /// and --output-format stream-json on a successful EndTurn outcome.
 ///
@@ -3814,22 +3866,26 @@ mod tests {
     }
 
     #[test]
-    fn test_max_budget_usd_is_removed_old_flag_fails_loudly() {
-        // Breaking change validation: --max-budget-usd MUST NOT be accepted.
-        // If clap silently accepted it, old scripts would proceed with no cap,
-        // which is exactly the regression we're guarding against.
-        let res = Cli::try_parse_from(["uppli-code", "--max-budget-usd", "5.00"]);
-        assert!(
-            res.is_err(),
-            "--max-budget-usd must error (was removed in PR P); got: {:?}",
-            res.map(|c| c.max_total_tokens)
-        );
-        let err = res.unwrap_err().to_string();
-        assert!(
-            err.contains("unexpected") || err.contains("unknown") || err.contains("found"),
-            "Error must indicate the flag is unrecognised, got: {}",
-            err
-        );
+    fn test_max_budget_usd_flag_parses_to_some() {
+        // PR P v3.4: --max-budget-usd reinstated for refacturation use case.
+        let cli = Cli::try_parse_from(["uppli-code", "--max-budget-usd", "5.00"])
+            .expect("--max-budget-usd should parse");
+        assert_eq!(cli.max_budget_usd, Some(5.00));
+    }
+
+    #[test]
+    fn test_max_budget_usd_and_max_tokens_total_can_coexist() {
+        // Both caps may be set; whichever fires first triggers BudgetExceeded.
+        let cli = Cli::try_parse_from([
+            "uppli-code",
+            "--max-tokens-total",
+            "100000",
+            "--max-budget-usd",
+            "5.00",
+        ])
+        .expect("both flags together should parse");
+        assert_eq!(cli.max_total_tokens, Some(100000));
+        assert_eq!(cli.max_budget_usd, Some(5.00));
     }
 
     #[test]
@@ -3905,6 +3961,60 @@ mod tests {
         );
         assert_eq!(json["total_tokens"], 7u64);
         assert_eq!(json["total_cost_usd"], 0.0);
+    }
+
+    #[test]
+    fn test_build_budget_exceeded_json_record_schema_lock_tokens_trigger() {
+        // Schema-lock for the budget_exceeded event JSON shape, exercising
+        // the production helper directly (no mirror).
+        let json = build_budget_exceeded_json_record(
+            12345,
+            0.4242,
+            Some(10000),
+            Some(0.30),
+            cc_query::BudgetTrigger::Tokens,
+        );
+        assert_eq!(json["type"], "budget_exceeded");
+        assert_eq!(json["trigger"], "tokens");
+        assert_eq!(json["spent_tokens"], 12345u64);
+        assert_eq!(json["spent_cost_usd"], 0.4242);
+        assert_eq!(json["limit_tokens"], 10000u64);
+        assert_eq!(json["limit_cost_usd"], 0.30);
+
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "limit_cost_usd",
+                "limit_tokens",
+                "spent_cost_usd",
+                "spent_tokens",
+                "trigger",
+                "type"
+            ],
+            "budget_exceeded JSON schema drifted — automation parsing this event will break. Update only on intentional schema change."
+        );
+    }
+
+    #[test]
+    fn test_build_budget_exceeded_json_record_usd_trigger_with_no_token_cap() {
+        // USD cap set, token cap None → limit_tokens serialises as null
+        let json = build_budget_exceeded_json_record(
+            50000,
+            1.50,
+            None,
+            Some(1.0),
+            cc_query::BudgetTrigger::CostUsd,
+        );
+        assert_eq!(json["trigger"], "usd");
+        assert!(json["limit_tokens"].is_null());
+        assert_eq!(json["limit_cost_usd"], 1.0);
     }
 
     #[test]
