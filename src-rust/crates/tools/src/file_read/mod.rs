@@ -1,4 +1,18 @@
 // FileRead tool: read files with optional line range, image support, PDF page ranges.
+//
+// PR B (in progress): split into format-specific submodules so every file
+// type (text / image / PDF / OOXML / ODF / archive / structured) reaches the
+// LLM properly. PR A landed the multimodal infrastructure (ToolResult.blocks
+// + provider dispatch); PR B plugs the file ingestion side.
+//
+// Commit 1: pure relocation + empty submodule skeleton. Behaviour unchanged.
+//           Subsequent commits add limits, dispatch, then real handlers.
+
+mod caption;
+mod detect;
+mod limits;
+mod output;
+mod text;
 
 use crate::{PermissionLevel, Tool, ToolContext, ToolResult};
 use async_trait::async_trait;
