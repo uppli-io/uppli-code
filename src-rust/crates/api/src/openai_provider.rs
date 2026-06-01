@@ -425,11 +425,16 @@ impl OpenAiProvider {
                             text_parts.push(t.to_string());
                         }
                     }
-                    "image" => {
-                        // Anthropic image source → OpenAI vision image_url.
+                    "image" | "document" => {
+                        // Anthropic image/document source → OpenAI vision part.
+                        // Both block types funnel through the same path because
+                        // vision-capable providers (GLM-4.6v, Qwen-VL) accept
+                        // PDF data via the same `image_url` mechanism — only
+                        // the data: URI media_type differs (image/png vs
+                        // application/pdf).
                         // Two source shapes supported:
-                        //   { "type": "base64", "media_type": "image/png", "data": "..." }
-                        //     → emit "data:image/png;base64,<data>"
+                        //   { "type": "base64", "media_type": "...", "data": "..." }
+                        //     → emit "data:<media>;base64,<data>"
                         //   { "type": "url", "url": "https://..." }
                         //     → emit the URL directly
                         if let Some(source) = block.get("source") {
@@ -437,10 +442,18 @@ impl OpenAiProvider {
                                 source.get("type").and_then(|v| v.as_str()).unwrap_or("");
                             let url = match source_type {
                                 "base64" => {
+                                    // Default media_type by block kind so a
+                                    // malformed image block doesn't accidentally
+                                    // claim PDF.
+                                    let default_media = if block_type == "document" {
+                                        "application/pdf"
+                                    } else {
+                                        "image/png"
+                                    };
                                     let media_type = source
                                         .get("media_type")
                                         .and_then(|v| v.as_str())
-                                        .unwrap_or("image/png");
+                                        .unwrap_or(default_media);
                                     let data =
                                         source.get("data").and_then(|v| v.as_str()).unwrap_or("");
                                     if data.is_empty() {
@@ -1555,6 +1568,74 @@ mod tests {
         assert!(
             url.contains("iVBORw0KGgo="),
             "url must contain the base64 payload, got: {}",
+            url
+        );
+    }
+
+    #[test]
+    fn test_translate_user_message_with_pdf_document_block() {
+        // PR S follow-up #2: `document` blocks (Anthropic format, used for
+        // PDFs) must also be serialised. They share the image_url emission
+        // path with `image` blocks — only the media_type changes.
+        let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry().find("glm").unwrap(),
+            "test-key-long-enough".to_string(),
+            Some("glm-4.6v".to_string()),
+        ))
+        .unwrap();
+
+        let req = CreateMessageRequest {
+            model: "glm-4.6v".to_string(),
+            max_tokens: 4096,
+            messages: vec![crate::types::ApiMessage {
+                role: "user".to_string(),
+                content: serde_json::json!([
+                    { "type": "text", "text": "Read this invoice" },
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": "JVBERi0xLjQK"
+                        }
+                    }
+                ]),
+            }],
+            system: None,
+            tools: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: true,
+            thinking: None,
+            output_config: None,
+        };
+
+        let openai_req = provider.translate_request(&req);
+        let user_msg = openai_req
+            .messages
+            .iter()
+            .find(|m| m.role == "user")
+            .expect("user message present");
+        let parts = user_msg
+            .content
+            .as_ref()
+            .expect("content set")
+            .as_array()
+            .expect("multi-part content (PDF present)");
+        let image_part = parts
+            .iter()
+            .find(|p| p.get("type").and_then(|v| v.as_str()) == Some("image_url"))
+            .expect("image_url part present (PDF was silently dropped before)");
+        let url = image_part
+            .get("image_url")
+            .and_then(|v| v.get("url"))
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert!(
+            url.starts_with("data:application/pdf;base64,"),
+            "PDF data URI must carry application/pdf media type, got: {}",
             url
         );
     }
