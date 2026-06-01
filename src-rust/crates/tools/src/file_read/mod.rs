@@ -324,6 +324,156 @@ mod tests {
         assert!(result.content.contains("line two"));
     }
 
+    // ── Integration sweep ─────────────────────────────────────────────
+    //
+    // Each test exercises the full dispatcher on a different Kind with
+    // a self-contained fixture. Together they assert the user's
+    // verbatim French objective: "tt doit etre envoyé" — every format
+    // the model can throw at FileRead must come back with usable
+    // content (success), even when the body is a recipe stub.
+
+    #[tokio::test]
+    async fn integration_png_produces_image_block() {
+        // 1×1 transparent PNG from image::tests.
+        let tiny_png: &[u8] = &[
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("tiny.png");
+        std::fs::write(&path, tiny_png).unwrap();
+        let ctx = test_ctx(tmp.path().to_path_buf());
+        let result = FileReadTool
+            .execute(json!({ "file_path": path.to_str().unwrap() }), &ctx)
+            .await;
+        assert!(!result.is_error);
+        let blocks = result.blocks.expect("PNG must produce Image block");
+        assert_eq!(blocks.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn integration_csv_carries_banner() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("data.csv");
+        std::fs::write(&path, "a,b,c\n1,2,3\n").unwrap();
+        let ctx = test_ctx(tmp.path().to_path_buf());
+        let result = FileReadTool
+            .execute(json!({ "file_path": path.to_str().unwrap() }), &ctx)
+            .await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("[CSV"));
+    }
+
+    #[tokio::test]
+    async fn integration_json_validates() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("data.json");
+        std::fs::write(&path, b"{\"k\":42}").unwrap();
+        let ctx = test_ctx(tmp.path().to_path_buf());
+        let result = FileReadTool
+            .execute(json!({ "file_path": path.to_str().unwrap() }), &ctx)
+            .await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("valid JSON"));
+    }
+
+    #[tokio::test]
+    async fn integration_zip_lists_members() {
+        use std::io::Cursor;
+        use std::io::Write;
+        let mut buf = Vec::new();
+        {
+            let cursor = Cursor::new(&mut buf);
+            let mut writer = zip::ZipWriter::new(cursor);
+            let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            writer.start_file("inside.txt", opts).unwrap();
+            writer.write_all(b"hello").unwrap();
+            writer.finish().unwrap();
+        }
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("test.zip");
+        std::fs::write(&path, &buf).unwrap();
+        let ctx = test_ctx(tmp.path().to_path_buf());
+        let result = FileReadTool
+            .execute(json!({ "file_path": path.to_str().unwrap() }), &ctx)
+            .await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("inside.txt"));
+    }
+
+    #[tokio::test]
+    async fn integration_legacy_xls_returns_recipe() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("legacy.xls");
+        std::fs::write(&path, b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1placeholder").unwrap();
+        let ctx = test_ctx(tmp.path().to_path_buf());
+        let result = FileReadTool
+            .execute(json!({ "file_path": path.to_str().unwrap() }), &ctx)
+            .await;
+        assert!(
+            !result.is_error,
+            "legacy stub is informational, not an error"
+        );
+        assert!(result.content.contains("libreoffice"));
+        assert!(result.content.contains("xlsx"));
+    }
+
+    #[tokio::test]
+    async fn integration_html_strips_script() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("page.html");
+        std::fs::write(
+            &path,
+            b"<html><body><p>visible</p><script>secret()</script></body></html>",
+        )
+        .unwrap();
+        let ctx = test_ctx(tmp.path().to_path_buf());
+        let result = FileReadTool
+            .execute(json!({ "file_path": path.to_str().unwrap() }), &ctx)
+            .await;
+        assert!(!result.is_error);
+        assert!(!result.content.contains("secret("));
+        assert!(result.content.contains("visible"));
+    }
+
+    #[tokio::test]
+    async fn integration_notebook_lists_cells() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("nb.ipynb");
+        let nb = serde_json::json!({
+            "cells": [
+                {"cell_type": "code", "execution_count": 1, "source": ["print(1)"], "outputs": []},
+            ],
+            "metadata": {},
+            "nbformat": 4, "nbformat_minor": 5
+        });
+        std::fs::write(&path, nb.to_string()).unwrap();
+        let ctx = test_ctx(tmp.path().to_path_buf());
+        let result = FileReadTool
+            .execute(json!({ "file_path": path.to_str().unwrap() }), &ctx)
+            .await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("Cell 1 (code)"));
+    }
+
+    #[tokio::test]
+    async fn integration_tar_xz_returns_recipe() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("foo.tar.xz");
+        // Magic bytes for xz: FD 37 7A 58 5A 00
+        std::fs::write(&path, b"\xfd7zXZ\x00placeholder").unwrap();
+        let ctx = test_ctx(tmp.path().to_path_buf());
+        let result = FileReadTool
+            .execute(json!({ "file_path": path.to_str().unwrap() }), &ctx)
+            .await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("tar -xJf"));
+    }
+
     #[tokio::test]
     async fn extension_disagreement_note_prepended() {
         // Write a PDF with a .txt extension — sniff should rule "PDF"
