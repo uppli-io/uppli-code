@@ -18,6 +18,8 @@ mod odf;
 mod ooxml;
 mod output;
 mod pdf;
+mod structured;
+mod tabular;
 mod text;
 
 use crate::{PermissionLevel, Tool, ToolContext, ToolResult};
