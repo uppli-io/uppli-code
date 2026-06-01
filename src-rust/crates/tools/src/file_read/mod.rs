@@ -12,6 +12,7 @@ mod caption;
 mod detect;
 mod image;
 mod limits;
+mod ooxml;
 mod output;
 mod pdf;
 mod text;
