@@ -10,6 +10,7 @@
 
 mod caption;
 mod detect;
+mod image;
 mod limits;
 mod output;
 mod text;
