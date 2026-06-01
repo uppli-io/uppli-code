@@ -872,9 +872,7 @@ pub fn calculate_messages_to_keep_index(
 ///
 /// Mirrors the TypeScript `stripImages` helper used inside
 /// `reactiveCompact.ts`, but extended for nested tool_result payloads.
-pub(crate) fn strip_images(
-    messages: Vec<cc_core::types::Message>,
-) -> Vec<cc_core::types::Message> {
+pub(crate) fn strip_images(messages: Vec<cc_core::types::Message>) -> Vec<cc_core::types::Message> {
     use cc_core::types::{ContentBlock, MessageContent, ToolResultContent};
 
     fn is_visual(b: &ContentBlock) -> bool {
