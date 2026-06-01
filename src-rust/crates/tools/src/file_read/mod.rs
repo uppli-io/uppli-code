@@ -8,6 +8,7 @@
 // Commit 1: pure relocation + empty submodule skeleton. Behaviour unchanged.
 //           Subsequent commits add limits, dispatch, then real handlers.
 
+mod archive;
 mod caption;
 mod detect;
 mod image;
