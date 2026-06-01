@@ -1641,9 +1641,8 @@ pub async fn run_query_loop(
                                 // payload — vision-capable models read the
                                 // image; the text helps planning steps that
                                 // run before pixels are inspected.
-                                let mut combined: Vec<ContentBlock> = Vec::with_capacity(
-                                    blocks.len() + 1,
-                                );
+                                let mut combined: Vec<ContentBlock> =
+                                    Vec::with_capacity(blocks.len() + 1);
                                 if !enriched_content.is_empty() {
                                     combined.push(ContentBlock::Text {
                                         text: enriched_content.clone(),

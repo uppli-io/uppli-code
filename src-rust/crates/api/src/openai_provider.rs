@@ -423,7 +423,10 @@ impl OpenAiProvider {
             // that don't (we don't try to OCR client-side).
             let mut image_parts: Vec<Value> = Vec::new();
             let mut tool_calls = Vec::new();
-            let mut tool_results = Vec::new();
+            // (tool_use_id, text_parts, image_parts) — split so we can emit
+            // either a flat string (text-only providers) or an OpenAI vision
+            // multi-part Array (vision-capable providers like GLM-4.6v).
+            let mut tool_results: Vec<(String, Vec<String>, Vec<Value>)> = Vec::new();
 
             for block in blocks {
                 let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -436,50 +439,12 @@ impl OpenAiProvider {
                     }
                     "image" | "document" => {
                         // Anthropic image/document source → OpenAI vision part.
-                        // Both block types funnel through the same path because
+                        // Both block types funnel through the same helper because
                         // vision-capable providers (GLM-4.6v, Qwen-VL) accept
                         // PDF data via the same `image_url` mechanism — only
                         // the data: URI media_type differs (image/png vs
                         // application/pdf).
-                        // Two source shapes supported:
-                        //   { "type": "base64", "media_type": "...", "data": "..." }
-                        //     → emit "data:<media>;base64,<data>"
-                        //   { "type": "url", "url": "https://..." }
-                        //     → emit the URL directly
-                        if let Some(source) = block.get("source") {
-                            let source_type =
-                                source.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                            let url = match source_type {
-                                "base64" => {
-                                    // Default media_type by block kind so a
-                                    // malformed image block doesn't accidentally
-                                    // claim PDF.
-                                    let default_media = if block_type == "document" {
-                                        "application/pdf"
-                                    } else {
-                                        "image/png"
-                                    };
-                                    let media_type = source
-                                        .get("media_type")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or(default_media);
-                                    let data =
-                                        source.get("data").and_then(|v| v.as_str()).unwrap_or("");
-                                    if data.is_empty() {
-                                        continue;
-                                    }
-                                    format!("data:{};base64,{}", media_type, data)
-                                }
-                                "url" => source
-                                    .get("url")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string(),
-                                _ => continue,
-                            };
-                            if url.is_empty() {
-                                continue;
-                            }
+                        if let Some(url) = image_url_from_source(block_type, block) {
                             image_parts.push(serde_json::json!({
                                 "type": "image_url",
                                 "image_url": { "url": url }
@@ -531,21 +496,55 @@ impl OpenAiProvider {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        let content = if let Some(c) = block.get("content") {
+                        // Walk the inner content and split it into two
+                        // channels: a textual fallback (always populated)
+                        // and a list of vision-format parts (image_url
+                        // entries — only sent when the provider advertises
+                        // vision support).
+                        let mut inner_text_parts: Vec<String> = Vec::new();
+                        let mut inner_image_parts: Vec<Value> = Vec::new();
+
+                        if let Some(c) = block.get("content") {
                             if let Some(s) = c.as_str() {
-                                s.to_string()
+                                inner_text_parts.push(s.to_string());
                             } else if let Some(arr) = c.as_array() {
-                                arr.iter()
-                                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
+                                for inner in arr {
+                                    let inner_type =
+                                        inner.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                    match inner_type {
+                                        "text" => {
+                                            if let Some(t) =
+                                                inner.get("text").and_then(|v| v.as_str())
+                                            {
+                                                inner_text_parts.push(t.to_string());
+                                            }
+                                        }
+                                        "image" | "document" => {
+                                            if let Some(url) =
+                                                image_url_from_source(inner_type, inner)
+                                            {
+                                                inner_image_parts.push(serde_json::json!({
+                                                    "type": "image_url",
+                                                    "image_url": { "url": url }
+                                                }));
+                                            }
+                                        }
+                                        _ => {
+                                            // Unknown nested block — fall back
+                                            // to its text representation if any.
+                                            if let Some(t) =
+                                                inner.get("text").and_then(|v| v.as_str())
+                                            {
+                                                inner_text_parts.push(t.to_string());
+                                            }
+                                        }
+                                    }
+                                }
                             } else {
-                                c.to_string()
+                                inner_text_parts.push(c.to_string());
                             }
-                        } else {
-                            String::new()
-                        };
-                        tool_results.push((tool_use_id, content));
+                        }
+                        tool_results.push((tool_use_id, inner_text_parts, inner_image_parts));
                     }
                     _ => {}
                 }
@@ -579,10 +578,30 @@ impl OpenAiProvider {
                 // User message with tool results → emit as "tool" role messages.
                 // Ollama doesn't use tool_call_id (no IDs in its tool call responses).
                 let include_tool_call_id = self.config.api_format != ApiFormat::Ollama;
-                for (tool_use_id, content) in tool_results {
+                let provider_supports_vision = self.capabilities.supports_vision;
+                for (tool_use_id, text_parts, image_parts) in tool_results {
+                    let text = text_parts.join("\n");
+                    let content_value = if !image_parts.is_empty() && provider_supports_vision {
+                        // Vision-capable provider — emit an OpenAI multi-part
+                        // array with the textual caption first, then each
+                        // image / document part. GLM-4.6v and Qwen-VL accept
+                        // this shape on tool role messages.
+                        let mut parts: Vec<Value> = Vec::new();
+                        if !text.is_empty() {
+                            parts.push(serde_json::json!({ "type": "text", "text": text }));
+                        }
+                        parts.extend(image_parts);
+                        Value::Array(parts)
+                    } else {
+                        // Text-only providers (or text-only payload) — keep
+                        // the legacy flat-string shape so non-vision endpoints
+                        // don't fail with "tool message content must be a
+                        // string".
+                        Value::String(text)
+                    };
                     result.push(OpenAiMessage {
                         role: "tool".to_string(),
-                        content: Some(Value::String(content)),
+                        content: Some(content_value),
                         tool_calls: None,
                         tool_call_id: if include_tool_call_id {
                             Some(tool_use_id)
@@ -1452,6 +1471,47 @@ impl LlmProvider for OpenAiProvider {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Convert an Anthropic-format `image` / `document` content block (as a
+/// JSON object) into an OpenAI vision `image_url` value string (`data:...`
+/// URI or remote URL). Returns `None` when the source is missing or
+/// malformed so the caller can skip emitting the part.
+///
+/// `block_type` ("image" | "document") drives the default media_type
+/// fallback: a malformed image block defaults to `image/png`, a document
+/// block to `application/pdf`. Without this the data: URI would lie
+/// about the payload and confuse downstream model preprocessing.
+fn image_url_from_source(block_type: &str, block: &Value) -> Option<String> {
+    let source = block.get("source")?;
+    let source_type = source.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match source_type {
+        "base64" => {
+            let default_media = if block_type == "document" {
+                "application/pdf"
+            } else {
+                "image/png"
+            };
+            let media_type = source
+                .get("media_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or(default_media);
+            let data = source.get("data").and_then(|v| v.as_str()).unwrap_or("");
+            if data.is_empty() {
+                return None;
+            }
+            Some(format!("data:{};base64,{}", media_type, data))
+        }
+        "url" => {
+            let url = source.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            if url.is_empty() {
+                None
+            } else {
+                Some(url.to_string())
+            }
+        }
+        _ => None,
+    }
+}
+
 fn uuid_v4() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ts = SystemTime::now()
@@ -1729,6 +1789,188 @@ mod tests {
         assert_eq!(translated.len(), 1);
         assert_eq!(translated[0].role, "tool");
         assert_eq!(translated[0].tool_call_id, None);
+    }
+
+    // ---- tool_result vision dispatch (commit 6) ----------------------------
+    //
+    // Pin the two-way branch in the tool_result translation:
+    //   Vision-capable provider (GLM) + image in payload
+    //     → multi-part Array of {text, image_url}
+    //   Text-only provider (Ollama / Mistral / OpenAI default) + image
+    //     → flat string (image dropped — text fallback survives)
+    //   Any provider + text-only inner blocks
+    //     → flat string (legacy shape)
+
+    fn glm_provider_for_test() -> OpenAiProvider {
+        OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry().find("glm").unwrap(),
+            "test-key-not-used".to_string(),
+            None,
+        ))
+        .unwrap()
+    }
+
+    fn ollama_provider_for_test() -> OpenAiProvider {
+        OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry().find("ollama").unwrap(),
+            String::new(),
+            None,
+        ))
+        .unwrap()
+    }
+
+    fn make_tool_result_with_image_blocks() -> crate::types::ApiMessage {
+        crate::types::ApiMessage {
+            role: "user".to_string(),
+            content: serde_json::json!([
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu_visual",
+                    "content": [
+                        {"type": "text", "text": "[chart.png — Q1 revenue]"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "iVBORw0KGgo="
+                            }
+                        }
+                    ]
+                }
+            ]),
+        }
+    }
+
+    #[test]
+    fn tool_result_image_on_vision_provider_emits_multipart_array() {
+        let provider = glm_provider_for_test();
+        let translated = provider.translate_message(&make_tool_result_with_image_blocks());
+        assert_eq!(translated.len(), 1);
+        assert_eq!(translated[0].role, "tool");
+        let content = translated[0].content.as_ref().expect("content set");
+        let arr = content
+            .as_array()
+            .expect("vision provider must emit a multi-part Array");
+        assert_eq!(arr.len(), 2, "expected text + image part, got: {arr:?}");
+        assert_eq!(arr[0].get("type").and_then(|v| v.as_str()), Some("text"));
+        assert!(arr[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("chart.png"));
+        assert_eq!(
+            arr[1].get("type").and_then(|v| v.as_str()),
+            Some("image_url")
+        );
+        let url = arr[1]
+            .get("image_url")
+            .and_then(|v| v.get("url"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(
+            url.starts_with("data:image/png;base64,"),
+            "url should be a data URI, got: {url}"
+        );
+    }
+
+    #[test]
+    fn tool_result_image_on_text_only_provider_falls_back_to_caption_string() {
+        let provider = ollama_provider_for_test();
+        let translated = provider.translate_message(&make_tool_result_with_image_blocks());
+        assert_eq!(translated.len(), 1);
+        assert_eq!(translated[0].role, "tool");
+        let content = translated[0].content.as_ref().expect("content set");
+        let s = content
+            .as_str()
+            .expect("text-only provider must emit a flat string");
+        assert!(
+            s.contains("chart.png"),
+            "caption must survive as the textual fallback, got: {s}"
+        );
+    }
+
+    #[test]
+    fn tool_result_text_only_blocks_stay_flat_string() {
+        let provider = glm_provider_for_test();
+        let msg = crate::types::ApiMessage {
+            role: "user".to_string(),
+            content: serde_json::json!([
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu_text",
+                    "content": [
+                        {"type": "text", "text": "row 1"},
+                        {"type": "text", "text": "row 2"}
+                    ]
+                }
+            ]),
+        };
+        let translated = provider.translate_message(&msg);
+        let content = translated[0].content.as_ref().expect("content set");
+        // No image_parts → keep the legacy flat-string shape even on a
+        // vision-capable provider. The multi-part array is reserved for
+        // payloads that actually carry images.
+        assert!(
+            content.is_string(),
+            "text-only inner blocks must NOT be wrapped in a multi-part Array, \
+             got: {content:?}"
+        );
+    }
+
+    #[test]
+    fn image_url_from_source_base64_image_default_media() {
+        // Malformed image block (no media_type) → defaults to image/png so
+        // downstream model preprocessing doesn't mis-parse the data URI.
+        let block = serde_json::json!({
+            "type": "image",
+            "source": { "type": "base64", "data": "iVBORw0KGgo=" }
+        });
+        let url = image_url_from_source("image", &block).expect("must build url");
+        assert!(url.starts_with("data:image/png;base64,"), "got: {url}");
+    }
+
+    #[test]
+    fn image_url_from_source_base64_document_defaults_to_pdf() {
+        // Malformed document block (no media_type) → defaults to
+        // application/pdf so the URI doesn't lie about the payload.
+        let block = serde_json::json!({
+            "type": "document",
+            "source": { "type": "base64", "data": "JVBERi0=" }
+        });
+        let url = image_url_from_source("document", &block).expect("must build url");
+        assert!(
+            url.starts_with("data:application/pdf;base64,"),
+            "got: {url}"
+        );
+    }
+
+    #[test]
+    fn image_url_from_source_url_passthrough() {
+        let block = serde_json::json!({
+            "type": "image",
+            "source": { "type": "url", "url": "https://example.com/x.png" }
+        });
+        let url = image_url_from_source("image", &block).expect("must build url");
+        assert_eq!(url, "https://example.com/x.png");
+    }
+
+    #[test]
+    fn image_url_from_source_empty_data_returns_none() {
+        let block = serde_json::json!({
+            "type": "image",
+            "source": { "type": "base64", "data": "" }
+        });
+        assert!(image_url_from_source("image", &block).is_none());
+    }
+
+    #[test]
+    fn image_url_from_source_unknown_source_type_returns_none() {
+        let block = serde_json::json!({
+            "type": "image",
+            "source": { "type": "magic", "data": "x" }
+        });
+        assert!(image_url_from_source("image", &block).is_none());
     }
 
     /// Simulate an OpenAI SSE stream and verify the StreamAccumulator
