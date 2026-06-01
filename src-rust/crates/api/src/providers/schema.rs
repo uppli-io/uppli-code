@@ -41,6 +41,17 @@ pub struct ProviderToml {
     pub provider_type: String,
     pub api_format: ApiFormatToml,
     pub api_base: String,
+    /// Whether the provider's default model accepts image / document
+    /// content blocks. Drives the multi-modal tool_result dispatch in
+    /// the query loop. Defaults to false so adding a new provider
+    /// can't accidentally claim vision support.
+    #[serde(default)]
+    pub supports_vision: bool,
+    /// Whether the provider's wire format accepts `tool_result.content`
+    /// as a structured-blocks array. Anthropic does, OpenAI does only
+    /// for vision-capable models. Defaults to false.
+    #[serde(default)]
+    pub supports_tool_result_blocks: bool,
 }
 
 /// Wire protocol family. Mirrors `provider::ApiFormat` but is a separate
