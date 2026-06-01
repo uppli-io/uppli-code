@@ -407,6 +407,12 @@ impl OpenAiProvider {
         if let Some(blocks) = msg.content.as_array() {
             let mut result = Vec::new();
             let mut text_parts = Vec::new();
+            // Image parts as OpenAI vision-format parts:
+            //   {"type": "image_url", "image_url": {"url": "data:<media>;base64,<data>"}}
+            // Used when the target provider supports OpenAI-compatible vision
+            // (GLM-4.6v, Qwen-VL, etc.). Falls back to dropping for providers
+            // that don't (we don't try to OCR client-side).
+            let mut image_parts: Vec<Value> = Vec::new();
             let mut tool_calls = Vec::new();
             let mut tool_results = Vec::new();
 
@@ -417,6 +423,45 @@ impl OpenAiProvider {
                     "text" => {
                         if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
                             text_parts.push(t.to_string());
+                        }
+                    }
+                    "image" => {
+                        // Anthropic image source → OpenAI vision image_url.
+                        // Two source shapes supported:
+                        //   { "type": "base64", "media_type": "image/png", "data": "..." }
+                        //     → emit "data:image/png;base64,<data>"
+                        //   { "type": "url", "url": "https://..." }
+                        //     → emit the URL directly
+                        if let Some(source) = block.get("source") {
+                            let source_type =
+                                source.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            let url = match source_type {
+                                "base64" => {
+                                    let media_type = source
+                                        .get("media_type")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("image/png");
+                                    let data =
+                                        source.get("data").and_then(|v| v.as_str()).unwrap_or("");
+                                    if data.is_empty() {
+                                        continue;
+                                    }
+                                    format!("data:{};base64,{}", media_type, data)
+                                }
+                                "url" => source
+                                    .get("url")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                _ => continue,
+                            };
+                            if url.is_empty() {
+                                continue;
+                            }
+                            image_parts.push(serde_json::json!({
+                                "type": "image_url",
+                                "image_url": { "url": url }
+                            }));
                         }
                     }
                     "thinking" => {
@@ -526,9 +571,27 @@ impl OpenAiProvider {
                     });
                 }
             } else {
-                // Regular user message with text blocks
+                // Regular user message with text and/or image blocks.
+                // OpenAI vision format requires content to be a list of parts
+                // (text + image_url) when images are present. With text only,
+                // we stick with the simple string form for compatibility with
+                // non-vision endpoints.
                 let text = text_parts.join("");
-                if !text.is_empty() {
+                let has_images = !image_parts.is_empty();
+                if has_images {
+                    let mut parts: Vec<Value> = Vec::new();
+                    if !text.is_empty() {
+                        parts.push(serde_json::json!({ "type": "text", "text": text }));
+                    }
+                    parts.extend(image_parts);
+                    result.push(OpenAiMessage {
+                        role: role.clone(),
+                        content: Some(Value::Array(parts)),
+                        tool_calls: None,
+                        tool_call_id: None,
+                        name: None,
+                    });
+                } else if !text.is_empty() {
                     result.push(OpenAiMessage {
                         role: role.clone(),
                         content: Some(Value::String(text)),
@@ -1416,6 +1479,84 @@ mod tests {
         assert_eq!(openai_req.messages[1].role, "user");
         assert_eq!(openai_req.temperature, Some(0.7));
         assert_eq!(openai_req.think, Some(false)); // Ollama supports thinking, but this request has thinking: None → explicitly disable
+    }
+
+    #[test]
+    fn test_translate_user_message_with_image_block() {
+        // PR S follow-up: image blocks must NOT be silently dropped. They
+        // must be serialised as OpenAI vision-format parts so multimodal
+        // providers (GLM-4.6v, Qwen-VL) actually receive the image bytes.
+        let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry().find("glm").unwrap(),
+            "test-key-long-enough".to_string(),
+            Some("glm-4.6v".to_string()),
+        ))
+        .unwrap();
+
+        let req = CreateMessageRequest {
+            model: "glm-4.6v".to_string(),
+            max_tokens: 4096,
+            messages: vec![crate::types::ApiMessage {
+                role: "user".to_string(),
+                content: serde_json::json!([
+                    { "type": "text", "text": "Read this invoice" },
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "iVBORw0KGgo=" // tiny fake PNG payload
+                        }
+                    }
+                ]),
+            }],
+            system: None,
+            tools: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: true,
+            thinking: None,
+            output_config: None,
+        };
+
+        let openai_req = provider.translate_request(&req);
+        // Find the user message and confirm its content is a list of parts
+        // including the image_url.
+        let user_msg = openai_req
+            .messages
+            .iter()
+            .find(|m| m.role == "user")
+            .expect("user message present");
+        let content = user_msg
+            .content
+            .as_ref()
+            .expect("content must be set when image is present");
+        let parts = content
+            .as_array()
+            .expect("content must be a list of parts when images are present (not a plain string)");
+        assert_eq!(parts.len(), 2, "should have one text part + one image part");
+        // Find the image_url part
+        let image_part = parts
+            .iter()
+            .find(|p| p.get("type").and_then(|v| v.as_str()) == Some("image_url"))
+            .expect("image_url part must be present (was silently dropped before)");
+        let url = image_part
+            .get("image_url")
+            .and_then(|v| v.get("url"))
+            .and_then(|v| v.as_str())
+            .expect("image_url.url must be a string");
+        assert!(
+            url.starts_with("data:image/png;base64,"),
+            "url must be a data URI with the correct media type, got: {}",
+            url
+        );
+        assert!(
+            url.contains("iVBORw0KGgo="),
+            "url must contain the base64 payload, got: {}",
+            url
+        );
     }
 
     #[test]
