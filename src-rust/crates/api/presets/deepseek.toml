@@ -1,0 +1,83 @@
+schema_version = 1
+
+[provider]
+name = "deepseek"
+aliases = ["ds"]
+display_name = "DeepSeek"
+description = "deepseek-v4-pro (cloud, API key)"
+attribution = "powered by DeepSeek"
+provider_type = "deepseek"
+api_format = "anthropic"
+api_base = "https://api.deepseek.com/anthropic"
+
+[auth]
+env_vars = ["DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY"]
+keychain_key = "deepseek"
+display_label = "DeepSeek"
+required = true
+
+[defaults]
+max_tokens = 64000
+thinking_budget = 32000
+request_timeout_sec = 600
+max_retries = 8
+
+[[models]]
+id = "deepseek-v4-pro"
+display_name = "DeepSeek V4 Pro"
+description = "Flagship V4 reasoning model — 1M context, 384k max output"
+context_window = 1000000
+max_output_tokens = 384000
+supports_thinking = true
+default = true
+
+[models.pricing]
+input_per_mtk = 0.435
+output_per_mtk = 0.87
+cache_creation_per_mtk = 0.0
+cache_read_per_mtk = 0.003625
+
+[[models]]
+id = "deepseek-v4-flash"
+display_name = "DeepSeek V4 Flash"
+description = "Fast V4 model — 1M context, 384k max output"
+context_window = 1000000
+max_output_tokens = 384000
+supports_thinking = true
+fast = true
+
+[models.pricing]
+input_per_mtk = 0.14
+output_per_mtk = 0.28
+cache_creation_per_mtk = 0.0
+cache_read_per_mtk = 0.0028
+
+[[models]]
+id = "deepseek-reasoner"
+display_name = "DeepSeek Reasoner (R2)"
+description = "Deprecating — superseded by deepseek-v4-pro"
+context_window = 128000
+max_output_tokens = 64000
+supports_thinking = true
+deprecated = true
+
+[models.pricing]
+input_per_mtk = 0.55
+output_per_mtk = 2.19
+cache_creation_per_mtk = 0.0
+cache_read_per_mtk = 0.14
+
+[[models]]
+id = "deepseek-chat"
+display_name = "DeepSeek Chat (V4)"
+description = "Deprecating — superseded by deepseek-v4-flash"
+context_window = 128000
+max_output_tokens = 8192
+supports_thinking = false
+deprecated = true
+
+[models.pricing]
+input_per_mtk = 0.27
+output_per_mtk = 1.10
+cache_creation_per_mtk = 0.0
+cache_read_per_mtk = 0.07

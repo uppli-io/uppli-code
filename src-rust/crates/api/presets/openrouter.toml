@@ -1,0 +1,36 @@
+schema_version = 1
+
+[provider]
+name = "openrouter"
+aliases = []
+display_name = "OpenRouter"
+description = "Any model via OpenRouter proxy (Qwen, Claude, etc.)"
+attribution = "powered by OpenRouter"
+provider_type = "openai_compat"
+api_format = "openai"
+api_base = "https://openrouter.ai/api"
+
+[auth]
+env_vars = ["OPENROUTER_API_KEY"]
+keychain_key = "openrouter"
+display_label = "OpenRouter"
+required = true
+
+[defaults]
+max_tokens = 16384
+thinking_budget = 16000
+request_timeout_sec = 600
+max_retries = 5
+
+[[models]]
+id = "qwen/qwen3.6-plus"
+display_name = "Qwen 3.6 Plus"
+description = "Agentic coding model, 1M context"
+context_window = 1000000
+max_output_tokens = 32768
+supports_thinking = true
+default = true
+
+[models.pricing]
+input_per_mtk = 0.325
+output_per_mtk = 1.95

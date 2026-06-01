@@ -1,0 +1,37 @@
+schema_version = 1
+
+[provider]
+name = "ollama"
+aliases = ["local"]
+display_name = "Ollama"
+description = "Local models: llama3, qwen2.5, gemma, etc. (no key)"
+attribution = "powered by Ollama (local)"
+provider_type = "ollama"
+api_format = "ollama"
+api_base = "http://localhost:11434"
+
+[auth]
+env_vars = []
+keychain_key = "ollama"
+display_label = "Ollama"
+required = false
+
+[defaults]
+max_tokens = 8192
+thinking_budget = 16000
+request_timeout_sec = 600
+max_retries = 3
+
+# Ollama models are user-provided. The CLI's --model flag picks any local
+# model. The default below is a placeholder; the user's --model value
+# overrides at construction time.
+
+[[models]]
+id = "default"
+display_name = "Local model"
+description = "Whatever you pass via --model"
+context_window = 128000
+max_output_tokens = 8192
+supports_thinking = true
+default = true
+# No pricing — local inference is free.

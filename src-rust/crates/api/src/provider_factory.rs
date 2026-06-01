@@ -309,9 +309,12 @@ fn create_openai_provider(
 fn default_model_for(provider_type: &ProviderType) -> String {
     // Use the preset's default_model to stay in sync.
     // Falls back to hardcoded values only if no preset is found.
+    // TEMPORARY: this whole function is deleted in the next step of PR S.
+    // The TOML registry already knows each provider's default_model.
     let preset_name = match provider_type {
         ProviderType::Ollama => "ollama",
         ProviderType::Alibaba => "alibaba",
+        ProviderType::Glm => "glm",
         ProviderType::OpenAiCompat => "openai",
         ProviderType::Deepseek => "deepseek",
     };
@@ -320,6 +323,7 @@ fn default_model_for(provider_type: &ProviderType) -> String {
         .unwrap_or_else(|| match provider_type {
             ProviderType::Ollama => "llama3".to_string(),
             ProviderType::Alibaba => "qwen3.6-plus-2026-04-02".to_string(),
+            ProviderType::Glm => "glm-4.6".to_string(),
             ProviderType::OpenAiCompat => "default".to_string(),
             ProviderType::Deepseek => "deepseek-v4-pro".to_string(),
         })
