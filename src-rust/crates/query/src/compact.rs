@@ -857,19 +857,78 @@ pub fn calculate_messages_to_keep_index(
     keep_from
 }
 
-/// Remove image blocks from a message list before compacting.
+/// Remove image and document blocks from a message list before compacting.
 ///
-/// Image tokens are expensive and carry no information that a text summary
-/// needs.  Mirrors the TypeScript `stripImages` helper used inside
-/// `reactiveCompact.ts`.
-fn strip_images(messages: Vec<cc_core::types::Message>) -> Vec<cc_core::types::Message> {
-    use cc_core::types::{ContentBlock, MessageContent};
+/// Vision payload tokens are expensive and carry no information that a text
+/// summary needs. This walks two levels:
+///
+/// 1. Top-level user/assistant blocks (e.g. images attached to a prompt).
+/// 2. Nested `ToolResult` payloads — since commit 4, tool results can carry
+///    `ToolResultContent::Blocks` with embedded Image / Document blocks
+///    (multimodal file ingestion). Strip those too, replacing the structured
+///    content with its textual fallback if present, or a placeholder
+///    otherwise. Otherwise reactive_compact would still pay the image-token
+///    cost in the summarisation API call.
+///
+/// Mirrors the TypeScript `stripImages` helper used inside
+/// `reactiveCompact.ts`, but extended for nested tool_result payloads.
+pub(crate) fn strip_images(
+    messages: Vec<cc_core::types::Message>,
+) -> Vec<cc_core::types::Message> {
+    use cc_core::types::{ContentBlock, MessageContent, ToolResultContent};
+
+    fn is_visual(b: &ContentBlock) -> bool {
+        matches!(
+            b,
+            ContentBlock::Image { .. } | ContentBlock::Document { .. }
+        )
+    }
+
+    /// Collapse the structured tool_result blocks down to plain text.
+    /// Preserves any leading `Text` blocks (the textual caption written by
+    /// the tool) and drops Image / Document payloads.
+    fn flatten_tool_result_blocks(blocks: &[ContentBlock]) -> String {
+        let captions: Vec<&str> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        if captions.is_empty() {
+            "[image removed for compaction]".to_string()
+        } else {
+            captions.join("\n")
+        }
+    }
 
     messages
         .into_iter()
         .map(|mut msg| {
             if let MessageContent::Blocks(ref mut blocks) = msg.content {
-                blocks.retain(|b| !matches!(b, ContentBlock::Image { .. }));
+                // 1. Strip top-level visual blocks.
+                blocks.retain(|b| !is_visual(b));
+
+                // 2. Recurse into ToolResult.Blocks payloads.
+                for b in blocks.iter_mut() {
+                    if let ContentBlock::ToolResult {
+                        content: ToolResultContent::Blocks(inner),
+                        ..
+                    } = b
+                    {
+                        if inner.iter().any(is_visual) {
+                            let text_fallback = flatten_tool_result_blocks(inner);
+                            // Replace the structured content with its
+                            // textual fallback — providers can still read
+                            // it post-compact, and we no longer pay the
+                            // image-token cost.
+                            if let ContentBlock::ToolResult { content, .. } = b {
+                                *content = ToolResultContent::Text(text_fallback);
+                            }
+                        }
+                    }
+                }
+
                 // If stripping left only an empty block list, collapse to a
                 // placeholder text so the conversation remains parseable.
                 if blocks.is_empty() {
@@ -1416,5 +1475,146 @@ mod tests {
         let est = estimate_tokens_for_messages(&msgs);
         // "Hello, world!" = 13 chars → 13/4 = 3 rough tokens → 3*4/3 = 4 padded
         assert!(est > 0);
+    }
+
+    // ---- strip_images recursion into ToolResult.Blocks ---------------------
+    //
+    // Pin the invariant: structured tool_result payloads that carry image or
+    // document blocks must be flattened to text before the compact API call.
+    // Otherwise reactive_compact would pay the image-token cost on every
+    // compact pass, defeating the point of compaction.
+
+    fn image_block() -> cc_core::types::ContentBlock {
+        cc_core::types::ContentBlock::Image {
+            source: cc_core::types::ImageSource {
+                source_type: "base64".to_string(),
+                media_type: Some("image/png".to_string()),
+                data: Some("iVBORw0KGgo=".to_string()),
+                url: None,
+            },
+        }
+    }
+
+    fn user_with_blocks(blocks: Vec<cc_core::types::ContentBlock>) -> Message {
+        use cc_core::types::{MessageContent, Role};
+        Message {
+            role: Role::User,
+            content: MessageContent::Blocks(blocks),
+            uuid: None,
+            cost: None,
+        }
+    }
+
+    #[test]
+    fn strip_images_removes_top_level_image() {
+        use cc_core::types::{ContentBlock, MessageContent};
+        let msg = user_with_blocks(vec![
+            ContentBlock::Text {
+                text: "caption".to_string(),
+            },
+            image_block(),
+        ]);
+        let stripped = strip_images(vec![msg]);
+        assert_eq!(stripped.len(), 1);
+        if let MessageContent::Blocks(blocks) = &stripped[0].content {
+            assert_eq!(blocks.len(), 1, "image must be removed");
+            assert!(matches!(&blocks[0], ContentBlock::Text { .. }));
+        } else {
+            panic!("expected Blocks content, got {:?}", stripped[0].content);
+        }
+    }
+
+    #[test]
+    fn strip_images_flattens_tool_result_blocks_preserving_captions() {
+        use cc_core::types::{ContentBlock, MessageContent, ToolResultContent};
+        let inner = vec![
+            ContentBlock::Text {
+                text: "[chart.png — bar chart, Q1 sales]".to_string(),
+            },
+            image_block(),
+        ];
+        let msg = user_with_blocks(vec![ContentBlock::ToolResult {
+            tool_use_id: "tu_1".to_string(),
+            content: ToolResultContent::Blocks(inner),
+            is_error: None,
+        }]);
+        let stripped = strip_images(vec![msg]);
+        if let MessageContent::Blocks(blocks) = &stripped[0].content {
+            match &blocks[0] {
+                ContentBlock::ToolResult {
+                    content: ToolResultContent::Text(t),
+                    ..
+                } => {
+                    assert!(
+                        t.contains("chart.png"),
+                        "caption must survive flattening, got: {t}"
+                    );
+                }
+                other => panic!("expected Text-flavored ToolResult, got {:?}", other),
+            }
+        } else {
+            panic!("expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn strip_images_leaves_text_only_tool_result_blocks_intact() {
+        // A tool_result that carries only Text blocks (e.g. a structured table
+        // dialect) should NOT be flattened — it's cheap, structure may matter.
+        use cc_core::types::{ContentBlock, MessageContent, ToolResultContent};
+        let inner = vec![
+            ContentBlock::Text {
+                text: "row 1".to_string(),
+            },
+            ContentBlock::Text {
+                text: "row 2".to_string(),
+            },
+        ];
+        let msg = user_with_blocks(vec![ContentBlock::ToolResult {
+            tool_use_id: "tu_2".to_string(),
+            content: ToolResultContent::Blocks(inner),
+            is_error: None,
+        }]);
+        let stripped = strip_images(vec![msg]);
+        if let MessageContent::Blocks(blocks) = &stripped[0].content {
+            assert!(matches!(
+                &blocks[0],
+                ContentBlock::ToolResult {
+                    content: ToolResultContent::Blocks(_),
+                    ..
+                }
+            ));
+        } else {
+            panic!("expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn strip_images_uses_placeholder_when_no_caption() {
+        // Tool result that carried ONLY an image — no caption to preserve.
+        // Must fall back to a placeholder string so providers can still parse it.
+        use cc_core::types::{ContentBlock, MessageContent, ToolResultContent};
+        let msg = user_with_blocks(vec![ContentBlock::ToolResult {
+            tool_use_id: "tu_3".to_string(),
+            content: ToolResultContent::Blocks(vec![image_block()]),
+            is_error: None,
+        }]);
+        let stripped = strip_images(vec![msg]);
+        if let MessageContent::Blocks(blocks) = &stripped[0].content {
+            match &blocks[0] {
+                ContentBlock::ToolResult {
+                    content: ToolResultContent::Text(t),
+                    ..
+                } => {
+                    assert!(
+                        t.contains("image removed"),
+                        "must emit placeholder, got: {t}"
+                    );
+                }
+                other => panic!("expected Text-flavored ToolResult, got {:?}", other),
+            }
+        } else {
+            panic!("expected Blocks content");
+        }
     }
 }
