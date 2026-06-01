@@ -856,6 +856,15 @@ impl provider::LlmProvider for client::AnthropicClient {
                 default_thinking_budget: Some(32_000),
                 api_format: provider::ApiFormat::Anthropic,
                 default_api_base: "https://api.deepseek.com/anthropic".to_string(),
+                // DeepSeek's V4 family does not (yet) accept image/document
+                // blocks in its Anthropic-compatible endpoint. Conservative
+                // default — flip to true if/when DeepSeek ships vision.
+                supports_vision: false,
+                // Anthropic wire format accepts tool_result with structured
+                // blocks. Keep enabled even when supports_vision is false:
+                // future text-only multi-part tool results (e.g. tables) ride
+                // the same channel.
+                supports_tool_result_blocks: true,
                 auth: provider::AuthConfig {
                     env_vars: &["DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY"],
                     keychain_key: "deepseek",

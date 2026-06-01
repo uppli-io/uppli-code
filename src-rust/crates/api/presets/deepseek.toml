@@ -9,6 +9,14 @@ attribution = "powered by DeepSeek"
 provider_type = "deepseek"
 api_format = "anthropic"
 api_base = "https://api.deepseek.com/anthropic"
+# DeepSeek's V4 family does not (yet) accept image / document content in its
+# Anthropic-compatible endpoint. Conservative default — flip to true once
+# DeepSeek ships vision.
+supports_vision = false
+# Anthropic wire format accepts tool_result with structured blocks. Keep
+# enabled even without vision so text-only multi-part tool results (e.g.
+# attached tables) ride the same channel.
+supports_tool_result_blocks = true
 
 [auth]
 env_vars = ["DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY"]
