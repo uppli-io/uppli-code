@@ -1,12 +1,15 @@
-// FileRead tool: read files with optional line range, image support, PDF page ranges.
+// FileRead tool: read files with optional line range, image / PDF
+// support, OOXML / ODF / archive extraction.
 //
-// PR B (in progress): split into format-specific submodules so every file
-// type (text / image / PDF / OOXML / ODF / archive / structured) reaches the
-// LLM properly. PR A landed the multimodal infrastructure (ToolResult.blocks
-// + provider dispatch); PR B plugs the file ingestion side.
+// PR B replaced the legacy single-file implementation with a
+// per-format handler split. This module is the dispatcher: it
+// validates the path, applies the pre-flight size cap, sniffs the
+// file's Kind (magic bytes first, extension as fallback), and
+// routes to the appropriate handler module.
 //
-// Commit 1: pure relocation + empty submodule skeleton. Behaviour unchanged.
-//           Subsequent commits add limits, dispatch, then real handlers.
+// Every handler returns a `HandlerOutput`; `output::HandlerOutput::
+// finalize` converts that into the final `ToolResult` with the
+// blocks-vs-text dispatch invariant centralised in one place.
 
 mod archive;
 mod caption;
@@ -28,6 +31,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::debug;
 
+use detect::Kind;
+
 pub struct FileReadTool;
 
 #[derive(Debug, Deserialize)]
@@ -37,6 +42,12 @@ struct FileReadInput {
     offset: Option<usize>,
     #[serde(default)]
     limit: Option<usize>,
+    /// PDF page selector — `"1-5,7,9-10"` style. Ignored for non-PDF
+    /// files. Resolves the dead-advice bug in the legacy description
+    /// that promoted this parameter without declaring it in the
+    /// schema.
+    #[serde(default)]
+    pages: Option<String>,
 }
 
 #[async_trait]
@@ -46,10 +57,15 @@ impl Tool for FileReadTool {
     }
 
     fn description(&self) -> &str {
-        "Reads a file from the local filesystem. You can access any file directly. \
-         By default reads up to 2000 lines from the beginning. Results are returned \
-         with line numbers starting at 1. This tool can read images (PNG, JPG) and \
-         PDF files."
+        "Reads a file from the local filesystem and returns it in a format the model can \
+         consume. Text files are returned line-numbered (default 2000 lines from the start). \
+         Images (PNG / JPEG / GIF / WebP / BMP) are attached as Image blocks on \
+         vision-capable providers, with a textual caption for the rest. PDFs are extracted \
+         to text AND attached as Document blocks on vision providers; use `pages` to \
+         request a sub-range. XLSX / DOCX / PPTX / ODT / ODS / ODP are extracted to text. \
+         ZIP / TAR / TAR.GZ produce a textual manifest. Legacy XLS / DOC / PPT and \
+         tar.bz2 / tar.xz / tar.zst / 7z / rar return a Bash recipe to convert them \
+         out-of-band."
     }
 
     fn permission_level(&self) -> PermissionLevel {
@@ -66,11 +82,15 @@ impl Tool for FileReadTool {
                 },
                 "offset": {
                     "type": "number",
-                    "description": "The line number to start reading from (1-based). Only provide if the file is too large to read at once."
+                    "description": "Line number to start reading from (1-based). Only provide if the file is too large to read at once."
                 },
                 "limit": {
                     "type": "number",
-                    "description": "The number of lines to read. Only provide if the file is too large to read at once."
+                    "description": "Number of lines to read. Only provide if the file is too large to read at once."
+                },
+                "pages": {
+                    "type": "string",
+                    "description": "PDF page range selector like '1-5,7,9-10' (1-based). Ignored for non-PDF files."
                 }
             },
             "required": ["file_path"]
@@ -86,12 +106,10 @@ impl Tool for FileReadTool {
         let path = ctx.resolve_path(&params.file_path);
         debug!(path = %path.display(), "Reading file");
 
-        // Check if file exists
+        // ── Existence + directory guard ────────────────────────────────
         if !path.exists() {
             return ToolResult::error(format!("File not found: {}", path.display()));
         }
-
-        // Check if it's a directory
         if path.is_dir() {
             return ToolResult::error(format!(
                 "{} is a directory, not a file. Use Bash with `ls` to list directory contents.",
@@ -99,10 +117,11 @@ impl Tool for FileReadTool {
             ));
         }
 
-        // Pre-flight size cap — the most important fix in PR B. The legacy
-        // code path slurped the whole file into memory via read_to_string
-        // with no guard, so a multi-GB log file would OOM the agent.
-        // Bound the maximum size BEFORE any byte is read.
+        // ── Pre-flight size cap ────────────────────────────────────────
+        //
+        // The most important fix in PR B. The legacy path slurped the
+        // whole file into memory with no guard, so a multi-GB file
+        // would OOM the agent. Bound the size BEFORE the handler.
         match tokio::fs::metadata(&path).await {
             Ok(meta) if meta.len() > limits::MAX_FILE_BYTES => {
                 return ToolResult::error(format!(
@@ -123,84 +142,121 @@ impl Tool for FileReadTool {
             }
         }
 
-        // Detect binary / image files by extension
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-
-        let image_exts = ["png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "ico"];
-        if image_exts.contains(&ext.as_str()) {
-            return ToolResult::success(format!(
-                "[Image file: {}. The image content has been captured for visual analysis.]",
-                path.display()
-            ));
-        }
-
-        if ext == "pdf" {
-            return ToolResult::success(format!(
-                "[PDF file: {}. Use the `pages` parameter to read specific page ranges.]",
-                path.display()
-            ));
-        }
-
-        // Read text file
-        let content = match tokio::fs::read_to_string(&path).await {
-            Ok(c) => c,
-            Err(e) => {
-                // Might be binary
-                if e.kind() == std::io::ErrorKind::InvalidData {
-                    return ToolResult::error(format!(
-                        "File appears to be binary and cannot be displayed as text: {}",
-                        path.display()
-                    ));
-                }
-                return ToolResult::error(format!("Failed to read file: {}", e));
+        // ── Sniff: magic bytes first, extension fallback ───────────────
+        //
+        // Read up to 4 KiB to feed the sniffer. Empty files take the
+        // text path (yields a "exists but is empty" message).
+        let mut head = vec![0u8; 4096];
+        let head_len = match tokio::fs::File::open(&path).await {
+            Ok(mut f) => {
+                use tokio::io::AsyncReadExt as _;
+                f.read(&mut head).await.unwrap_or(0)
             }
+            Err(_) => 0,
+        };
+        head.truncate(head_len);
+
+        let raw_kind = detect::sniff(&path, &head);
+        let kind = match raw_kind {
+            Kind::Zip => detect::refine_zip(&path, raw_kind),
+            Kind::TarGz => detect::refine_gzip(&path),
+            other => other,
         };
 
-        if content.is_empty() {
-            return ToolResult::success(format!("[File {} exists but is empty]", path.display()));
+        // ── Sniff vs. extension disagreement note ──────────────────────
+        //
+        // When magic bytes pick a kind that disagrees with the
+        // extension, the dispatcher prepends a note to the textual
+        // content so the model knows the file isn't what its name
+        // suggested. Only fires for kinds that have a distinctive
+        // ext (skip Text / Unknown).
+        let ext_kind = ext_only_kind(&path);
+        let disagreement = if disagrees(kind, ext_kind) {
+            Some(format!(
+                "[detected as {} via magic bytes; extension said {}]\n",
+                kind.label(),
+                ext_kind.label()
+            ))
+        } else {
+            None
+        };
+
+        // ── Dispatch ───────────────────────────────────────────────────
+        let mut out = match kind {
+            Kind::Text => text::read_text(&path, params.offset, params.limit).await,
+            Kind::Csv | Kind::Tsv => {
+                tabular::read_tabular(&path, kind, params.offset, params.limit).await
+            }
+            Kind::Json | Kind::Jsonl | Kind::Xml | Kind::Html | Kind::Markdown | Kind::Notebook => {
+                structured::read_structured(&path, kind, params.offset, params.limit).await
+            }
+            Kind::Svg => text::read_text(&path, params.offset, params.limit).await,
+            Kind::ImagePng
+            | Kind::ImageJpeg
+            | Kind::ImageGif
+            | Kind::ImageWebp
+            | Kind::ImageBmp
+            | Kind::ImageIco => image::read_image(&path, kind).await,
+            Kind::Pdf => pdf::read_pdf(&path, params.pages.as_deref()).await,
+            Kind::Xlsx | Kind::Docx | Kind::Pptx => ooxml::read_ooxml(&path, kind).await,
+            Kind::Ods | Kind::Odt | Kind::Odp => odf::read_odf(&path, kind).await,
+            Kind::LegacyXls | Kind::LegacyDoc | Kind::LegacyPpt => {
+                legacy_office::read_legacy_office(&path, kind).await
+            }
+            Kind::Zip
+            | Kind::TarPlain
+            | Kind::TarGz
+            | Kind::TarBz2
+            | Kind::TarXz
+            | Kind::TarZst
+            | Kind::SevenZ
+            | Kind::Rar => archive::read_archive(&path, kind).await,
+            Kind::Unknown => text::read_text(&path, params.offset, params.limit).await,
+        };
+
+        if let Some(note) = disagreement {
+            out.content = format!("{}{}", note, out.content);
         }
 
-        let lines: Vec<&str> = content.lines().collect();
-        let total_lines = lines.len();
-
-        let offset = params.offset.unwrap_or(0);
-        let limit = params.limit.unwrap_or(2000);
-
-        // Convert 1-based offset to 0-based index
-        let start = if offset > 0 { offset - 1 } else { 0 };
-        let end = (start + limit).min(total_lines);
-
-        if start >= total_lines {
-            return ToolResult::error(format!(
-                "Offset {} exceeds total line count {} in {}",
-                offset,
-                total_lines,
-                path.display()
-            ));
-        }
-
-        let mut output = String::new();
-        let width = format!("{}", end).len();
-
-        for (i, line) in lines[start..end].iter().enumerate() {
-            let line_num = start + i + 1;
-            output.push_str(&format!("{:>width$}\t{}\n", line_num, line, width = width));
-        }
-
-        if end < total_lines {
-            output.push_str(&format!(
-                "\n... ({} more lines, {} total. Use offset/limit to read more.)\n",
-                total_lines - end,
-                total_lines
-            ));
-        }
-
-        ToolResult::success(output)
+        out.finalize(&path)
     }
+}
+
+/// Compute the Kind a file would be assigned if we IGNORED magic bytes.
+/// Used for the "extension disagreement" note — comparing this against
+/// the sniffed Kind tells us when the two are out of sync.
+fn ext_only_kind(path: &std::path::Path) -> Kind {
+    detect::sniff(path, &[])
+}
+
+/// Whether the magic-byte sniff disagrees with the extension. Fires
+/// only when the sniff committed to a *specific* binary kind that the
+/// extension doesn't predict — exactly the case where we want to warn
+/// the model that the file isn't what its name suggested.
+///
+/// Suppressed when:
+///   - sniffed == ext_only (they agree)
+///   - sniffed is Text/Unknown (no commitment from magic)
+///   - sniffed is Zip while ext was Xlsx/Docx/Pptx/Ods/Odt/Odp — the
+///     refine_zip pass already promoted the kind, so they will agree
+///     by the time we reach the dispatcher.
+fn disagrees(sniffed: Kind, ext_only: Kind) -> bool {
+    if sniffed == ext_only {
+        return false;
+    }
+    if matches!(sniffed, Kind::Text | Kind::Unknown) {
+        return false;
+    }
+    // Zip → OOXML/ODF refinement already handled upstream.
+    if matches!(sniffed, Kind::Zip)
+        && matches!(
+            ext_only,
+            Kind::Xlsx | Kind::Docx | Kind::Pptx | Kind::Ods | Kind::Odt | Kind::Odp | Kind::Zip
+        )
+    {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -235,10 +291,6 @@ mod tests {
 
     #[tokio::test]
     async fn preflight_rejects_file_larger_than_cap() {
-        // Create a sparse file just over MAX_FILE_BYTES so the cap fires.
-        // `seek` + 1-byte write is enough — metadata().len() reads the
-        // declared length, not the on-disk allocation, so the test
-        // doesn't actually write 100 MiB.
         let tmp = TempDir::new().expect("tempdir");
         let path = tmp.path().join("huge.txt");
         let file = std::fs::File::create(&path).expect("create");
@@ -254,15 +306,11 @@ mod tests {
         let input = json!({ "file_path": path.to_str().unwrap() });
         let result = tool.execute(input, &ctx).await;
         assert!(result.is_error, "huge file must be refused");
-        assert!(
-            result.content.contains("File too large"),
-            "error must mention size cap, got: {}",
-            result.content
-        );
+        assert!(result.content.contains("File too large"));
     }
 
     #[tokio::test]
-    async fn preflight_passes_small_file() {
+    async fn preflight_passes_small_text_file() {
         let tmp = TempDir::new().expect("tempdir");
         let path = tmp.path().join("small.txt");
         std::fs::write(&path, "line one\nline two\n").expect("write");
@@ -271,8 +319,32 @@ mod tests {
         let tool = FileReadTool;
         let input = json!({ "file_path": path.to_str().unwrap() });
         let result = tool.execute(input, &ctx).await;
-        assert!(!result.is_error, "small file must pass: {}", result.content);
+        assert!(!result.is_error);
         assert!(result.content.contains("line one"));
         assert!(result.content.contains("line two"));
+    }
+
+    #[tokio::test]
+    async fn extension_disagreement_note_prepended() {
+        // Write a PDF with a .txt extension — sniff should rule "PDF"
+        // and the dispatcher should prepend the disagreement note.
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("lying.txt");
+        // Just the magic header is enough for the sniff. pdf-extract
+        // will fail on the truncated body, which is fine: the handler
+        // returns success_text with the caption + a "[text extraction
+        // failed]" note.
+        std::fs::write(&path, b"%PDF-1.4\n").expect("write");
+
+        let ctx = test_ctx(tmp.path().to_path_buf());
+        let tool = FileReadTool;
+        let input = json!({ "file_path": path.to_str().unwrap() });
+        let result = tool.execute(input, &ctx).await;
+        assert!(!result.is_error);
+        assert!(
+            result.content.contains("detected as PDF via magic bytes"),
+            "expected disagreement note, got: {}",
+            result.content.chars().take(400).collect::<String>()
+        );
     }
 }
