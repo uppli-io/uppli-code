@@ -628,6 +628,8 @@ pub mod config {
         Ollama,
         /// Alibaba Cloud DashScope (Qwen3).
         Alibaba,
+        /// Zhipu AI GLM family (open.bigmodel.cn, OpenAI-compatible).
+        Glm,
         /// Generic OpenAI-compatible endpoint.
         #[serde(rename = "openai")]
         OpenAiCompat,
@@ -639,6 +641,7 @@ pub mod config {
                 ProviderType::Deepseek => write!(f, "deepseek"),
                 ProviderType::Ollama => write!(f, "ollama"),
                 ProviderType::Alibaba => write!(f, "alibaba"),
+                ProviderType::Glm => write!(f, "glm"),
                 ProviderType::OpenAiCompat => write!(f, "openai"),
             }
         }

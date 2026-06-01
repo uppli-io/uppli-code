@@ -88,6 +88,22 @@ pub fn provider_registry() -> &'static [ProviderPreset] {
             provider_type: ProviderType::OpenAiCompat,
         },
         ProviderPreset {
+            name: "glm",
+            aliases: &["zhipu", "bigmodel"],
+            display_name: "Zhipu (GLM)",
+            description: "GLM 4.6 — Zhipu AI, OpenAI-compatible endpoint",
+            default_model: "glm-4.6",
+            fast_model: Some("glm-4.6-flash"),
+            supports_thinking: true,
+            auth: AuthConfig {
+                env_vars: &["ZHIPU_API_KEY", "GLM_API_KEY"],
+                keychain_key: "glm",
+                display_label: "Zhipu (GLM)",
+                required: true,
+            },
+            provider_type: ProviderType::Glm,
+        },
+        ProviderPreset {
             name: "ollama",
             aliases: &["local"],
             display_name: "Ollama",
@@ -254,6 +270,7 @@ fn create_openai_provider(
     let mut cfg = match (provider_type, preset_name) {
         (ProviderType::Ollama, _) => crate::OpenAiProviderConfig::ollama(&model),
         (ProviderType::Alibaba, _) => crate::OpenAiProviderConfig::alibaba("", &model),
+        (ProviderType::Glm, _) => crate::OpenAiProviderConfig::glm("", &model),
         (_, Some("openrouter")) => crate::OpenAiProviderConfig::openrouter("", &model),
         (ProviderType::OpenAiCompat, _) => {
             let api_base = settings
@@ -312,6 +329,7 @@ fn default_model_for(provider_type: &ProviderType) -> String {
     let preset_name = match provider_type {
         ProviderType::Ollama => "ollama",
         ProviderType::Alibaba => "alibaba",
+        ProviderType::Glm => "glm",
         ProviderType::OpenAiCompat => "openai",
         ProviderType::Deepseek => "deepseek",
     };
@@ -320,6 +338,7 @@ fn default_model_for(provider_type: &ProviderType) -> String {
         .unwrap_or_else(|| match provider_type {
             ProviderType::Ollama => "llama3".to_string(),
             ProviderType::Alibaba => "qwen3.6-plus-2026-04-02".to_string(),
+            ProviderType::Glm => "glm-4.6".to_string(),
             ProviderType::OpenAiCompat => "default".to_string(),
             ProviderType::Deepseek => "deepseek-v4-pro".to_string(),
         })

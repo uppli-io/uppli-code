@@ -270,6 +270,76 @@ impl OpenAiProviderConfig {
         }
     }
 
+    /// Preset for Zhipu AI GLM family (OpenAI-compatible endpoint at
+    /// open.bigmodel.cn). Pricing per Zhipu's public price sheet; verify at
+    /// https://open.bigmodel.cn/pricing before relying for refacturation.
+    pub fn glm(api_key: &str, model: &str) -> Self {
+        Self {
+            name: "GLM".to_string(),
+            api_base: "https://open.bigmodel.cn/api/paas/v4".to_string(),
+            api_key: api_key.to_string(),
+            default_model: model.to_string(),
+            fast_model: Some("glm-4.6-flash".to_string()),
+            supports_thinking: true,
+            api_format: ApiFormat::OpenAI,
+            max_retries: 5,
+            request_timeout: Duration::from_secs(600),
+            attribution: "powered by Zhipu AI (GLM)".to_string(),
+            known_models: vec![
+                ModelMetadata {
+                    id: "glm-4.6".to_string(),
+                    display_name: "GLM 4.6".to_string(),
+                    description: "Flagship GLM reasoning model".to_string(),
+                    context_window: 128_000,
+                    max_output_tokens: 16_384,
+                    supports_thinking: true,
+                    pricing: Some(ModelPricing {
+                        input_per_mtk: 0.50,
+                        output_per_mtk: 1.50,
+                        cache_creation_per_mtk: 0.0,
+                        cache_read_per_mtk: 0.0,
+                    }),
+                },
+                ModelMetadata {
+                    id: "glm-4.6-flash".to_string(),
+                    display_name: "GLM 4.6 Flash".to_string(),
+                    description: "Fast GLM model for tool-result turns".to_string(),
+                    context_window: 128_000,
+                    max_output_tokens: 16_384,
+                    supports_thinking: false,
+                    pricing: Some(ModelPricing {
+                        input_per_mtk: 0.10,
+                        output_per_mtk: 0.30,
+                        cache_creation_per_mtk: 0.0,
+                        cache_read_per_mtk: 0.0,
+                    }),
+                },
+                ModelMetadata {
+                    id: "glm-4.5".to_string(),
+                    display_name: "GLM 4.5".to_string(),
+                    description: "Previous generation, kept for back-compat".to_string(),
+                    context_window: 128_000,
+                    max_output_tokens: 8_192,
+                    supports_thinking: false,
+                    pricing: Some(ModelPricing {
+                        input_per_mtk: 0.20,
+                        output_per_mtk: 0.50,
+                        cache_creation_per_mtk: 0.0,
+                        cache_read_per_mtk: 0.0,
+                    }),
+                },
+            ],
+            default_max_tokens: 16_384,
+            default_thinking_budget: Some(16_000),
+            auth: AuthConfig {
+                env_vars: &["ZHIPU_API_KEY", "GLM_API_KEY"],
+                keychain_key: "glm",
+                display_label: "Zhipu (GLM)",
+                required: true,
+            },
+        }
+    }
+
     /// Generic OpenAI-compatible endpoint.
     pub fn generic(name: &str, api_base: &str, api_key: &str, model: &str) -> Self {
         Self {
