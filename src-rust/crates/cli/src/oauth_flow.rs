@@ -13,6 +13,7 @@
 // 8. Return the credential (API key or Bearer token)
 
 use anyhow::{bail, Context};
+use cc_core::config::Config;
 use cc_core::oauth::{self, OAuthTokens};
 use serde::Deserialize;
 use std::time::Duration;
@@ -67,7 +68,14 @@ pub struct LoginResult {
 /// `login_with_claude_ai` selects the authorization endpoint:
 /// - `false` → Console endpoint (creates an API key)
 /// - `true`  → Claude.ai endpoint (user:inference scope, Bearer auth)
-pub async fn run_oauth_login_flow(login_with_claude_ai: bool) -> anyhow::Result<LoginResult> {
+///
+/// Pass `&Config` so the user's configured OAuth timeouts (callback,
+/// full-flow, token-exchange) are honoured — corporate SSO chains often
+/// exceed the 120s defaults.
+pub async fn run_oauth_login_flow(
+    login_with_claude_ai: bool,
+    config: &Config,
+) -> anyhow::Result<LoginResult> {
     // 1. PKCE
     let code_verifier = oauth::generate_code_verifier();
     let code_challenge = oauth::generate_code_challenge(&code_verifier);
@@ -94,15 +102,16 @@ pub async fn run_oauth_login_flow(login_with_claude_ai: bool) -> anyhow::Result<
     try_open_browser(&automatic_url);
 
     // 5. Wait for auth code (automatic callback OR manual paste)
-    let auth_code = wait_for_auth_code_impl(listener, &state)
+    let auth_code = wait_for_auth_code_impl(listener, &state, config)
         .await
         .context("OAuth callback failed")?;
     debug!("OAuth auth code received");
 
     // 6. Exchange code for tokens
-    let token_resp = exchange_code_for_tokens(&auth_code, &state, &code_verifier, port, false)
-        .await
-        .context("Token exchange failed")?;
+    let token_resp =
+        exchange_code_for_tokens(&auth_code, &state, &code_verifier, port, false, config)
+            .await
+            .context("Token exchange failed")?;
 
     let expires_at_ms =
         chrono::Utc::now().timestamp_millis() + (token_resp.expires_in as i64 * 1000);
@@ -215,6 +224,7 @@ fn try_open_browser(url: &str) {
 async fn run_callback_server(
     listener: TcpListener,
     expected_state: &str,
+    config: &Config,
 ) -> anyhow::Result<String> {
     debug!(
         "OAuth callback server listening on port {}",
@@ -222,7 +232,8 @@ async fn run_callback_server(
     );
 
     // Accept exactly one connection (the browser redirect)
-    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(120), listener.accept())
+    let callback_timeout = Duration::from_secs(config.effective_oauth_callback_timeout_secs());
+    let (mut socket, _) = tokio::time::timeout(callback_timeout, listener.accept())
         .await
         .context("Timeout waiting for browser redirect")?
         .context("Accept failed")?;
@@ -301,6 +312,7 @@ async fn exchange_code_for_tokens(
     code_verifier: &str,
     port: u16,
     use_manual_redirect: bool,
+    config: &Config,
 ) -> anyhow::Result<TokenExchangeResponse> {
     let redirect_uri = if use_manual_redirect {
         oauth::MANUAL_REDIRECT_URL.to_string()
@@ -318,7 +330,9 @@ async fn exchange_code_for_tokens(
     });
 
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(
+            config.effective_oauth_token_exchange_timeout_secs(),
+        ))
         .build()?;
 
     let resp = client
@@ -427,16 +441,19 @@ pub async fn refresh_oauth_token(tokens: &OAuthTokens) -> anyhow::Result<OAuthTo
 }
 
 /// Wait for the OAuth authorization code from either the browser redirect (automatic)
-/// or manual paste by the user.  Races the two with a 120-second timeout.
+/// or manual paste by the user.  Races the two with a configurable timeout
+/// (default 120s, override via `Config.oauth_full_flow_timeout_secs`).
 async fn wait_for_auth_code_impl(
     listener: TcpListener,
     expected_state: &str,
+    config: &Config,
 ) -> anyhow::Result<String> {
     let expected_state_clone = expected_state.to_string();
     let (cb_tx, cb_rx) = tokio::sync::oneshot::channel::<anyhow::Result<String>>();
 
+    let cb_config = config.clone();
     tokio::spawn(async move {
-        let result = run_callback_server(listener, &expected_state_clone).await;
+        let result = run_callback_server(listener, &expected_state_clone, &cb_config).await;
         let _ = cb_tx.send(result);
     });
 
@@ -450,6 +467,7 @@ async fn wait_for_auth_code_impl(
         }
     });
 
+    let full_flow_secs = config.effective_oauth_full_flow_timeout_secs();
     tokio::select! {
         result = cb_rx => {
             result.unwrap_or_else(|_| Err(anyhow::anyhow!("Callback server dropped")))
@@ -457,8 +475,8 @@ async fn wait_for_auth_code_impl(
         code = paste_rx => {
             code.map_err(|_| anyhow::anyhow!("Stdin closed unexpectedly"))
         }
-        _ = tokio::time::sleep(Duration::from_secs(120)) => {
-            bail!("Authentication timed out after 120 seconds")
+        _ = tokio::time::sleep(Duration::from_secs(full_flow_secs)) => {
+            bail!("Authentication timed out after {full_flow_secs} seconds")
         }
     }
 }

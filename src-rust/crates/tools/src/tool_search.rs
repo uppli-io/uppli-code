@@ -127,7 +127,7 @@ impl Tool for ToolSearchTool {
         })
     }
 
-    async fn execute(&self, input: Value, _ctx: &ToolContext) -> ToolResult {
+    async fn execute(&self, input: Value, ctx: &ToolContext) -> ToolResult {
         let params: ToolSearchInput = match serde_json::from_value(input) {
             Ok(p) => p,
             Err(e) => return ToolResult::error(format!("Invalid input: {}", e)),
@@ -166,7 +166,13 @@ impl Tool for ToolSearchTool {
         if should_search_rag(query) {
             let lang = detect_language(query);
             if let Ok(store) = cc_rag::VectorStore::load_default() {
-                let rag_results = store.search_owned(query, lang, Some("ast-grep"), max);
+                let rag_results = store.search_owned_with_floor(
+                    query,
+                    lang,
+                    Some("ast-grep"),
+                    max,
+                    ctx.config.effective_rag_similarity_floor(),
+                );
                 if !rag_results.is_empty() {
                     output.push_str("Pattern examples:\n");
                     for (chunk, score) in &rag_results {

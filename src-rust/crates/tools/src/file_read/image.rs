@@ -53,7 +53,17 @@ use super::output::HandlerOutput;
 ///
 /// `kind` is passed by the dispatcher so we route SVG → text and
 /// ICO → stub without re-sniffing.
+///
+/// Compile-time-default variant kept for tests and legacy callers;
+/// the dispatcher uses `read_image_with_limit` to honour
+/// `--max-image-bytes`.
 pub async fn read_image(path: &Path, kind: Kind) -> HandlerOutput {
+    read_image_with_limit(path, kind, MAX_IMAGE_BYTES).await
+}
+
+/// Runtime-configurable variant of `read_image` — accepts a
+/// `max_image_bytes` cap resolved by the caller from the active `Config`.
+pub async fn read_image_with_limit(path: &Path, kind: Kind, max_image_bytes: u64) -> HandlerOutput {
     let display = path.display().to_string();
 
     // ── SVG → text handler (it is XML) ───────────────────────────────
@@ -99,12 +109,12 @@ pub async fn read_image(path: &Path, kind: Kind) -> HandlerOutput {
             display
         ));
     }
-    if size > MAX_IMAGE_BYTES {
+    if size > max_image_bytes {
         return HandlerOutput::success_text(format!(
             "[Image: {}, {} exceeds inline cap {}, not forwarded as image block]",
             display,
             super::limits::human_bytes(size),
-            super::limits::human_bytes(MAX_IMAGE_BYTES),
+            super::limits::human_bytes(max_image_bytes),
         ));
     }
 
@@ -118,7 +128,7 @@ pub async fn read_image(path: &Path, kind: Kind) -> HandlerOutput {
             ));
         }
     };
-    if (bytes.len() as u64) > MAX_IMAGE_BYTES {
+    if (bytes.len() as u64) > max_image_bytes {
         return HandlerOutput::success_text(format!(
             "[Image: {}, grew past size cap mid-read ({}), not forwarded]",
             display,

@@ -19,16 +19,56 @@ use tokio::io::{AsyncReadExt, BufReader};
 use super::limits::{human_bytes, DEFAULT_LINE_LIMIT, MAX_LINE_CHARS, MAX_TEXT_BYTES};
 use super::output::{HandlerOutput, Truncation};
 
+/// Runtime-resolved size caps for a single text read. Built by the
+/// dispatcher from `Config::effective_*` helpers so the user can override
+/// them via CLI / settings (`--max-text-bytes`, `--max-line-chars`,
+/// `--default-read-line-limit`). Falls back to the module constants when
+/// no override is in play (see `Default`).
+#[derive(Debug, Clone, Copy)]
+pub struct TextLimits {
+    pub max_text_bytes: u64,
+    pub max_line_chars: usize,
+    pub default_line_limit: usize,
+}
+
+impl Default for TextLimits {
+    fn default() -> Self {
+        Self {
+            max_text_bytes: MAX_TEXT_BYTES,
+            max_line_chars: MAX_LINE_CHARS,
+            default_line_limit: DEFAULT_LINE_LIMIT,
+        }
+    }
+}
+
 /// Read a text file with a streaming byte cap, decode it as UTF-8 with
 /// a lossy Windows-1252 fallback, and emit the canonical line-numbered
 /// representation respecting `offset` / `limit`.
 ///
 /// `offset` is 1-based (per the legacy contract). `offset = 0` and
 /// `offset = 1` both map to "start from the first line".
+///
+/// Compile-time-default variant kept for the legacy callers (tests and
+/// handlers that don't yet route a Config). Use
+/// `read_text_with_limits` from the dispatcher to honour user overrides.
 pub async fn read_text(path: &Path, offset: Option<usize>, limit: Option<usize>) -> HandlerOutput {
-    // ── Step 1: open + stream up to MAX_TEXT_BYTES ──────────────────────
+    read_text_with_limits(path, offset, limit, TextLimits::default()).await
+}
+
+/// Runtime-configurable variant of `read_text` — accepts a `TextLimits`
+/// resolved by the caller from the active `Config`.
+pub async fn read_text_with_limits(
+    path: &Path,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    limits: TextLimits,
+) -> HandlerOutput {
+    let max_text_bytes = limits.max_text_bytes;
+    let max_line_chars = limits.max_line_chars;
+    let default_line_limit = limits.default_line_limit;
+    // ── Step 1: open + stream up to max_text_bytes ──────────────────────
     //
-    // We must NEVER load more than MAX_TEXT_BYTES into memory, even if the
+    // We must NEVER load more than max_text_bytes into memory, even if the
     // pre-flight cap (MAX_FILE_BYTES = 100 MiB) passed. A 50 MiB log file
     // is well under pre-flight but would still cost the budget too much.
     let file = match tokio::fs::File::open(path).await {
@@ -49,8 +89,8 @@ pub async fn read_text(path: &Path, offset: Option<usize>, limit: Option<usize>)
         Err(_) => 0,
     };
 
-    let mut reader = BufReader::new(file).take(MAX_TEXT_BYTES);
-    let mut bytes = Vec::with_capacity(total_bytes.min(MAX_TEXT_BYTES) as usize);
+    let mut reader = BufReader::new(file).take(max_text_bytes);
+    let mut bytes = Vec::with_capacity(total_bytes.min(max_text_bytes) as usize);
     if let Err(e) = reader.read_to_end(&mut bytes).await {
         return HandlerOutput::error_text(format!(
             "Failed while reading {}: {}",
@@ -102,7 +142,7 @@ pub async fn read_text(path: &Path, offset: Option<usize>, limit: Option<usize>)
     let total_lines = lines.len();
 
     let offset_param = offset.unwrap_or(0);
-    let limit_param = limit.unwrap_or(DEFAULT_LINE_LIMIT);
+    let limit_param = limit.unwrap_or(default_line_limit);
 
     // 1-based offset → 0-based index; offset = 0 and 1 both start at 0.
     let start = if offset_param > 0 {
@@ -133,19 +173,19 @@ pub async fn read_text(path: &Path, offset: Option<usize>, limit: Option<usize>)
         let line_num = start + i + 1;
         // Per-line cap: a 1 MiB minified JS line on a single row would
         // otherwise blow the per-result budget.
-        let rendered: std::borrow::Cow<'_, str> = if line.len() > MAX_LINE_CHARS {
+        let rendered: std::borrow::Cow<'_, str> = if line.len() > max_line_chars {
             // char_indices is the safe truncation — slicing at byte
             // boundaries inside a multi-byte UTF-8 sequence would panic.
             let cut = line
                 .char_indices()
-                .take_while(|(idx, _)| *idx < MAX_LINE_CHARS)
+                .take_while(|(idx, _)| *idx < max_line_chars)
                 .last()
                 .map(|(idx, c)| idx + c.len_utf8())
                 .unwrap_or(0);
             std::borrow::Cow::Owned(format!(
                 "{}[…line truncated at {} chars, {} total]",
                 &line[..cut],
-                MAX_LINE_CHARS,
+                max_line_chars,
                 line.len()
             ))
         } else {

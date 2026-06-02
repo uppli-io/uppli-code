@@ -131,13 +131,22 @@ impl VectorStore {
         self.save_to_file(&default_store_path())
     }
 
-    /// Search for the most relevant chunks.
-    pub fn search(
+    /// Default similarity floor — mirrors
+    /// `cc_core::constants::DEFAULT_RAG_SIMILARITY_FLOOR`. Duplicated here
+    /// to avoid a `cc-rag → cc-core` dependency. Kept in sync via the
+    /// `default_similarity_floor_matches_core` test below.
+    pub const DEFAULT_SIMILARITY_FLOOR: f32 = 0.3;
+
+    /// Search for the most relevant chunks. Drops results whose cosine
+    /// similarity is at or below `similarity_floor`; pass
+    /// `Self::DEFAULT_SIMILARITY_FLOOR` to preserve the historical behavior.
+    pub fn search_with_floor(
         &self,
         query: &str,
         language: Option<&str>,
         category: Option<&str>,
         max_results: usize,
+        similarity_floor: f32,
     ) -> Vec<SearchResult<'_>> {
         if self.chunks.is_empty() || !Embedder::is_ready() {
             return Vec::new();
@@ -177,10 +186,27 @@ impl VectorStore {
         });
         results.truncate(max_results);
 
-        // Filter out low-relevance results (below 0.3 similarity)
-        results.retain(|r| r.score > 0.3);
+        // Drop low-relevance results below the configurable floor.
+        results.retain(|r| r.score > similarity_floor);
 
         results
+    }
+
+    /// Search using the default similarity floor.
+    pub fn search(
+        &self,
+        query: &str,
+        language: Option<&str>,
+        category: Option<&str>,
+        max_results: usize,
+    ) -> Vec<SearchResult<'_>> {
+        self.search_with_floor(
+            query,
+            language,
+            category,
+            max_results,
+            Self::DEFAULT_SIMILARITY_FLOOR,
+        )
     }
 
     /// Search and return owned results (for use across function boundaries).
@@ -192,6 +218,21 @@ impl VectorStore {
         max_results: usize,
     ) -> Vec<(Chunk, f32)> {
         self.search(query, language, category, max_results)
+            .into_iter()
+            .map(|r| (r.chunk.clone(), r.score))
+            .collect()
+    }
+
+    /// Owned search using an explicit similarity floor.
+    pub fn search_owned_with_floor(
+        &self,
+        query: &str,
+        language: Option<&str>,
+        category: Option<&str>,
+        max_results: usize,
+        similarity_floor: f32,
+    ) -> Vec<(Chunk, f32)> {
+        self.search_with_floor(query, language, category, max_results, similarity_floor)
             .into_iter()
             .map(|r| (r.chunk.clone(), r.score))
             .collect()

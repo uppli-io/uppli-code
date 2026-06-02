@@ -30,6 +30,24 @@ pub struct RenderContext {
     pub tool_names: HashMap<String, String>,
     /// Set of thinking block content hashes that are expanded per-block.
     pub expanded_thinking: std::collections::HashSet<u64>,
+    /// Head-window length (chars) retained when a user prompt is
+    /// head+tail truncated. `None` falls back to
+    /// `DEFAULT_TUI_USER_PROMPT_HEAD_CHARS` (2 500). Wired from
+    /// `Config.tui_user_prompt_head_chars`.
+    pub user_prompt_head_chars: Option<usize>,
+    /// Tail-window length (chars) retained when a user prompt is
+    /// head+tail truncated. `None` falls back to
+    /// `DEFAULT_TUI_USER_PROMPT_TAIL_CHARS` (2 500). Wired from
+    /// `Config.tui_user_prompt_tail_chars`.
+    pub user_prompt_tail_chars: Option<usize>,
+    /// Char threshold above which a user prompt is head+tail truncated.
+    /// `None` falls back to `DEFAULT_TUI_USER_PROMPT_DISPLAY_MAX_CHARS`
+    /// (10 000). Wired from `Config.tui_user_prompt_display_max_chars`.
+    pub user_prompt_display_max_chars: Option<usize>,
+    /// Max lines of tool-result output rendered inline before the tail is
+    /// collapsed. `None` falls back to `DEFAULT_TUI_TOOL_RESULT_MAX_LINES`
+    /// (30). Wired from `Config.tui_tool_result_max_lines`.
+    pub tool_result_max_lines: Option<usize>,
 }
 
 impl Default for RenderContext {
@@ -40,6 +58,10 @@ impl Default for RenderContext {
             show_thinking: false,
             tool_names: HashMap::new(),
             expanded_thinking: std::collections::HashSet::new(),
+            user_prompt_head_chars: None,
+            user_prompt_tail_chars: None,
+            user_prompt_display_max_chars: None,
+            tool_result_max_lines: None,
         }
     }
 }
@@ -47,9 +69,9 @@ impl Default for RenderContext {
 /// A styled line for rendering.
 pub type StyledLine<'a> = Line<'a>;
 
-const MAX_USER_PROMPT_DISPLAY_CHARS: usize = 10_000;
-const TRUNCATE_USER_PROMPT_HEAD_CHARS: usize = 2_500;
-const TRUNCATE_USER_PROMPT_TAIL_CHARS: usize = 2_500;
+// `MAX_USER_PROMPT_DISPLAY_CHARS`, head, and tail truncation lengths now
+// live in `cc_core::constants::DEFAULT_TUI_USER_PROMPT_DISPLAY_MAX_CHARS`
+// / `_HEAD_CHARS` / `_TAIL_CHARS` (configurable via Config / CLI flags).
 
 /// Claude orange: Rgb(215, 119, 87)
 const CLAUDE_ORANGE: Color = Color::Rgb(233, 30, 99);
@@ -93,7 +115,16 @@ pub fn render_assistant_text(text: &str, ctx: &RenderContext) -> Vec<Line<'stati
 
 /// Render a user text message body.
 fn render_user_text_with_ctx(text: &str, ctx: &RenderContext) -> Vec<Line<'static>> {
-    let truncated = truncate_user_prompt_text(text);
+    let head = ctx
+        .user_prompt_head_chars
+        .unwrap_or(cc_core::constants::DEFAULT_TUI_USER_PROMPT_HEAD_CHARS);
+    let tail = ctx
+        .user_prompt_tail_chars
+        .unwrap_or(cc_core::constants::DEFAULT_TUI_USER_PROMPT_TAIL_CHARS);
+    let display_max = ctx
+        .user_prompt_display_max_chars
+        .unwrap_or(cc_core::constants::DEFAULT_TUI_USER_PROMPT_DISPLAY_MAX_CHARS);
+    let truncated = truncate_user_prompt_text(text, head, tail, display_max);
     render_markdown(&truncated, ctx.width.saturating_sub(3))
 }
 
@@ -245,13 +276,26 @@ fn render_file_op_result(is_create: bool) -> Vec<Line<'static>> {
     )])]
 }
 
-/// Render a tool result (success variant) — generic fallback.
+/// Render a tool result (success variant) — generic fallback. Uses the
+/// historical 30-line cap. Prefer `render_tool_result_success_with_cap`
+/// to honour `Config.tui_tool_result_max_lines`.
 pub fn render_tool_result_success(output: &str, truncated: bool) -> Vec<Line<'static>> {
+    render_tool_result_success_with_cap(output, truncated, TOOL_RESULT_MAX_LINES)
+}
+
+/// Render a tool result (success variant) — generic fallback with an
+/// explicit max-lines cap (wired from
+/// `Config.effective_tui_tool_result_max_lines()`).
+pub fn render_tool_result_success_with_cap(
+    output: &str,
+    truncated: bool,
+    max_lines: usize,
+) -> Vec<Line<'static>> {
     let total_lines = output.lines().count();
     let mut lines: Vec<Line<'static>> = output
         .lines()
         .enumerate()
-        .take_while(|(i, _)| *i < TOOL_RESULT_MAX_LINES)
+        .take_while(|(i, _)| *i < max_lines)
         .map(|(_, l)| {
             Line::from(vec![
                 Span::styled("  ", Style::default()),
@@ -259,8 +303,8 @@ pub fn render_tool_result_success(output: &str, truncated: bool) -> Vec<Line<'st
             ])
         })
         .collect();
-    if total_lines > TOOL_RESULT_MAX_LINES {
-        let remaining = total_lines - TOOL_RESULT_MAX_LINES;
+    if total_lines > max_lines {
+        let remaining = total_lines - max_lines;
         lines.push(Line::from(vec![Span::styled(
             format!("  ... {} more lines  (ctrl+o to expand)", remaining),
             Style::default()
@@ -610,17 +654,22 @@ pub fn render_hook_progress(command: &str, last_line: Option<&str>) -> Vec<Line<
     lines
 }
 
-fn truncate_user_prompt_text(text: &str) -> String {
-    if text.len() <= MAX_USER_PROMPT_DISPLAY_CHARS {
+fn truncate_user_prompt_text(
+    text: &str,
+    head_chars: usize,
+    tail_chars: usize,
+    display_max_chars: usize,
+) -> String {
+    if text.len() <= display_max_chars {
         return text.to_string();
     }
 
-    let head = &text[..TRUNCATE_USER_PROMPT_HEAD_CHARS.min(text.len())];
-    let tail_start = text.len().saturating_sub(TRUNCATE_USER_PROMPT_TAIL_CHARS);
+    let head = &text[..head_chars.min(text.len())];
+    let tail_start = text.len().saturating_sub(tail_chars);
     let tail = &text[tail_start..];
     let hidden_lines = text
         .chars()
-        .take(TRUNCATE_USER_PROMPT_HEAD_CHARS)
+        .take(head_chars)
         .filter(|c| *c == '\n')
         .count()
         .saturating_sub(tail.chars().filter(|c| *c == '\n').count());
@@ -790,17 +839,22 @@ pub fn render_message(msg: &Message, ctx: &RenderContext) -> Vec<Line<'static>> 
                 flush_text(&mut lines, &msg.role, &mut pending_text, ctx);
                 let text = tool_result_text(&content);
                 let tool_name = ctx.tool_names.get(&tool_use_id).map(|s| s.as_str());
+                let tool_result_max_lines = ctx
+                    .tool_result_max_lines
+                    .unwrap_or(cc_core::constants::DEFAULT_TUI_TOOL_RESULT_MAX_LINES);
                 let rendered = if is_error.unwrap_or(false) {
                     render_tool_result_error(&text)
                 } else {
                     match tool_name {
                         Some("Bash") | Some("PowerShell") => {
-                            render_bash_output_block(&text, TOOL_RESULT_MAX_LINES)
+                            render_bash_output_block(&text, tool_result_max_lines)
                         }
                         Some("Read") => render_file_read_result(&text),
                         Some("Edit") => render_file_op_result(false),
                         Some("Write") => render_file_op_result(true),
-                        _ => render_tool_result_success(&text, false),
+                        _ => {
+                            render_tool_result_success_with_cap(&text, false, tool_result_max_lines)
+                        }
                     }
                 };
                 lines.extend(prefix_message_lines(rendered, &msg.role, ctx.width));

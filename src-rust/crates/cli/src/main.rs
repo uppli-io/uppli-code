@@ -188,6 +188,69 @@ struct Cli {
     #[arg(long = "no-auto-compact", action = ArgAction::SetTrue)]
     no_auto_compact: bool,
 
+    /// Red "critical" token-usage threshold (0.0-1.0); fires the critical
+    /// notice ahead of auto-compact. Default: 0.98.
+    #[arg(long = "compact-critical-pct", value_name = "FRACTION")]
+    compact_critical_pct: Option<f64>,
+
+    /// How many recent messages to keep verbatim after auto-compact runs.
+    /// Default: 10.
+    #[arg(long = "compact-keep-recent-messages", value_name = "COUNT")]
+    compact_keep_recent_messages: Option<usize>,
+
+    /// Per-file byte cap when reactive-compact re-injects recently-modified
+    /// files. Files larger than this are skipped. Default: 51200 (50 KiB).
+    #[arg(long = "compact-reinject-max-file-bytes", value_name = "BYTES")]
+    compact_reinject_max_file_bytes: Option<u64>,
+
+    /// Maximum number of recently-modified files reactive-compact re-injects
+    /// after summarising. Default: 5.
+    #[arg(long = "compact-reinject-max-files", value_name = "COUNT")]
+    compact_reinject_max_files: Option<usize>,
+
+    /// Yellow "warning" token-usage threshold (0.0-1.0); fires the warning
+    /// notice ahead of auto-compact. Default: 0.90.
+    #[arg(long = "compact-warning-pct", value_name = "FRACTION")]
+    compact_warning_pct: Option<f64>,
+
+    /// Fraction of the context window (0.0-1.0) at which reactive-compact
+    /// fires. Default: 0.95.
+    #[arg(long = "reactive-compact-threshold", value_name = "FRACTION")]
+    reactive_compact_threshold: Option<f64>,
+
+    /// Emergency context-collapse threshold (fraction of the context window).
+    /// At this point the entire conversation is collapsed to a summary +
+    /// the last user turn. Default 0.99. Lower to be more aggressive,
+    /// raise (toward 1.0) to suppress the safety net entirely.
+    #[arg(long = "context-collapse-threshold", value_name = "FRACTION")]
+    context_collapse_threshold: Option<f64>,
+
+    /// Max retries when the model hits `max_tokens` before surfacing the
+    /// partial response. Default 3.
+    #[arg(long = "max-tokens-recovery-retries", value_name = "N")]
+    max_tokens_recovery_retries: Option<u32>,
+
+    /// Max retries on transient overload errors before giving up. Default 5.
+    /// Raise for long unattended runs that must survive flaky upstreams.
+    #[arg(long = "max-overload-retries", value_name = "N")]
+    max_overload_retries: Option<u32>,
+
+    /// Max retries on empty-response API failures (no tools, no text) before
+    /// surfacing the error. Default 5.
+    #[arg(long = "max-empty-retries", value_name = "N")]
+    max_empty_retries: Option<u32>,
+
+    /// Minimum messages in a session before auto-memory extraction runs.
+    /// Default 20. Lower for short focused sessions that should still
+    /// benefit from auto-memory.
+    #[arg(long = "session-memory-min-messages", value_name = "N")]
+    session_memory_min_messages: Option<usize>,
+
+    /// Minimum tool calls between session-memory extractions. Default 3.
+    /// Controls how often memories are refreshed during a long session.
+    #[arg(long = "session-memory-min-tool-calls", value_name = "N")]
+    session_memory_min_tool_calls: Option<usize>,
+
     /// Grant Claude access to an additional directory (can be repeated)
     #[arg(long = "add-dir", value_name = "DIR", action = ArgAction::Append)]
     add_dir: Vec<PathBuf>,
@@ -277,6 +340,31 @@ struct Cli {
     #[arg(long = "provider")]
     provider: Option<String>,
 
+    // --- Batch 9 configurable parameters (sorted alphabetically) ---
+    /// Max overload-retry backoff (seconds) in query loop.
+    #[arg(long = "overload-retry-max-backoff-secs", value_name = "SECS")]
+    overload_retry_max_backoff_secs: Option<u64>,
+
+    /// Initial retry backoff (ms) for OpenAI-format providers.
+    #[arg(long = "provider-initial-backoff-ms", value_name = "MS")]
+    provider_initial_backoff_ms: Option<u64>,
+
+    /// Max retry backoff ceiling (seconds) for OpenAI-format providers.
+    #[arg(long = "provider-max-backoff-secs", value_name = "SECS")]
+    provider_max_backoff_secs: Option<u64>,
+
+    /// Capacity of the streaming MPSC channel between provider and consumer.
+    #[arg(long = "provider-stream-channel-capacity", value_name = "N")]
+    provider_stream_channel_capacity: Option<usize>,
+
+    /// TTFT threshold (seconds) above which the TUI warns the API is slow.
+    #[arg(long = "slow-ttft-warning-secs", value_name = "SECS")]
+    slow_ttft_warning_secs: Option<u64>,
+
+    /// Context-window floor (tokens) for unknown models lacking metadata.
+    #[arg(long = "unknown-model-context-window-floor", value_name = "TOKENS")]
+    unknown_model_context_window_floor: Option<u64>,
+
     // --- SDK compatibility flags (accepted but ignored) ---
     /// Setting sources to load (SDK compat)
     #[arg(long = "setting-sources", value_name = "SOURCES")]
@@ -365,6 +453,417 @@ struct Cli {
     /// Settings file path (SDK compat, via extraArgs)
     #[arg(long = "settings", value_name = "PATH")]
     settings_path: Option<String>,
+
+    // --- Batch 10 configurable parameters (sorted alphabetically) ---
+    /// Fingerprint length (chars) used to dedup repeated file reads in history.
+    #[arg(long = "collapse-read-fingerprint-chars", value_name = "CHARS")]
+    collapse_read_fingerprint_chars: Option<usize>,
+
+    /// Fingerprint length (chars) used to dedup repeated search results in history.
+    #[arg(long = "collapse-search-fingerprint-chars", value_name = "CHARS")]
+    collapse_search_fingerprint_chars: Option<usize>,
+
+    /// Max output tokens used when summarising history for auto-compact.
+    #[arg(long = "compact-summary-max-tokens", value_name = "TOKENS")]
+    compact_summary_max_tokens: Option<u32>,
+
+    /// Context window assumed by the /cost and /ctx-viz commands.
+    #[arg(long = "cost-command-context-window", value_name = "TOKENS")]
+    cost_command_context_window: Option<u64>,
+
+    /// System prompt token estimate used by /cost and /ctx-viz.
+    #[arg(long = "cost-command-system-prompt-tokens", value_name = "TOKENS")]
+    cost_command_system_prompt_tokens: Option<u32>,
+
+    /// Max bytes of diff output shown by the /diff command before truncation.
+    #[arg(long = "diff-command-max-bytes", value_name = "BYTES")]
+    diff_command_max_bytes: Option<usize>,
+
+    // --- Batch 11 configurable parameters (sorted alphabetically) ---
+    /// Chars of prompt preview shown by `CronList` per task before truncation.
+    #[arg(long = "cron-list-prompt-display-chars", value_name = "CHARS")]
+    cron_list_prompt_display_chars: Option<usize>,
+
+    /// Chars of file preview shown by `/memory` when displaying UPPLI.md files.
+    #[arg(long = "file-preview-max-chars", value_name = "CHARS")]
+    file_preview_max_chars: Option<usize>,
+
+    /// HTTP timeout (seconds) for `/upgrade` and `/release-notes` GitHub
+    /// release-check calls.
+    #[arg(long = "github-release-check-timeout-secs", value_name = "SECS")]
+    github_release_check_timeout_secs: Option<u64>,
+
+    /// Maximum results returned by the Glob tool before truncation.
+    #[arg(long = "glob-max-results", value_name = "COUNT")]
+    glob_max_results: Option<usize>,
+
+    /// HTTP timeout (seconds) for `/share` session upload.
+    #[arg(long = "share-upload-timeout-secs", value_name = "SECS")]
+    share_upload_timeout_secs: Option<u64>,
+
+    /// HTTP timeout (seconds) for the WebFetch tool.
+    #[arg(long = "web-fetch-timeout-secs", value_name = "SECS")]
+    web_fetch_timeout_secs: Option<u64>,
+
+    // --- Batch 1 configurable parameters (sorted alphabetically) ---
+    /// Default `limit` used by Read when the caller omits it (lines).
+    #[arg(long = "default-read-line-limit", value_name = "LINES")]
+    default_read_line_limit: Option<usize>,
+
+    /// Max consecutive auto-compact failures before the circuit breaker
+    /// disables auto-compact for the rest of the session.
+    #[arg(long = "max-compact-retries", value_name = "COUNT")]
+    max_compact_retries: Option<u32>,
+
+    /// Hard cap on the raw image bytes Read will inline as base64.
+    /// Beyond this the tool returns a caption-only fallback.
+    #[arg(long = "max-image-bytes", value_name = "BYTES")]
+    max_image_bytes: Option<u64>,
+
+    /// Per-line truncation cap for Read text mode (chars).
+    /// Defeats single-line minified files blowing the budget.
+    #[arg(long = "max-line-chars", value_name = "CHARS")]
+    max_line_chars: Option<usize>,
+
+    /// Cap on the bytes Read will materialise as String for text files.
+    #[arg(long = "max-text-bytes", value_name = "BYTES")]
+    max_text_bytes: Option<u64>,
+
+    /// Cumulative tool-result chars budget kept in history before older
+    /// results are evicted with a truncation notice.
+    #[arg(long = "tool-result-budget", value_name = "CHARS")]
+    tool_result_budget: Option<usize>,
+
+    // --- Batch 2 configurable parameters (file_read limits, sorted alphabetically) ---
+    /// Long-edge pixel target when downscaling oversized images for Read.
+    #[arg(long = "image-resize-long-edge", value_name = "PIXELS")]
+    image_resize_long_edge: Option<u32>,
+
+    /// Cap on archive entries listed by Read in a single invocation.
+    #[arg(long = "max-archive-members", value_name = "COUNT")]
+    max_archive_members: Option<usize>,
+
+    /// Cap on rows emitted from the OOXML / XLSX text fallback in Read.
+    #[arg(long = "max-ooxml-rows", value_name = "COUNT")]
+    max_ooxml_rows: Option<usize>,
+
+    /// Cap on PDF bytes inlined as a Document block for vision providers.
+    /// Beyond this the tool still extracts text but emits no Document block.
+    #[arg(long = "max-pdf-bytes", value_name = "BYTES")]
+    max_pdf_bytes: Option<u64>,
+
+    /// Cap on the number of PDF pages Read will emit text for.
+    #[arg(long = "max-pdf-pages", value_name = "COUNT")]
+    max_pdf_pages: Option<usize>,
+
+    /// Wall-clock budget (seconds) for pdf-extract text extraction.
+    #[arg(long = "pdf-extract-timeout-secs", value_name = "SECONDS")]
+    pdf_extract_timeout_secs: Option<u64>,
+
+    // --- Batch 4 configurable parameters (sorted alphabetically) ---
+    /// Max bytes the UPPLI.md loader reads before skipping a file with a
+    /// warning. Default 40 KiB.
+    #[arg(long = "claudemd-max-bytes", value_name = "BYTES")]
+    claudemd_max_bytes: Option<u64>,
+
+    /// Maximum number of memory files retained by the auto-memory scanner
+    /// after newest-first sorting. Default 200.
+    #[arg(long = "max-memory-files", value_name = "COUNT")]
+    max_memory_files: Option<usize>,
+
+    /// Maximum number of lines scanned at the top of a memory file when
+    /// extracting YAML frontmatter. Default 30.
+    #[arg(long = "memory-frontmatter-max-lines", value_name = "LINES")]
+    memory_frontmatter_max_lines: Option<usize>,
+
+    /// Maximum height (px) of a captured screenshot before downscaling.
+    /// Default 768.
+    #[arg(long = "screenshot-max-height", value_name = "PIXELS")]
+    screenshot_max_height: Option<u32>,
+
+    /// Maximum width (px) of a captured screenshot before downscaling.
+    /// Default 1366.
+    #[arg(long = "screenshot-max-width", value_name = "PIXELS")]
+    screenshot_max_width: Option<u32>,
+
+    /// Bytes scanned from the tail of a session transcript when the session
+    /// browser extracts `last-prompt` / `custom-title` metadata. Default
+    /// 65 536 (64 KiB).
+    #[arg(long = "session-tail-scan-bytes", value_name = "BYTES")]
+    session_tail_scan_bytes: Option<u64>,
+
+    // --- Batch 3 configurable parameters (sorted alphabetically) ---
+    /// Max chars of bash tool stdout+stderr before head+tail truncation.
+    /// Shared by the Unix and Windows code paths.
+    #[arg(long = "bash-output-max-chars", value_name = "CHARS")]
+    bash_output_max_chars: Option<usize>,
+
+    /// Defensive cap on the number of `ContentBlock`s a single Read tool
+    /// result can carry (images / documents).
+    #[arg(long = "max-blocks-per-result", value_name = "BLOCKS")]
+    max_blocks_per_result: Option<usize>,
+
+    /// Cap on the bytes of inline text extracted from a single OOXML
+    /// document (.docx / .xlsx / .pptx).
+    #[arg(long = "max-ooxml-text-bytes", value_name = "BYTES")]
+    max_ooxml_text_bytes: Option<usize>,
+
+    /// Cap on the number of slides extracted from a PPTX file.
+    #[arg(long = "max-pptx-slides", value_name = "SLIDES")]
+    max_pptx_slides: Option<usize>,
+
+    /// Max chars of WebFetch HTML-to-text body before tail truncation.
+    #[arg(long = "web-fetch-max-chars", value_name = "CHARS")]
+    web_fetch_max_chars: Option<usize>,
+
+    // --- Batch 8 configurable parameters (sorted alphabetically) ---
+    /// Legacy Anthropic-client retry count (deprecation path: prefer
+    /// `--provider-max-retries` for new providers).
+    #[arg(long = "anthropic-legacy-max-retries", value_name = "COUNT")]
+    anthropic_legacy_max_retries: Option<u32>,
+
+    /// Legacy Anthropic-client HTTP request timeout (seconds).
+    #[arg(long = "anthropic-request-timeout-secs", value_name = "SECS")]
+    anthropic_request_timeout_secs: Option<u64>,
+
+    /// Throttle (seconds) for the auto-dream session-scan pipeline.
+    #[arg(long = "auto-dream-scan-interval-secs", value_name = "SECS")]
+    auto_dream_scan_interval_secs: Option<u64>,
+
+    /// Number of trailing messages the away-summary recap considers.
+    #[arg(long = "away-summary-recent-messages", value_name = "COUNT")]
+    away_summary_recent_messages: Option<usize>,
+
+    /// Maximum HTTP retries the provider layer attempts before bubbling up.
+    #[arg(long = "provider-max-retries", value_name = "COUNT")]
+    provider_max_retries: Option<u32>,
+
+    /// Per-request HTTP timeout (seconds) the provider layer applies.
+    #[arg(long = "provider-request-timeout-sec", value_name = "SECS")]
+    provider_request_timeout_sec: Option<u64>,
+
+    // --- Batch 12 configurable parameters (sorted alphabetically) ---
+    /// Hard cap (ms) on the timeout the Bash tool will honour from a
+    /// caller-supplied `timeout`. Default 600000 (10 minutes).
+    #[arg(long = "bash-timeout-max-ms", value_name = "MS")]
+    bash_timeout_max_ms: Option<u64>,
+
+    /// Wall-clock budget (seconds) for the CodeAudit Python subprocess.
+    /// Default 10.
+    #[arg(long = "code-audit-timeout-secs", value_name = "SECS")]
+    code_audit_timeout_secs: Option<u64>,
+
+    /// Wall-clock budget (seconds) for the post-edit syntax-check
+    /// subprocess. Default 5.
+    #[arg(long = "lint-spawn-timeout-secs", value_name = "SECS")]
+    lint_spawn_timeout_secs: Option<u64>,
+
+    /// Per-line read timeout (seconds) used by the REPL tool while waiting
+    /// for interpreter output. Default 30.
+    #[arg(long = "repl-line-read-timeout-secs", value_name = "SECS")]
+    repl_line_read_timeout_secs: Option<u64>,
+
+    /// Hard cap (ms) on the user-requested sleep duration honoured by the
+    /// Sleep tool. Default 300000 (5 minutes).
+    #[arg(long = "sleep-max-ms", value_name = "MS")]
+    sleep_max_ms: Option<u64>,
+
+    /// Max HTTP redirects WebFetch will follow before giving up. Default 10.
+    #[arg(long = "web-fetch-max-redirects", value_name = "COUNT")]
+    web_fetch_max_redirects: Option<usize>,
+
+    // --- Batch 13 configurable parameters (sorted alphabetically) ---
+    /// Per-request timeout (seconds) for LSP JSON-RPC calls (rust-analyzer,
+    /// gopls, etc.). Default 30.
+    #[arg(long = "lsp-request-timeout-secs", value_name = "SECS")]
+    lsp_request_timeout_secs: Option<u64>,
+
+    /// Timeout (seconds) for the OAuth browser-callback HTTP listener.
+    /// Default 120.
+    #[arg(long = "oauth-callback-timeout-secs", value_name = "SECS")]
+    oauth_callback_timeout_secs: Option<u64>,
+
+    /// Whole-flow OAuth timeout (seconds) — auto callback OR manual paste.
+    /// Default 120.
+    #[arg(long = "oauth-full-flow-timeout-secs", value_name = "SECS")]
+    oauth_full_flow_timeout_secs: Option<u64>,
+
+    /// HTTP timeout (seconds) for the OAuth token-exchange POST call.
+    /// Default 30.
+    #[arg(long = "oauth-token-exchange-timeout-secs", value_name = "SECS")]
+    oauth_token_exchange_timeout_secs: Option<u64>,
+
+    /// Timeout (seconds) for the parent process to wait for the IPC peer
+    /// child to bind its Unix socket before aborting. Default 5.
+    #[arg(long = "peer-socket-appear-timeout-secs", value_name = "SECS")]
+    peer_socket_appear_timeout_secs: Option<u64>,
+
+    /// Hard cap (ms) on the timeout the PowerShell tool will honour from a
+    /// caller-supplied `timeout`. Default 600000 (10 minutes).
+    #[arg(long = "powershell-timeout-max-ms", value_name = "MS")]
+    powershell_timeout_max_ms: Option<u64>,
+
+    // --- Batch 5 configurable parameters (sorted alphabetically) ---
+    /// Fraction of context window at which proactive auto-compact fires.
+    /// Default 0.95 — lower to compact earlier, higher to delay compaction.
+    #[arg(long = "autocompact-trigger-fraction", value_name = "FRACTION")]
+    autocompact_trigger_fraction: Option<f64>,
+
+    /// Buffer (tokens) below the context window that triggers the
+    /// "about to compact" warning state. Default 20000.
+    #[arg(long = "compact-warning-buffer-tokens", value_name = "TOKENS")]
+    compact_warning_buffer_tokens: Option<u64>,
+
+    /// Max bytes loaded from MEMORY.md before truncation. Default 25000.
+    #[arg(long = "memory-entrypoint-max-bytes", value_name = "BYTES")]
+    memory_entrypoint_max_bytes: Option<usize>,
+
+    /// Max lines loaded from MEMORY.md before truncation. Default 200.
+    #[arg(long = "memory-entrypoint-max-lines", value_name = "LINES")]
+    memory_entrypoint_max_lines: Option<usize>,
+
+    /// Inline-vs-disk threshold (bytes) for pasted content in prompt history.
+    /// Default 1024 — content above this is stored in the paste store.
+    #[arg(long = "pasted-content-inline-threshold", value_name = "BYTES")]
+    pasted_content_inline_threshold: Option<usize>,
+
+    /// Max prompt-history entries returned by up-arrow recall. Default 100.
+    #[arg(long = "prompt-history-max-items", value_name = "COUNT")]
+    prompt_history_max_items: Option<usize>,
+
+    // --- Batch 14 configurable parameters (sorted alphabetically) ---
+    /// Max retries the bridge poll loop tolerates on HTTP 429 rate-limits
+    /// before bubbling up an error. Default 3.
+    #[arg(long = "bridge-poll-max-retries", value_name = "COUNT")]
+    bridge_poll_max_retries: Option<u32>,
+
+    /// Wall-clock budget (seconds) for the LSP client to wait for a
+    /// graceful exit after shutdown before SIGKILL-ing the server.
+    /// Default 5.
+    #[arg(long = "lsp-shutdown-timeout-secs", value_name = "SECS")]
+    lsp_shutdown_timeout_secs: Option<u64>,
+
+    /// Max directory entries scanned per subdirectory by the LSP workspace
+    /// auto-detect probe. Default 50. Raise on monorepos.
+    #[arg(long = "lsp-workspace-probe-max-entries", value_name = "COUNT")]
+    lsp_workspace_probe_max_entries: Option<usize>,
+
+    /// HTTP timeout (seconds) for the OAuth profile-fetch call to
+    /// `/api/auth/oauth/profile`. Default 10.
+    #[arg(long = "oauth-profile-fetch-timeout-secs", value_name = "SECS")]
+    oauth_profile_fetch_timeout_secs: Option<u64>,
+
+    /// HTTP timeout (seconds) for the silent OAuth access-token refresh
+    /// performed during `resolve_auth_async`. Default 30.
+    #[arg(long = "oauth-refresh-timeout-secs", value_name = "SECS")]
+    oauth_refresh_timeout_secs: Option<u64>,
+
+    /// Interval (seconds) between background pushes of the local transcript
+    /// to the remote-session cloud API. Default 30.
+    #[arg(long = "remote-transcript-sync-interval-secs", value_name = "SECS")]
+    remote_transcript_sync_interval_secs: Option<u64>,
+
+    // --- Batch 15 configurable parameters (bridge runtime tunables, sorted alphabetically) ---
+    /// HTTP request timeout (seconds) shared by every bridge HTTP client
+    /// (register, poll, upload, deregister, response post). Default 30.
+    #[arg(long = "bridge-http-timeout-secs", value_name = "SECS")]
+    bridge_http_timeout_secs: Option<u64>,
+
+    /// Long-poll fetch timeout (seconds) for the bridge poll endpoints.
+    /// Default 35.
+    #[arg(long = "bridge-longpoll-timeout-secs", value_name = "SECS")]
+    bridge_longpoll_timeout_secs: Option<u64>,
+
+    /// Floor (ms) on the bridge `run_poll_loop` base polling interval —
+    /// user-supplied polling intervals below this are silently raised to
+    /// the floor. Default 500.
+    #[arg(long = "bridge-poll-interval-min-ms", value_name = "MS")]
+    bridge_poll_interval_min_ms: Option<u64>,
+
+    /// Floor (ms) on the high-level `run_bridge_loop` poll cadence —
+    /// user-supplied polling intervals below this are silently raised to
+    /// the floor. Default 50.
+    #[arg(long = "bridge-poll-loop-min-ms", value_name = "MS")]
+    bridge_poll_loop_min_ms: Option<u64>,
+
+    /// Max backoff ceiling (seconds) for the bridge `run_poll_loop`
+    /// failed-poll retry. Default 60.
+    #[arg(long = "bridge-poll-max-backoff-secs", value_name = "SECS")]
+    bridge_poll_max_backoff_secs: Option<u64>,
+
+    /// Max backoff ceiling (seconds) for the bridge `run_bridge_loop`
+    /// registration retry. Default 30.
+    #[arg(long = "bridge-registration-max-backoff-secs", value_name = "SECS")]
+    bridge_registration_max_backoff_secs: Option<u64>,
+
+    // --- Batch 17 configurable parameters (sorted alphabetically) ---
+    /// Retry sleep (ms) used by the FileEdit tool to wait for LSP
+    /// diagnostics after notifying the language server of a saved edit.
+    /// Slow filesystems (network mounts) may need a higher value. Default 200.
+    #[arg(long = "file-edit-retry-sleep-ms", value_name = "MS")]
+    file_edit_retry_sleep_ms: Option<u64>,
+
+    /// Retry sleep (ms) used by session-storage write paths between
+    /// successive append attempts on slow disks. Default 5.
+    #[arg(long = "session-write-retry-sleep-ms", value_name = "MS")]
+    session_write_retry_sleep_ms: Option<u64>,
+
+    /// Poll interval (ms) for the optional `CLAUDE_STATUS_COMMAND`
+    /// external status program. Default 500.
+    #[arg(long = "status-poll-interval-ms", value_name = "MS")]
+    status_poll_interval_ms: Option<u64>,
+
+    /// Max (text, cursor) snapshots retained on the TUI prompt-input
+    /// undo stack. Older entries are dropped past this cap. Default 100.
+    #[arg(long = "tui-undo-history-max", value_name = "COUNT")]
+    tui_undo_history_max: Option<usize>,
+
+    /// Head-window length (chars) retained when the TUI head+tail
+    /// truncates an oversized user prompt. Default 2500.
+    #[arg(long = "tui-user-prompt-head-chars", value_name = "CHARS")]
+    tui_user_prompt_head_chars: Option<usize>,
+
+    /// Tail-window length (chars) retained when the TUI head+tail
+    /// truncates an oversized user prompt. Default 2500.
+    #[arg(long = "tui-user-prompt-tail-chars", value_name = "CHARS")]
+    tui_user_prompt_tail_chars: Option<usize>,
+
+    // --- Batch 18 configurable parameters (sorted alphabetically) ---
+    /// Wait (ms) the Patch tool sleeps after applying a diff before
+    /// re-querying LSP diagnostics for the touched files. Default 200.
+    #[arg(long = "patch-retry-sleep-ms", value_name = "MS")]
+    patch_retry_sleep_ms: Option<u64>,
+
+    // --- Batch 16 configurable parameters (sorted alphabetically) ---
+    /// HTTP timeout (seconds) for the MCP OAuth authorization-server
+    /// metadata discovery request. Default 10.
+    #[arg(long = "mcp-oauth-metadata-timeout-secs", value_name = "SECS")]
+    mcp_oauth_metadata_timeout_secs: Option<u64>,
+
+    /// Seconds of expiry padding before an MCP OAuth token is considered
+    /// expired and a refresh is triggered. Default 60.
+    #[arg(long = "mcp-token-expiry-pad-secs", value_name = "SECS")]
+    mcp_token_expiry_pad_secs: Option<u64>,
+
+    /// Minimum cosine-similarity score retained by RAG search results.
+    /// Results scoring at or below this are dropped silently. Default 0.3.
+    #[arg(long = "rag-similarity-floor", value_name = "FRACTION")]
+    rag_similarity_floor: Option<f32>,
+
+    /// Max lines the TUI renders for a single message before collapsing
+    /// the rest behind a "N more lines" notice. Default 200.
+    #[arg(long = "tui-max-lines-per-msg", value_name = "LINES")]
+    tui_max_lines_per_msg: Option<usize>,
+
+    /// Max lines of tool-result output the TUI shows inline before
+    /// collapsing the tail with a "ctrl+o to expand" notice. Default 30.
+    #[arg(long = "tui-tool-result-max-lines", value_name = "LINES")]
+    tui_tool_result_max_lines: Option<usize>,
+
+    /// Char threshold above which the TUI head+tail-renders a user prompt
+    /// with the middle hidden. Default 10000.
+    #[arg(long = "tui-user-prompt-display-max-chars", value_name = "CHARS")]
+    tui_user_prompt_display_max_chars: Option<usize>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -418,6 +917,7 @@ enum CliInputFormat {
 
 fn resolve_bridge_config(
     settings: &Settings,
+    config: &cc_core::config::Config,
     auth_credential: &str,
     use_bearer_auth: bool,
     is_headless: bool,
@@ -435,6 +935,15 @@ fn resolve_bridge_config(
     if bridge_config.session_token.is_none() && use_bearer_auth && !auth_credential.is_empty() {
         bridge_config.session_token = Some(auth_credential.to_string());
     }
+
+    // --- Batch 15 bridge tunables (CLI / settings overrides) ---
+    bridge_config.http_timeout_secs = config.effective_bridge_http_timeout_secs();
+    bridge_config.longpoll_timeout_secs = config.effective_bridge_longpoll_timeout_secs();
+    bridge_config.poll_interval_min_ms = config.effective_bridge_poll_interval_min_ms();
+    bridge_config.poll_loop_min_ms = config.effective_bridge_poll_loop_min_ms();
+    bridge_config.poll_max_backoff_secs = config.effective_bridge_poll_max_backoff_secs();
+    bridge_config.registration_max_backoff_secs =
+        config.effective_bridge_registration_max_backoff_secs();
 
     bridge_config.is_active().then_some(bridge_config)
 }
@@ -538,6 +1047,25 @@ async fn main() -> anyhow::Result<()> {
     if let Some(mt) = cli.max_tokens {
         config.max_tokens = Some(mt);
     }
+    // --- Batch 9 wires (sorted alphabetically) ---
+    if let Some(v) = cli.overload_retry_max_backoff_secs {
+        config.overload_retry_max_backoff_secs = Some(v);
+    }
+    if let Some(v) = cli.provider_initial_backoff_ms {
+        config.provider_initial_backoff_ms = Some(v);
+    }
+    if let Some(v) = cli.provider_max_backoff_secs {
+        config.provider_max_backoff_secs = Some(v);
+    }
+    if let Some(v) = cli.provider_stream_channel_capacity {
+        config.provider_stream_channel_capacity = Some(v);
+    }
+    if let Some(v) = cli.slow_ttft_warning_secs {
+        config.slow_ttft_warning_secs = Some(v);
+    }
+    if let Some(v) = cli.unknown_model_context_window_floor {
+        config.unknown_model_context_window_floor = Some(v);
+    }
     config.verbose = cli.verbose;
     config.output_format = cli.output_format.into();
     config.disable_claude_mds = cli.no_claude_md;
@@ -581,6 +1109,324 @@ async fn main() -> anyhow::Result<()> {
     if cli.no_auto_compact {
         config.auto_compact = false;
     }
+    if let Some(v) = cli.compact_critical_pct {
+        config.compact_critical_pct = Some(v);
+    }
+    if let Some(v) = cli.compact_keep_recent_messages {
+        config.compact_keep_recent_messages = Some(v);
+    }
+    if let Some(v) = cli.compact_reinject_max_file_bytes {
+        config.compact_reinject_max_file_bytes = Some(v);
+    }
+    if let Some(v) = cli.compact_reinject_max_files {
+        config.compact_reinject_max_files = Some(v);
+    }
+    if let Some(v) = cli.compact_warning_pct {
+        config.compact_warning_pct = Some(v);
+    }
+    if let Some(v) = cli.reactive_compact_threshold {
+        config.reactive_compact_threshold = Some(v);
+    }
+    // --- Batch 7 wiring ---
+    if let Some(v) = cli.context_collapse_threshold {
+        config.context_collapse_threshold = Some(v);
+    }
+    if let Some(v) = cli.max_tokens_recovery_retries {
+        config.max_tokens_recovery_retries = Some(v);
+    }
+    if let Some(v) = cli.max_overload_retries {
+        config.max_overload_retries = Some(v);
+    }
+    if let Some(v) = cli.max_empty_retries {
+        config.max_empty_retries = Some(v);
+    }
+    if let Some(v) = cli.session_memory_min_messages {
+        config.session_memory_min_messages = Some(v);
+    }
+    if let Some(v) = cli.session_memory_min_tool_calls {
+        config.session_memory_min_tool_calls = Some(v);
+    }
+    // --- Batch 10 wiring (sorted alphabetically) ---
+    if let Some(v) = cli.collapse_read_fingerprint_chars {
+        config.collapse_read_fingerprint_chars = Some(v);
+    }
+    if let Some(v) = cli.collapse_search_fingerprint_chars {
+        config.collapse_search_fingerprint_chars = Some(v);
+    }
+    if let Some(v) = cli.compact_summary_max_tokens {
+        config.compact_summary_max_tokens = Some(v);
+    }
+    if let Some(v) = cli.cost_command_context_window {
+        config.cost_command_context_window = Some(v);
+    }
+    if let Some(v) = cli.cost_command_system_prompt_tokens {
+        config.cost_command_system_prompt_tokens = Some(v);
+    }
+    if let Some(v) = cli.diff_command_max_bytes {
+        config.diff_command_max_bytes = Some(v);
+    }
+
+    // --- Batch 11 wiring (sorted alphabetically) ---
+    if let Some(v) = cli.cron_list_prompt_display_chars {
+        config.cron_list_prompt_display_chars = Some(v);
+    }
+    if let Some(v) = cli.file_preview_max_chars {
+        config.file_preview_max_chars = Some(v);
+    }
+    if let Some(v) = cli.github_release_check_timeout_secs {
+        config.github_release_check_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.glob_max_results {
+        config.glob_max_results = Some(v);
+    }
+    if let Some(v) = cli.share_upload_timeout_secs {
+        config.share_upload_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.web_fetch_timeout_secs {
+        config.web_fetch_timeout_secs = Some(v);
+    }
+
+    // --- Batch 1 wiring (sorted alphabetically) ---
+    if let Some(v) = cli.default_read_line_limit {
+        config.default_read_line_limit = Some(v);
+    }
+    if let Some(v) = cli.max_compact_retries {
+        config.max_compact_retries = Some(v);
+    }
+    if let Some(v) = cli.max_image_bytes {
+        config.max_image_bytes = Some(v);
+    }
+    if let Some(v) = cli.max_line_chars {
+        config.max_line_chars = Some(v);
+    }
+    if let Some(v) = cli.max_text_bytes {
+        config.max_text_bytes = Some(v);
+    }
+    if let Some(v) = cli.tool_result_budget {
+        config.tool_result_budget = Some(v);
+    }
+
+    // --- Batch 2 wiring (file_read limits, sorted alphabetically) ---
+    if let Some(v) = cli.image_resize_long_edge {
+        config.image_resize_long_edge = Some(v);
+    }
+    if let Some(v) = cli.max_archive_members {
+        config.max_archive_members = Some(v);
+    }
+    if let Some(v) = cli.max_ooxml_rows {
+        config.max_ooxml_rows = Some(v);
+    }
+    if let Some(v) = cli.max_pdf_bytes {
+        config.max_pdf_bytes = Some(v);
+    }
+    if let Some(v) = cli.max_pdf_pages {
+        config.max_pdf_pages = Some(v);
+    }
+    if let Some(v) = cli.pdf_extract_timeout_secs {
+        config.pdf_extract_timeout_secs = Some(v);
+    }
+
+    // --- Batch 4 wiring (sorted alphabetically) ---
+    if let Some(v) = cli.claudemd_max_bytes {
+        config.claudemd_max_bytes = Some(v);
+    }
+    if let Some(v) = cli.max_memory_files {
+        config.max_memory_files = Some(v);
+    }
+    if let Some(v) = cli.memory_frontmatter_max_lines {
+        config.memory_frontmatter_max_lines = Some(v);
+    }
+    if let Some(v) = cli.screenshot_max_height {
+        config.screenshot_max_height = Some(v);
+    }
+    if let Some(v) = cli.screenshot_max_width {
+        config.screenshot_max_width = Some(v);
+    }
+    if let Some(v) = cli.session_tail_scan_bytes {
+        config.session_tail_scan_bytes = Some(v);
+    }
+
+    // --- Batch 3 wiring (sorted alphabetically) ---
+    if let Some(v) = cli.bash_output_max_chars {
+        config.bash_output_max_chars = Some(v);
+    }
+    if let Some(v) = cli.max_blocks_per_result {
+        config.max_blocks_per_result = Some(v);
+    }
+    if let Some(v) = cli.max_ooxml_text_bytes {
+        config.max_ooxml_text_bytes = Some(v);
+    }
+    if let Some(v) = cli.max_pptx_slides {
+        config.max_pptx_slides = Some(v);
+    }
+    if let Some(v) = cli.web_fetch_max_chars {
+        config.web_fetch_max_chars = Some(v);
+    }
+    // --- Batch 8 configurable parameters wiring (sorted alphabetically) ---
+    if let Some(v) = cli.anthropic_legacy_max_retries {
+        config.anthropic_legacy_max_retries = Some(v);
+    }
+    if let Some(v) = cli.anthropic_request_timeout_secs {
+        config.anthropic_request_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.auto_dream_scan_interval_secs {
+        config.auto_dream_scan_interval_secs = Some(v);
+    }
+    if let Some(v) = cli.away_summary_recent_messages {
+        config.away_summary_recent_messages = Some(v);
+    }
+    if let Some(v) = cli.provider_max_retries {
+        config.provider_max_retries = Some(v);
+    }
+    if let Some(v) = cli.provider_request_timeout_sec {
+        config.provider_request_timeout_sec = Some(v);
+    }
+
+    // --- Batch 12 wiring (sorted alphabetically) ---
+    if let Some(v) = cli.bash_timeout_max_ms {
+        config.bash_timeout_max_ms = Some(v);
+    }
+    if let Some(v) = cli.code_audit_timeout_secs {
+        config.code_audit_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.lint_spawn_timeout_secs {
+        config.lint_spawn_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.repl_line_read_timeout_secs {
+        config.repl_line_read_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.sleep_max_ms {
+        config.sleep_max_ms = Some(v);
+    }
+    if let Some(v) = cli.web_fetch_max_redirects {
+        config.web_fetch_max_redirects = Some(v);
+    }
+
+    // --- Batch 13 wiring (sorted alphabetically) ---
+    if let Some(v) = cli.lsp_request_timeout_secs {
+        config.lsp_request_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.oauth_callback_timeout_secs {
+        config.oauth_callback_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.oauth_full_flow_timeout_secs {
+        config.oauth_full_flow_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.oauth_token_exchange_timeout_secs {
+        config.oauth_token_exchange_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.peer_socket_appear_timeout_secs {
+        config.peer_socket_appear_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.powershell_timeout_max_ms {
+        config.powershell_timeout_max_ms = Some(v);
+    }
+
+    // --- Batch 5 configurable parameters wiring (sorted alphabetically) ---
+    if let Some(v) = cli.autocompact_trigger_fraction {
+        config.autocompact_trigger_fraction = Some(v);
+    }
+    if let Some(v) = cli.compact_warning_buffer_tokens {
+        config.compact_warning_buffer_tokens = Some(v);
+    }
+    if let Some(v) = cli.memory_entrypoint_max_bytes {
+        config.memory_entrypoint_max_bytes = Some(v);
+    }
+    if let Some(v) = cli.memory_entrypoint_max_lines {
+        config.memory_entrypoint_max_lines = Some(v);
+    }
+    if let Some(v) = cli.pasted_content_inline_threshold {
+        config.pasted_content_inline_threshold = Some(v);
+    }
+    if let Some(v) = cli.prompt_history_max_items {
+        config.prompt_history_max_items = Some(v);
+    }
+
+    // --- Batch 14 wiring (sorted alphabetically) ---
+    if let Some(v) = cli.bridge_poll_max_retries {
+        config.bridge_poll_max_retries = Some(v);
+    }
+    if let Some(v) = cli.lsp_shutdown_timeout_secs {
+        config.lsp_shutdown_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.lsp_workspace_probe_max_entries {
+        config.lsp_workspace_probe_max_entries = Some(v);
+    }
+    if let Some(v) = cli.oauth_profile_fetch_timeout_secs {
+        config.oauth_profile_fetch_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.oauth_refresh_timeout_secs {
+        config.oauth_refresh_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.remote_transcript_sync_interval_secs {
+        config.remote_transcript_sync_interval_secs = Some(v);
+    }
+
+    // --- Batch 15 wiring (bridge runtime tunables, sorted alphabetically) ---
+    if let Some(v) = cli.bridge_http_timeout_secs {
+        config.bridge_http_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.bridge_longpoll_timeout_secs {
+        config.bridge_longpoll_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.bridge_poll_interval_min_ms {
+        config.bridge_poll_interval_min_ms = Some(v);
+    }
+    if let Some(v) = cli.bridge_poll_loop_min_ms {
+        config.bridge_poll_loop_min_ms = Some(v);
+    }
+    if let Some(v) = cli.bridge_poll_max_backoff_secs {
+        config.bridge_poll_max_backoff_secs = Some(v);
+    }
+    if let Some(v) = cli.bridge_registration_max_backoff_secs {
+        config.bridge_registration_max_backoff_secs = Some(v);
+    }
+
+    // --- Batch 17 wiring (sorted alphabetically) ---
+    if let Some(v) = cli.file_edit_retry_sleep_ms {
+        config.file_edit_retry_sleep_ms = Some(v);
+    }
+    if let Some(v) = cli.session_write_retry_sleep_ms {
+        config.session_write_retry_sleep_ms = Some(v);
+    }
+    if let Some(v) = cli.status_poll_interval_ms {
+        config.status_poll_interval_ms = Some(v);
+    }
+    if let Some(v) = cli.tui_undo_history_max {
+        config.tui_undo_history_max = Some(v);
+    }
+    if let Some(v) = cli.tui_user_prompt_head_chars {
+        config.tui_user_prompt_head_chars = Some(v);
+    }
+    if let Some(v) = cli.tui_user_prompt_tail_chars {
+        config.tui_user_prompt_tail_chars = Some(v);
+    }
+
+    // --- Batch 18 wiring (sorted alphabetically) ---
+    if let Some(v) = cli.patch_retry_sleep_ms {
+        config.patch_retry_sleep_ms = Some(v);
+    }
+
+    // --- Batch 16 wiring (sorted alphabetically) ---
+    if let Some(v) = cli.mcp_oauth_metadata_timeout_secs {
+        config.mcp_oauth_metadata_timeout_secs = Some(v);
+    }
+    if let Some(v) = cli.mcp_token_expiry_pad_secs {
+        config.mcp_token_expiry_pad_secs = Some(v);
+    }
+    if let Some(v) = cli.rag_similarity_floor {
+        config.rag_similarity_floor = Some(v);
+    }
+    if let Some(v) = cli.tui_max_lines_per_msg {
+        config.tui_max_lines_per_msg = Some(v);
+    }
+    if let Some(v) = cli.tui_tool_result_max_lines {
+        config.tui_tool_result_max_lines = Some(v);
+    }
+    if let Some(v) = cli.tui_user_prompt_display_max_chars {
+        config.tui_user_prompt_display_max_chars = Some(v);
+    }
+
     config.project_dir = Some(cwd.clone());
 
     // --mcp-config: merge MCP servers from a JSON file or inline JSON string.
@@ -807,7 +1653,8 @@ async fn main() -> anyhow::Result<()> {
     }
     let system_prompt = system_parts.join("\n\n");
 
-    let bridge_config = resolve_bridge_config(&settings, &api_key, use_bearer_auth, is_headless);
+    let bridge_config =
+        resolve_bridge_config(&settings, &config, &api_key, use_bearer_auth, is_headless);
     if let Some(cfg) = bridge_config.as_ref() {
         info!(
             server_url = %cfg.server_url,
@@ -930,9 +1777,16 @@ async fn main() -> anyhow::Result<()> {
             let lsp_mgr = cc_core::lsp::global_lsp_manager();
             let cwd_clone = cwd.clone();
             let n_servers = lsp_configs.len();
+            let lsp_request_timeout_secs = config.effective_lsp_request_timeout_secs();
+            let lsp_shutdown_timeout_secs = config.effective_lsp_shutdown_timeout_secs();
+            let lsp_workspace_probe_max_entries =
+                config.effective_lsp_workspace_probe_max_entries();
             info!(count = n_servers, "Starting LSP servers in background");
             tokio::spawn(async move {
                 let mut mgr = lsp_mgr.lock().await;
+                mgr.set_request_timeout_secs(lsp_request_timeout_secs);
+                mgr.set_shutdown_timeout_secs(lsp_shutdown_timeout_secs);
+                mgr.set_workspace_probe_max_entries(lsp_workspace_probe_max_entries);
                 for cfg in lsp_configs {
                     mgr.register_server(cfg);
                 }
@@ -1142,6 +1996,7 @@ async fn main() -> anyhow::Result<()> {
 async fn spawn_peer_child(
     cli: &Cli,
     cwd: &std::path::Path,
+    config: &Config,
 ) -> anyhow::Result<(tokio::process::Child, cc_core::config::McpServerConfig)> {
     let pid = std::process::id();
     let socket = std::env::temp_dir().join(format!("uppli-peer-{pid}.sock"));
@@ -1170,17 +2025,19 @@ async fn spawn_peer_child(
         .map_err(|e| anyhow::anyhow!("failed to spawn peer child ({}): {e}", exe.display()))?;
 
     // Wait for the listener to be ready. The peer binds immediately after
-    // startup so ~200ms is typically enough; we give 5s to tolerate cold
-    // starts on slow machines.
+    // startup so ~200ms is typically enough; the user-configurable default
+    // is 5s (override via --peer-socket-appear-timeout-secs) to tolerate
+    // cold starts on slow file systems and CI sandboxes.
     //
     // TOCTOU: socket may vanish between exists() check and connect().
     // Acceptable here because the server is local and we retry on connect
     // failure (the MCP manager's connect_unix retries internally).
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let socket_timeout_secs = config.effective_peer_socket_appear_timeout_secs();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(socket_timeout_secs);
     while !socket.exists() {
         if std::time::Instant::now() > deadline {
             anyhow::bail!(
-                "peer child did not create socket at {} within 5s",
+                "peer child did not create socket at {} within {socket_timeout_secs}s",
                 socket.display()
             );
         }
@@ -1231,7 +2088,8 @@ async fn connect_mcp_manager_arc(config: &Config) -> Option<Arc<cc_mcp::McpManag
         count = config.mcp_servers.len(),
         "Connecting to MCP servers"
     );
-    let mcp_manager = cc_mcp::McpManager::connect_all(&config.mcp_servers).await;
+    let mut mcp_manager = cc_mcp::McpManager::connect_all(&config.mcp_servers).await;
+    mcp_manager.set_config(config.clone());
     Some(Arc::new(mcp_manager))
 }
 
@@ -2644,7 +3502,8 @@ async fn run_interactive(
     }
 
     // CLAUDE_STATUS_COMMAND: optional external command whose stdout replaces the
-    // left-side status bar text. Polled every 500ms (debounced) in the main loop.
+    // left-side status bar text. Polled every `status_poll_interval_ms` (default
+    // 500ms, configurable via --status-poll-interval-ms / Config.status_poll_interval_ms).
     // The command is run in a background task; results flow through a channel.
     let status_cmd_str = std::env::var("CLAUDE_STATUS_COMMAND").ok();
     let (status_cmd_tx, mut status_cmd_rx) = mpsc::channel::<String>(4);
@@ -2658,9 +3517,10 @@ async fn run_interactive(
                 let program = parts[0].clone();
                 let args: Vec<String> = parts[1..].to_vec();
                 let tx = status_cmd_tx.clone();
+                let poll_ms = app.config.effective_status_poll_interval_ms();
                 tokio::spawn(async move {
                     loop {
-                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        tokio::time::sleep(Duration::from_millis(poll_ms)).await;
                         let output = tokio::process::Command::new(&program)
                             .args(&args)
                             .output()
@@ -2987,7 +3847,12 @@ async fn run_interactive(
                                 }
                                 Some(CommandResult::StartOAuthFlow(with_claude_ai)) => {
                                     cc_tui::restore_terminal(&mut terminal).ok();
-                                    match oauth_flow::run_oauth_login_flow(with_claude_ai).await {
+                                    match oauth_flow::run_oauth_login_flow(
+                                        with_claude_ai,
+                                        &app.config,
+                                    )
+                                    .await
+                                    {
                                         Ok(_) => {
                                             app.status_message =
                                                 Some("Login successful!".to_string());
@@ -3534,7 +4399,11 @@ async fn handle_auth_command(args: &[String]) -> anyhow::Result<()> {
             // Default (no flag) uses the Claude.ai flow (Bearer token)
             let login_with_claude_ai = !args.iter().any(|a| a == "--console");
             println!("Starting authentication...");
-            match oauth_flow::run_oauth_login_flow(login_with_claude_ai).await {
+            // Load persisted settings so the user's configured OAuth
+            // timeouts are honoured during the pre-Cli `auth` fast-path.
+            let settings = Settings::load().await.unwrap_or_default();
+            let auth_config = settings.config.clone();
+            match oauth_flow::run_oauth_login_flow(login_with_claude_ai, &auth_config).await {
                 Ok(result) => {
                     println!("Successfully logged in!");
                     if let Some(email) = &result.tokens.email {

@@ -234,10 +234,11 @@ async fn build_success_result(
     );
 
     // Syntax-check each modified file.  If any fail, revert the whole patch.
+    let lint_timeout_secs = ctx.config.effective_lint_spawn_timeout_secs();
     let mut lint_errors = Vec::new();
     for file in files {
         let abs_path = work_dir.join(file);
-        let lint = crate::lint::check_syntax(&abs_path).await;
+        let lint = crate::lint::check_syntax_with_timeout(&abs_path, lint_timeout_secs).await;
         if !lint.ok {
             lint_errors.push(crate::lint::format_lint_error(&lint, &abs_path));
         }
@@ -287,7 +288,10 @@ async fn build_success_result(
         }
         drop(mgr);
         // Brief wait for diagnostics.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(
+            ctx.config.effective_patch_retry_sleep_ms(),
+        ))
+        .await;
         let mgr = lsp.lock().await;
         let mut diag_count = 0;
         for file in files {

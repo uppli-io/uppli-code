@@ -99,12 +99,18 @@ pub struct ProviderDefaultsToml {
     pub max_retries: u32,
 }
 
+// These functions provide the serde defaults when the TOML preset omits the
+// field. They mirror — and now share — the canonical defaults exposed by the
+// core crate so a single rebuild keeps both in lockstep with any future tweak.
+// Runtime callers (provider_factory / openai_provider) layer a
+// `cc_core::config::Config::effective_*` override on top before the value
+// reaches reqwest.
 fn default_timeout_sec() -> u64 {
-    600
+    cc_core::constants::DEFAULT_PROVIDER_REQUEST_TIMEOUT_SEC
 }
 
 fn default_max_retries() -> u32 {
-    5
+    cc_core::constants::DEFAULT_PROVIDER_MAX_RETRIES
 }
 
 /// A single `[[models]]` entry.

@@ -59,7 +59,7 @@ impl Tool for AstGrepHelperTool {
         })
     }
 
-    async fn execute(&self, input: Value, _ctx: &ToolContext) -> ToolResult {
+    async fn execute(&self, input: Value, ctx: &ToolContext) -> ToolResult {
         let params: HelperInput = match serde_json::from_value(input) {
             Ok(p) => p,
             Err(e) => return ToolResult::error(format!("Invalid input: {}", e)),
@@ -76,8 +76,13 @@ impl Tool for AstGrepHelperTool {
             Err(e) => return ToolResult::error(format!("RAG store not available: {}", e)),
         };
 
-        let results =
-            store.search_owned(&params.query, Some(&params.language), Some("ast-grep"), 5);
+        let results = store.search_owned_with_floor(
+            &params.query,
+            Some(&params.language),
+            Some("ast-grep"),
+            5,
+            ctx.config.effective_rag_similarity_floor(),
+        );
 
         if results.is_empty() {
             return ToolResult::success(

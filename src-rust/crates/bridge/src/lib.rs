@@ -170,6 +170,30 @@ pub struct BridgeConfig {
     pub session_timeout_ms: u64,
     /// Runner version string sent on API calls for server-side diagnostics.
     pub runner_version: String,
+    // --- Batch 15 bridge tunables (defaults sourced from cc_core::constants) ---
+    /// HTTP request timeout (seconds) shared by every bridge HTTP client
+    /// (register, poll, upload, deregister, response post). Defaults to
+    /// `cc_core::constants::DEFAULT_BRIDGE_HTTP_TIMEOUT_SECS` (30).
+    pub http_timeout_secs: u64,
+    /// Long-poll fetch timeout (seconds) for `GET /sessions/{id}/poll` and
+    /// `poll_bridge_messages`. Defaults to
+    /// `cc_core::constants::DEFAULT_BRIDGE_LONGPOLL_TIMEOUT_SECS` (35).
+    pub longpoll_timeout_secs: u64,
+    /// Floor (ms) on the bridge `run_poll_loop` base polling interval.
+    /// Defaults to `cc_core::constants::DEFAULT_BRIDGE_POLL_INTERVAL_MIN_MS`
+    /// (500).
+    pub poll_interval_min_ms: u64,
+    /// Floor (ms) on the high-level `run_bridge_loop` poll cadence.
+    /// Defaults to `cc_core::constants::DEFAULT_BRIDGE_POLL_LOOP_MIN_MS` (50).
+    pub poll_loop_min_ms: u64,
+    /// Max backoff ceiling (seconds) for the bridge `run_poll_loop`
+    /// failed-poll retry. Defaults to
+    /// `cc_core::constants::DEFAULT_BRIDGE_POLL_MAX_BACKOFF_SECS` (60).
+    pub poll_max_backoff_secs: u64,
+    /// Max backoff ceiling (seconds) for the bridge `run_bridge_loop`
+    /// registration retry loop. Defaults to
+    /// `cc_core::constants::DEFAULT_BRIDGE_REGISTRATION_MAX_BACKOFF_SECS` (30).
+    pub registration_max_backoff_secs: u64,
 }
 
 impl Default for BridgeConfig {
@@ -183,6 +207,13 @@ impl Default for BridgeConfig {
             max_reconnect_attempts: 10,
             session_timeout_ms: 24 * 60 * 60 * 1_000,
             runner_version: env!("CARGO_PKG_VERSION").to_string(),
+            http_timeout_secs: cc_core::constants::DEFAULT_BRIDGE_HTTP_TIMEOUT_SECS,
+            longpoll_timeout_secs: cc_core::constants::DEFAULT_BRIDGE_LONGPOLL_TIMEOUT_SECS,
+            poll_interval_min_ms: cc_core::constants::DEFAULT_BRIDGE_POLL_INTERVAL_MIN_MS,
+            poll_loop_min_ms: cc_core::constants::DEFAULT_BRIDGE_POLL_LOOP_MIN_MS,
+            poll_max_backoff_secs: cc_core::constants::DEFAULT_BRIDGE_POLL_MAX_BACKOFF_SECS,
+            registration_max_backoff_secs:
+                cc_core::constants::DEFAULT_BRIDGE_REGISTRATION_MAX_BACKOFF_SECS,
         }
     }
 }
@@ -404,7 +435,7 @@ impl BridgeSession {
     pub fn new(config: BridgeConfig) -> Self {
         let session_id = uuid::Uuid::new_v4().to_string();
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(config.http_timeout_secs))
             .user_agent(format!("claude-code-rust/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("Failed to build reqwest client");
@@ -548,7 +579,9 @@ impl BridgeSession {
             .http
             .get(&url)
             .bearer_auth(token)
-            .timeout(std::time::Duration::from_secs(35))
+            .timeout(std::time::Duration::from_secs(
+                self.config.longpoll_timeout_secs,
+            ))
             .send()
             .await
             .context("Bridge poll: HTTP send failed")?;
@@ -649,9 +682,12 @@ impl BridgeSession {
     ) {
         info!(session_id = %self.session_id, "Bridge poll loop started");
 
-        let base_interval =
-            std::time::Duration::from_millis(self.config.polling_interval_ms.max(500));
-        let max_backoff = std::time::Duration::from_secs(60);
+        let base_interval = std::time::Duration::from_millis(
+            self.config
+                .polling_interval_ms
+                .max(self.config.poll_interval_min_ms),
+        );
+        let max_backoff = std::time::Duration::from_secs(self.config.poll_max_backoff_secs);
 
         loop {
             // Respect cancellation at the top of every iteration.
@@ -762,7 +798,7 @@ pub struct BridgeManager {
 impl BridgeManager {
     pub fn new(config: BridgeConfig) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(config.http_timeout_secs))
             .user_agent(format!("claude-code-rust/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .context("BridgeManager: failed to build HTTP client")?;
@@ -808,7 +844,7 @@ pub async fn start_bridge(
     String,
 )> {
     let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(config.http_timeout_secs))
         .user_agent(format!("claude-code-rust/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .context("start_bridge: failed to build HTTP client")?;
@@ -951,7 +987,9 @@ pub async fn start_bridge_session(
     };
 
     let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(
+            cc_core::constants::DEFAULT_BRIDGE_HTTP_TIMEOUT_SECS,
+        ))
         .user_agent(format!("claude-code-rust/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .context("start_bridge_session: failed to build HTTP client")?;
@@ -1054,13 +1092,15 @@ pub async fn poll_bridge_messages(
     );
 
     let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(35))
+        .timeout(std::time::Duration::from_secs(
+            cc_core::constants::DEFAULT_BRIDGE_LONGPOLL_TIMEOUT_SECS,
+        ))
         .user_agent(format!("claude-code-rust/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .context("poll_bridge_messages: failed to build HTTP client")?;
 
     // Retry loop for 429 back-off.
-    let max_retries = 3u32;
+    let max_retries = cc_core::constants::DEFAULT_BRIDGE_POLL_MAX_RETRIES;
     let mut attempt = 0u32;
     loop {
         let mut request = http
@@ -1142,7 +1182,9 @@ pub async fn post_bridge_response(
     );
 
     let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(
+            cc_core::constants::DEFAULT_BRIDGE_HTTP_TIMEOUT_SECS,
+        ))
         .user_agent(format!("claude-code-rust/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .context("post_bridge_response: failed to build HTTP client")?;
@@ -1302,7 +1344,7 @@ pub async fn run_bridge_loop(
 
     // Attempt initial registration; retry with back-off on transient errors.
     let base_backoff = std::time::Duration::from_millis(1_000);
-    let max_backoff = std::time::Duration::from_secs(30);
+    let max_backoff = std::time::Duration::from_secs(config.registration_max_backoff_secs);
     let mut reg_attempts = 0u32;
 
     loop {
@@ -1384,7 +1426,8 @@ pub async fn run_bridge_loop(
     // Message ID counter for outbound text deltas.
     let mut msg_counter = 0u64;
 
-    let poll_interval = std::time::Duration::from_millis(config.polling_interval_ms.max(50));
+    let poll_interval =
+        std::time::Duration::from_millis(config.polling_interval_ms.max(config.poll_loop_min_ms));
 
     loop {
         tokio::select! {

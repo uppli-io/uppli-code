@@ -175,6 +175,17 @@ pub struct LspClient {
     /// Shared writer — wrapped in a Mutex so `start_receiver_task` and the
     /// public `send_*` methods can both hold it.
     writer: Option<Arc<Mutex<BufWriter<ChildStdin>>>>,
+    /// Per-request timeout (seconds) for JSON-RPC calls. Defaults to
+    /// `DEFAULT_LSP_REQUEST_TIMEOUT_SECS` (30) but can be overridden via
+    /// `LspManager::set_request_timeout_secs` so corporate setups with
+    /// slow rust-analyzer / gopls cold-starts can extend it.
+    request_timeout_secs: u64,
+    /// Grace period (seconds) the `shutdown` path waits for the server to
+    /// exit cleanly before SIGKILL-ing it. Defaults to
+    /// `DEFAULT_LSP_SHUTDOWN_TIMEOUT_SECS` (5) but can be overridden via
+    /// `LspManager::set_shutdown_timeout_secs` so slow setups (large
+    /// rust-analyzer / gopls indexes) get time to flush state.
+    shutdown_timeout_secs: u64,
 }
 
 impl LspClient {
@@ -258,7 +269,21 @@ impl LspClient {
             diagnostics,
             is_initialized: false,
             writer: Some(writer),
+            request_timeout_secs: crate::constants::DEFAULT_LSP_REQUEST_TIMEOUT_SECS,
+            shutdown_timeout_secs: crate::constants::DEFAULT_LSP_SHUTDOWN_TIMEOUT_SECS,
         })
+    }
+
+    /// Override the per-request JSON-RPC timeout (seconds) — typically
+    /// called by `LspManager` once a Config is available.
+    pub fn set_request_timeout_secs(&mut self, secs: u64) {
+        self.request_timeout_secs = secs;
+    }
+
+    /// Override the shutdown grace period (seconds) — typically called by
+    /// `LspManager` once a Config is available.
+    pub fn set_shutdown_timeout_secs(&mut self, secs: u64) {
+        self.shutdown_timeout_secs = secs;
     }
 
     fn next_id(&self) -> u64 {
@@ -292,22 +317,25 @@ impl LspClient {
             send_message(&mut w, &body).await?;
         }
 
-        let response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "LSP request '{}' timed out (server: {})",
-                    method,
-                    self.server_name
-                )
-            })?
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "LSP request '{}' channel closed (server: {})",
-                    method,
-                    self.server_name
-                )
-            })?;
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(self.request_timeout_secs),
+            rx,
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "LSP request '{}' timed out (server: {})",
+                method,
+                self.server_name
+            )
+        })?
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "LSP request '{}' channel closed (server: {})",
+                method,
+                self.server_name
+            )
+        })?;
 
         if let Some(err) = response.get("error") {
             return Err(anyhow::anyhow!(
@@ -470,7 +498,8 @@ impl LspClient {
 
         if let Some(mut child) = self.process.take() {
             // Give the process a moment to exit cleanly.
-            match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
+            let grace = std::time::Duration::from_secs(self.shutdown_timeout_secs);
+            match tokio::time::timeout(grace, child.wait()).await {
                 Ok(Ok(_)) => {
                     // Process exited cleanly within timeout.
                 }
@@ -481,7 +510,10 @@ impl LspClient {
                 }
                 Err(_) => {
                     // Timeout — process didn't exit, force kill.
-                    tracing::warn!("LSP process did not exit within 5s, forcing kill");
+                    tracing::warn!(
+                        grace_secs = self.shutdown_timeout_secs,
+                        "LSP process did not exit within grace period, forcing kill"
+                    );
                     if let Err(e) = child.kill().await {
                         tracing::error!(error = %e, "Failed to kill LSP process");
                     } else {
@@ -739,6 +771,19 @@ pub struct LspManager {
     extension_map: HashMap<String, Vec<String>>,
     /// Set of file URIs that have been opened on a specific server (URI → server name)
     opened_files: HashMap<String, String>,
+    /// Per-request JSON-RPC timeout (seconds) applied to every client the
+    /// manager spawns. Defaults to `DEFAULT_LSP_REQUEST_TIMEOUT_SECS` (30)
+    /// but the host CLI can override via `set_request_timeout_secs` from
+    /// the resolved Config.
+    request_timeout_secs: u64,
+    /// Shutdown grace period (seconds) applied to every client the manager
+    /// spawns. Defaults to `DEFAULT_LSP_SHUTDOWN_TIMEOUT_SECS` (5) but can
+    /// be overridden via `set_shutdown_timeout_secs`.
+    shutdown_timeout_secs: u64,
+    /// Per-subdirectory entry cap for `project_has_matching_files`.
+    /// Defaults to `DEFAULT_LSP_WORKSPACE_PROBE_MAX_ENTRIES` (50) — raise
+    /// for monorepos.
+    workspace_probe_max_entries: usize,
 }
 
 impl LspManager {
@@ -748,7 +793,34 @@ impl LspManager {
             clients: HashMap::new(),
             extension_map: HashMap::new(),
             opened_files: HashMap::new(),
+            request_timeout_secs: crate::constants::DEFAULT_LSP_REQUEST_TIMEOUT_SECS,
+            shutdown_timeout_secs: crate::constants::DEFAULT_LSP_SHUTDOWN_TIMEOUT_SECS,
+            workspace_probe_max_entries: crate::constants::DEFAULT_LSP_WORKSPACE_PROBE_MAX_ENTRIES,
         }
+    }
+
+    /// Override the per-request JSON-RPC timeout (seconds). Applies to
+    /// every already-running client AND every subsequently-started one.
+    pub fn set_request_timeout_secs(&mut self, secs: u64) {
+        self.request_timeout_secs = secs;
+        for client in self.clients.values_mut() {
+            client.set_request_timeout_secs(secs);
+        }
+    }
+
+    /// Override the shutdown grace period (seconds). Applies to every
+    /// already-running client AND every subsequently-started one.
+    pub fn set_shutdown_timeout_secs(&mut self, secs: u64) {
+        self.shutdown_timeout_secs = secs;
+        for client in self.clients.values_mut() {
+            client.set_shutdown_timeout_secs(secs);
+        }
+    }
+
+    /// Override the per-subdirectory entry cap used by the workspace
+    /// auto-detect probe. Higher values help on monorepos.
+    pub fn set_workspace_probe_max_entries(&mut self, n: usize) {
+        self.workspace_probe_max_entries = n;
     }
 
     /// Register an LSP server configuration.
@@ -816,6 +888,8 @@ impl LspManager {
             };
             match LspClient::start(config).await {
                 Ok(mut client) => {
+                    client.set_request_timeout_secs(self.request_timeout_secs);
+                    client.set_shutdown_timeout_secs(self.shutdown_timeout_secs);
                     let root_uri = path_to_uri(&root_dir.to_string_lossy());
                     if let Err(e) = client.initialize(&root_uri).await {
                         tracing::warn!("Failed to initialize LSP server '{}': {}", server_name, e);
@@ -845,7 +919,11 @@ impl LspManager {
             }
 
             // Only start this server if the project has matching files.
-            if !project_has_matching_files(root_dir, &config.file_patterns) {
+            if !project_has_matching_files(
+                root_dir,
+                &config.file_patterns,
+                self.workspace_probe_max_entries,
+            ) {
                 tracing::debug!(
                     server = %name,
                     patterns = ?config.file_patterns,
@@ -856,6 +934,8 @@ impl LspManager {
 
             match LspClient::start(config).await {
                 Ok(mut client) => {
+                    client.set_request_timeout_secs(self.request_timeout_secs);
+                    client.set_shutdown_timeout_secs(self.shutdown_timeout_secs);
                     let root_uri = path_to_uri(&root_dir.to_string_lossy());
                     if let Err(e) = client.initialize(&root_uri).await {
                         tracing::warn!("Failed to initialize LSP server '{}': {}", name, e);
@@ -1225,7 +1305,13 @@ pub fn detect_installed_servers() -> Vec<LspServerConfig> {
 
 /// Check if the project root contains any files matching the given glob patterns.
 /// Does a shallow scan (top-level + one level deep) to avoid scanning huge repos.
-fn project_has_matching_files(root: &Path, patterns: &[String]) -> bool {
+/// `max_entries_per_subdir` caps the per-subdirectory entry scan (raise on
+/// monorepos where the dominant language lives past the first 50 files).
+fn project_has_matching_files(
+    root: &Path,
+    patterns: &[String],
+    max_entries_per_subdir: usize,
+) -> bool {
     for pattern in patterns {
         // Extract extension from pattern like "*.rs" → ".rs"
         let ext = if let Some(e) = pattern.strip_prefix("*.") {
@@ -1248,7 +1334,7 @@ fn project_has_matching_files(root: &Path, patterns: &[String]) -> bool {
                 // Check one level deep (src/, lib/, etc.)
                 if path.is_dir() {
                     if let Ok(sub_entries) = std::fs::read_dir(&path) {
-                        for sub in sub_entries.flatten().take(50) {
+                        for sub in sub_entries.flatten().take(max_entries_per_subdir) {
                             let sub_path = sub.path();
                             if sub_path.is_file() {
                                 if let Some(file_ext) =

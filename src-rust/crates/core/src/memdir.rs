@@ -87,13 +87,16 @@ pub struct MemoryFile {
 // Directory scanning
 // ---------------------------------------------------------------------------
 
-/// Maximum number of memory files kept after sorting.
-/// Matches `MAX_MEMORY_FILES` in `memoryScan.ts`.
-const MAX_MEMORY_FILES: usize = 200;
+/// Default maximum number of memory files kept after sorting.
+/// Matches `MAX_MEMORY_FILES` in `memoryScan.ts`. Runtime override comes
+/// from `Config.max_memory_files` / `--max-memory-files`.
+const MAX_MEMORY_FILES: usize = crate::constants::DEFAULT_MAX_MEMORY_FILES;
 
-/// Number of lines scanned for frontmatter.
-/// Matches `FRONTMATTER_MAX_LINES` in `memoryScan.ts`.
-const FRONTMATTER_MAX_LINES: usize = 30;
+/// Default number of lines scanned for frontmatter.
+/// Matches `FRONTMATTER_MAX_LINES` in `memoryScan.ts`. Runtime override
+/// comes from `Config.memory_frontmatter_max_lines` /
+/// `--memory-frontmatter-max-lines`.
+const FRONTMATTER_MAX_LINES: usize = crate::constants::DEFAULT_MEMORY_FRONTMATTER_MAX_LINES;
 
 /// Scan a memory directory, returning metadata for all `.md` files
 /// (excluding `MEMORY.md`), sorted newest-first, capped at `MAX_MEMORY_FILES`.
@@ -102,6 +105,18 @@ const FRONTMATTER_MAX_LINES: usize = 30;
 /// Mirrors `scanMemoryFiles` in `memoryScan.ts` (async version; this is the
 /// sync equivalent used at prompt-build time).
 pub fn scan_memory_dir(dir: &Path) -> Vec<MemoryFileMeta> {
+    scan_memory_dir_with_limits(dir, MAX_MEMORY_FILES, FRONTMATTER_MAX_LINES)
+}
+
+/// Same as [`scan_memory_dir`] but with caller-supplied caps on file count
+/// and frontmatter scan depth. Callers that hold a `Config` should pass
+/// `config.effective_max_memory_files()` and
+/// `config.effective_memory_frontmatter_max_lines()`.
+pub fn scan_memory_dir_with_limits(
+    dir: &Path,
+    max_files: usize,
+    frontmatter_max_lines: usize,
+) -> Vec<MemoryFileMeta> {
     let mut files: Vec<MemoryFileMeta> = Vec::new();
 
     if !dir.exists() {
@@ -110,16 +125,21 @@ pub fn scan_memory_dir(dir: &Path) -> Vec<MemoryFileMeta> {
 
     // Walk recursively using `walkdir`-style manual recursion to stay
     // dependency-free (only std).
-    collect_md_files(dir, dir, &mut files);
+    collect_md_files(dir, dir, &mut files, frontmatter_max_lines);
 
     // Sort newest-first.
     files.sort_by_key(|f| std::cmp::Reverse(f.modified_secs));
-    files.truncate(MAX_MEMORY_FILES);
+    files.truncate(max_files);
     files
 }
 
 /// Recursively collect `.md` files (excluding `MEMORY.md`) from `current_dir`.
-fn collect_md_files(base: &Path, current_dir: &Path, out: &mut Vec<MemoryFileMeta>) {
+fn collect_md_files(
+    base: &Path,
+    current_dir: &Path,
+    out: &mut Vec<MemoryFileMeta>,
+    frontmatter_max_lines: usize,
+) {
     let Ok(entries) = std::fs::read_dir(current_dir) else {
         return;
     };
@@ -127,7 +147,7 @@ fn collect_md_files(base: &Path, current_dir: &Path, out: &mut Vec<MemoryFileMet
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_md_files(base, &path, out);
+            collect_md_files(base, &path, out, frontmatter_max_lines);
         } else if path.extension().map(|e| e == "md").unwrap_or(false) {
             let file_name = path
                 .file_name()
@@ -145,7 +165,7 @@ fn collect_md_files(base: &Path, current_dir: &Path, out: &mut Vec<MemoryFileMet
 
             let (name, description, memory_type) =
                 if let Ok(content) = std::fs::read_to_string(&path) {
-                    parse_frontmatter_quick(&content)
+                    parse_frontmatter_quick_with_limit(&content, frontmatter_max_lines)
                 } else {
                     (None, None, None)
                 };
@@ -175,11 +195,21 @@ fn collect_md_files(base: &Path, current_dir: &Path, out: &mut Vec<MemoryFileMet
 pub fn parse_frontmatter_quick(
     content: &str,
 ) -> (Option<String>, Option<String>, Option<MemoryType>) {
+    parse_frontmatter_quick_with_limit(content, FRONTMATTER_MAX_LINES)
+}
+
+/// Same as [`parse_frontmatter_quick`] but with a caller-supplied cap on
+/// the number of lines scanned. Callers holding a `Config` should pass
+/// `config.effective_memory_frontmatter_max_lines()`.
+pub fn parse_frontmatter_quick_with_limit(
+    content: &str,
+    frontmatter_max_lines: usize,
+) -> (Option<String>, Option<String>, Option<MemoryType>) {
     let mut name = None;
     let mut description = None;
     let mut memory_type = None;
 
-    let lines: Vec<&str> = content.lines().take(FRONTMATTER_MAX_LINES).collect();
+    let lines: Vec<&str> = content.lines().take(frontmatter_max_lines).collect();
 
     // Frontmatter must start with `---`
     if lines.first().map(|l| l.trim() != "---").unwrap_or(true) {
@@ -423,14 +453,28 @@ pub struct EntrypointTruncation {
 /// `MAX_ENTRYPOINT_BYTES` bytes, appending a warning when either cap fires.
 ///
 /// Mirrors `truncateEntrypointContent` in `memdir.ts`.
+///
+/// Uses default caps. Prefer [`truncate_entrypoint_content_with_limits`]
+/// when you have a `Config` to pull tuned values from.
 pub fn truncate_entrypoint_content(raw: &str) -> EntrypointTruncation {
+    truncate_entrypoint_content_with_limits(raw, MAX_ENTRYPOINT_LINES, MAX_ENTRYPOINT_BYTES)
+}
+
+/// Truncate `MEMORY.md` content using the supplied line/byte caps. Mirrors
+/// `truncate_entrypoint_content` but lets callers override the defaults from
+/// configuration (`Config::effective_memory_entrypoint_max_*`).
+pub fn truncate_entrypoint_content_with_limits(
+    raw: &str,
+    max_lines: usize,
+    max_bytes: usize,
+) -> EntrypointTruncation {
     let trimmed = raw.trim();
     let content_lines: Vec<&str> = trimmed.lines().collect();
     let line_count = content_lines.len();
     let byte_count = trimmed.len();
 
-    let was_line_truncated = line_count > MAX_ENTRYPOINT_LINES;
-    let was_byte_truncated = byte_count > MAX_ENTRYPOINT_BYTES;
+    let was_line_truncated = line_count > max_lines;
+    let was_byte_truncated = byte_count > max_bytes;
 
     if !was_line_truncated && !was_byte_truncated {
         return EntrypointTruncation {
@@ -443,23 +487,21 @@ pub fn truncate_entrypoint_content(raw: &str) -> EntrypointTruncation {
     }
 
     let mut truncated = if was_line_truncated {
-        content_lines[..MAX_ENTRYPOINT_LINES].join("\n")
+        content_lines[..max_lines].join("\n")
     } else {
         trimmed.to_string()
     };
 
-    if truncated.len() > MAX_ENTRYPOINT_BYTES {
-        let cut_at = truncated[..MAX_ENTRYPOINT_BYTES]
-            .rfind('\n')
-            .unwrap_or(MAX_ENTRYPOINT_BYTES);
+    if truncated.len() > max_bytes {
+        let cut_at = truncated[..max_bytes].rfind('\n').unwrap_or(max_bytes);
         truncated.truncate(cut_at);
     }
 
     let reason = match (was_line_truncated, was_byte_truncated) {
-        (true, false) => format!("{} lines (limit: {})", line_count, MAX_ENTRYPOINT_LINES),
+        (true, false) => format!("{} lines (limit: {})", line_count, max_lines),
         (false, true) => format!(
             "{} bytes (limit: {}) — index entries are too long",
-            byte_count, MAX_ENTRYPOINT_BYTES
+            byte_count, max_bytes
         ),
         _ => format!("{} lines and {} bytes", line_count, byte_count),
     };
@@ -483,7 +525,19 @@ pub fn truncate_entrypoint_content(raw: &str) -> EntrypointTruncation {
 /// Returns `None` when the file does not exist or is empty.
 ///
 /// Mirrors the entrypoint-reading path in `buildMemoryPrompt` / `loadMemoryPrompt`.
+///
+/// Uses default caps. Prefer [`load_memory_index_with_limits`] when you have
+/// a `Config` to pull tuned values from.
 pub fn load_memory_index(memory_dir: &Path) -> Option<EntrypointTruncation> {
+    load_memory_index_with_limits(memory_dir, MAX_ENTRYPOINT_LINES, MAX_ENTRYPOINT_BYTES)
+}
+
+/// Load and truncate the `MEMORY.md` index using the supplied line/byte caps.
+pub fn load_memory_index_with_limits(
+    memory_dir: &Path,
+    max_lines: usize,
+    max_bytes: usize,
+) -> Option<EntrypointTruncation> {
     let index_path = memory_dir.join(MEMORY_ENTRYPOINT);
     if !index_path.exists() {
         return None;
@@ -492,7 +546,9 @@ pub fn load_memory_index(memory_dir: &Path) -> Option<EntrypointTruncation> {
     if raw.trim().is_empty() {
         return None;
     }
-    Some(truncate_entrypoint_content(&raw))
+    Some(truncate_entrypoint_content_with_limits(
+        &raw, max_lines, max_bytes,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -504,10 +560,22 @@ pub fn load_memory_index(memory_dir: &Path) -> Option<EntrypointTruncation> {
 ///
 /// Always includes the `MEMORY.md` index when it exists.
 /// Called during `build_system_prompt` → `SystemPromptOptions::memory_content`.
+///
+/// Uses default caps. Prefer [`build_memory_prompt_content_with_limits`]
+/// when you have a `Config` to pull tuned values from.
 pub fn build_memory_prompt_content(memory_dir: &Path) -> String {
+    build_memory_prompt_content_with_limits(memory_dir, MAX_ENTRYPOINT_LINES, MAX_ENTRYPOINT_BYTES)
+}
+
+/// Build the memory content string using the supplied line/byte caps.
+pub fn build_memory_prompt_content_with_limits(
+    memory_dir: &Path,
+    max_lines: usize,
+    max_bytes: usize,
+) -> String {
     let mut parts: Vec<String> = Vec::new();
 
-    if let Some(index) = load_memory_index(memory_dir) {
+    if let Some(index) = load_memory_index_with_limits(memory_dir, max_lines, max_bytes) {
         parts.push(format!("## Memory Index (MEMORY.md)\n{}", index.content));
     }
 

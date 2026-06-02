@@ -29,10 +29,15 @@ use tracing::{debug, info, warn};
 // ---------------------------------------------------------------------------
 
 /// Minimum messages before extraction is attempted.
-const MIN_MESSAGES_TO_EXTRACT: usize = 20;
+/// Kept as the legacy compile-time default — actual runtime value comes from
+/// `Config::effective_session_memory_min_messages()`.
+const MIN_MESSAGES_TO_EXTRACT: usize = cc_core::constants::DEFAULT_MIN_MESSAGES_TO_EXTRACT;
 
 /// Minimum tool calls since last extraction before we run again.
-const MIN_TOOL_CALLS_BETWEEN_EXTRACTIONS: usize = 3;
+/// Kept as the legacy compile-time default — actual runtime value comes from
+/// `Config::effective_session_memory_min_tool_calls()`.
+const MIN_TOOL_CALLS_BETWEEN_EXTRACTIONS: usize =
+    cc_core::constants::DEFAULT_MIN_TOOL_CALLS_BETWEEN_EXTRACTIONS;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -149,12 +154,18 @@ impl SessionMemoryExtractor {
     /// - At least `MIN_MESSAGES_TO_EXTRACT` messages total
     /// - The last assistant turn must not have pending tool calls (safe extraction point)
     pub fn should_extract(messages: &[Message]) -> bool {
+        Self::should_extract_with_threshold(messages, MIN_MESSAGES_TO_EXTRACT)
+    }
+
+    /// Configurable variant of `should_extract` — allows the caller to pass a
+    /// runtime `min_messages` threshold sourced from user config.
+    pub fn should_extract_with_threshold(messages: &[Message], min_messages: usize) -> bool {
         let model_visible = messages
             .iter()
             .filter(|m| m.role == Role::User || m.role == Role::Assistant)
             .count();
 
-        if model_visible < MIN_MESSAGES_TO_EXTRACT {
+        if model_visible < min_messages {
             return false;
         }
 
@@ -190,7 +201,24 @@ impl SessionMemoryExtractor {
 
     /// Check whether extraction should run given the current session state.
     pub fn should_extract_with_state(messages: &[Message], state: &SessionMemoryState) -> bool {
-        if !Self::should_extract(messages) {
+        Self::should_extract_with_state_and_thresholds(
+            messages,
+            state,
+            MIN_MESSAGES_TO_EXTRACT,
+            MIN_TOOL_CALLS_BETWEEN_EXTRACTIONS,
+        )
+    }
+
+    /// Configurable variant of `should_extract_with_state` — allows the caller
+    /// to pass runtime `min_messages` and `min_tool_calls` thresholds sourced
+    /// from user config.
+    pub fn should_extract_with_state_and_thresholds(
+        messages: &[Message],
+        state: &SessionMemoryState,
+        min_messages: usize,
+        min_tool_calls: usize,
+    ) -> bool {
+        if !Self::should_extract_with_threshold(messages, min_messages) {
             return false;
         }
 
@@ -198,7 +226,7 @@ impl SessionMemoryExtractor {
         let tool_calls_since =
             Self::count_tool_calls_since(messages, state.last_extracted_message_uuid.as_deref());
 
-        tool_calls_since >= MIN_TOOL_CALLS_BETWEEN_EXTRACTIONS
+        tool_calls_since >= min_tool_calls
             || !state.has_new_messages_since_last_extraction(messages)
     }
 

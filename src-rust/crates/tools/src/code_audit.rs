@@ -125,8 +125,9 @@ impl Tool for CodeAuditTool {
         debug!(file = %file_path.display(), "Running CodeAudit");
 
         // Spawn with timeout
+        let timeout_secs = ctx.config.effective_code_audit_timeout_secs();
         let output = match tokio::time::timeout(
-            Duration::from_secs(10),
+            Duration::from_secs(timeout_secs),
             tokio::process::Command::new("python3")
                 .args(&args)
                 .current_dir(&ctx.working_dir)
@@ -142,7 +143,10 @@ impl Tool for CodeAuditTool {
                 ));
             }
             Err(_) => {
-                return ToolResult::error("CodeAudit timed out after 10 seconds.".to_string());
+                return ToolResult::error(format!(
+                    "CodeAudit timed out after {} seconds.",
+                    timeout_secs
+                ));
             }
         };
 

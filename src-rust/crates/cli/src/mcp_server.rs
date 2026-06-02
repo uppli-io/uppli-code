@@ -22,6 +22,10 @@ use tracing::{debug, info, warn};
 /// Capacity of the bounded per-connection write channel. 1024 messages is
 /// generous for any realistic MCP session; if the writer falls this far
 /// behind, notifications are dropped with a warning rather than OOMing.
+///
+/// Hardcoded: bounded-channel backpressure threshold. If a writer is
+/// 1024 messages behind, something is fundamentally wrong; capping
+/// prevents unbounded memory growth and drops are logged.
 const CONN_CHANNEL_CAPACITY: usize = 1024;
 
 // ---------------------------------------------------------------------------
@@ -469,6 +473,8 @@ async fn tool_query(conn: &Conn, args: &Value) -> Result<Value, JsonRpcError> {
         max_total_tokens: None,
         max_budget_usd: None,
         fallback_model: None,
+        compact_summary_max_tokens: cc_core::constants::DEFAULT_COMPACT_SUMMARY_MAX_TOKENS,
+        ..Default::default()
     };
 
     let mut messages = vec![cc_core::types::Message::user(prompt.to_string())];
@@ -626,9 +632,12 @@ fn tool_cancel(state: &Arc<McpServerState>) -> Result<Value, JsonRpcError> {
 // ---------------------------------------------------------------------------
 
 async fn tool_sessions(state: &Arc<McpServerState>) -> Result<Value, JsonRpcError> {
-    let sessions = cc_core::session_storage::list_sessions(&state.working_dir)
-        .await
-        .unwrap_or_default();
+    let sessions = cc_core::session_storage::list_sessions_with_tail(
+        &state.working_dir,
+        state.config.effective_session_tail_scan_bytes(),
+    )
+    .await
+    .unwrap_or_default();
     let list: Vec<Value> = sessions
         .iter()
         .map(|s| json!({ "session_id": s.session_id, "title": s.title }))

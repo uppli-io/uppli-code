@@ -586,6 +586,58 @@ pub mod config {
         pub output_style: Option<String>,
         pub auto_compact: bool,
         pub compact_threshold: f32,
+        /// Red "critical" threshold (fraction of context window used) for the
+        /// auto-compact critical notice. `None` falls back to
+        /// `DEFAULT_COMPACT_CRITICAL_PCT` (0.98).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub compact_critical_pct: Option<f64>,
+        /// How many recent messages to keep verbatim after auto-compact.
+        /// `None` falls back to `DEFAULT_COMPACT_KEEP_RECENT_MESSAGES` (10).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub compact_keep_recent_messages: Option<usize>,
+        /// Per-file byte cap when reactive-compact re-injects recently-modified
+        /// files. `None` falls back to
+        /// `DEFAULT_COMPACT_REINJECT_MAX_FILE_BYTES` (50 KiB).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub compact_reinject_max_file_bytes: Option<u64>,
+        /// Max number of recently-modified files reactive-compact re-injects
+        /// after summarising. `None` falls back to
+        /// `DEFAULT_COMPACT_REINJECT_MAX_FILES` (5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub compact_reinject_max_files: Option<usize>,
+        /// Yellow "warning" threshold (fraction of context window used) for the
+        /// auto-compact warning notice. `None` falls back to
+        /// `DEFAULT_COMPACT_WARNING_PCT` (0.90).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub compact_warning_pct: Option<f64>,
+        /// Fraction of the context window at which reactive-compact fires.
+        /// `None` falls back to `DEFAULT_REACTIVE_COMPACT_THRESHOLD` (0.95).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub reactive_compact_threshold: Option<f64>,
+        /// Emergency context-collapse threshold (fraction of context window).
+        /// `None` falls back to `DEFAULT_CONTEXT_COLLAPSE_THRESHOLD` (0.99).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub context_collapse_threshold: Option<f64>,
+        /// Max retries before surfacing a partial response on `max_tokens`.
+        /// `None` falls back to `DEFAULT_MAX_TOKENS_RECOVERY_LIMIT` (3).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub max_tokens_recovery_retries: Option<u32>,
+        /// Max retries before giving up on transient overload errors.
+        /// `None` falls back to `DEFAULT_MAX_OVERLOAD_RETRIES` (5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub max_overload_retries: Option<u32>,
+        /// Max retries on empty-response API failures before bubbling up.
+        /// `None` falls back to `DEFAULT_MAX_EMPTY_RETRIES` (5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub max_empty_retries: Option<u32>,
+        /// Minimum messages required before session memory extraction runs.
+        /// `None` falls back to `DEFAULT_MIN_MESSAGES_TO_EXTRACT` (20).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub session_memory_min_messages: Option<usize>,
+        /// Minimum tool calls between session memory extractions.
+        /// `None` falls back to `DEFAULT_MIN_TOOL_CALLS_BETWEEN_EXTRACTIONS` (3).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub session_memory_min_tool_calls: Option<usize>,
         pub verbose: bool,
         pub output_format: OutputFormat,
         pub mcp_servers: Vec<McpServerConfig>,
@@ -613,6 +665,444 @@ pub mod config {
         /// Named provider configurations (key = arbitrary name, e.g., "local-ollama").
         #[serde(default)]
         pub providers: HashMap<String, ProviderSettings>,
+
+        // --- Batch 10 configurable parameters (sorted alphabetically) ---
+        /// Fingerprint length (chars) for collapse_read_tool_results dedup.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub collapse_read_fingerprint_chars: Option<usize>,
+        /// Fingerprint length (chars) for collapse_search_results dedup.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub collapse_search_fingerprint_chars: Option<usize>,
+        /// Max output tokens used when summarising for auto-compact.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub compact_summary_max_tokens: Option<u32>,
+        /// Context window assumed by /cost / /ctx-viz commands.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub cost_command_context_window: Option<u64>,
+        /// System prompt token estimate used by /cost / /ctx-viz when no custom prompt is set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub cost_command_system_prompt_tokens: Option<u32>,
+        /// Max bytes of diff output shown by /diff before truncation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub diff_command_max_bytes: Option<usize>,
+
+        // --- Batch 11 configurable parameters (sorted alphabetically) ---
+        /// Chars of prompt preview shown by `CronList` per task. `None` falls
+        /// back to `DEFAULT_CRON_LIST_PROMPT_DISPLAY_CHARS` (60).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub cron_list_prompt_display_chars: Option<usize>,
+        /// Chars of file preview shown by `/memory` when displaying UPPLI.md
+        /// files. `None` falls back to `DEFAULT_FILE_PREVIEW_MAX_CHARS` (2000).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub file_preview_max_chars: Option<usize>,
+        /// HTTP timeout (seconds) for `/upgrade` and `/release-notes` GitHub
+        /// release-check calls. `None` falls back to
+        /// `DEFAULT_GITHUB_RELEASE_CHECK_TIMEOUT_SECS` (8).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub github_release_check_timeout_secs: Option<u64>,
+        /// Maximum results returned by the Glob tool before truncation. `None`
+        /// falls back to `DEFAULT_GLOB_MAX_RESULTS` (250).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub glob_max_results: Option<usize>,
+        /// HTTP timeout (seconds) for `/share` session upload. `None` falls
+        /// back to `DEFAULT_SHARE_UPLOAD_TIMEOUT_SECS` (15).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub share_upload_timeout_secs: Option<u64>,
+        /// HTTP timeout (seconds) for the WebFetch tool. `None` falls back to
+        /// `DEFAULT_WEB_FETCH_TIMEOUT_SECS` (30).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub web_fetch_timeout_secs: Option<u64>,
+
+        // --- Batch 1 configurable parameters (sorted alphabetically) ---
+        /// Default line count when the FileRead caller omits `limit`.
+        /// `None` falls back to `DEFAULT_LINE_LIMIT` (2000).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub default_read_line_limit: Option<usize>,
+        /// Max consecutive auto-compact failures before the circuit breaker
+        /// disables auto-compact for the rest of the session.
+        /// `None` falls back to `MAX_COMPACT_RETRIES` (3).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub max_compact_retries: Option<u32>,
+        /// Hard cap on the raw image bytes the FileRead handler will inline
+        /// as base64. Beyond this → caption-only fallback.
+        /// `None` falls back to `MAX_IMAGE_BYTES` (5 MiB).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub max_image_bytes: Option<u64>,
+        /// Per-line truncation for text reads — defeats single-line megabyte
+        /// minified files. `None` falls back to `MAX_LINE_CHARS` (16 384).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub max_line_chars: Option<usize>,
+        /// Cap on the bytes a text-path FileRead will materialise as String.
+        /// `None` falls back to `MAX_TEXT_BYTES` (10 MiB).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub max_text_bytes: Option<u64>,
+        /// Maximum cumulative size (chars) of tool results kept in
+        /// conversation history before older results are evicted with a
+        /// truncation notice. `None` falls back to
+        /// `DEFAULT_TOOL_RESULT_BUDGET` (500 000).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tool_result_budget: Option<usize>,
+
+        // --- Batch 2 configurable parameters (file_read limits, sorted alphabetically) ---
+        /// Long-edge pixel target when downscaling oversized images for the
+        /// FileRead tool. `None` falls back to `DEFAULT_IMAGE_RESIZE_LONG_EDGE`
+        /// (2048).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub image_resize_long_edge: Option<u32>,
+        /// Cap on archive entries listed in a single FileRead invocation.
+        /// `None` falls back to `DEFAULT_MAX_ARCHIVE_MEMBERS` (1024).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub max_archive_members: Option<usize>,
+        /// Cap on rows emitted from the OOXML / XLSX text fallback.
+        /// `None` falls back to `DEFAULT_MAX_OOXML_ROWS` (500).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub max_ooxml_rows: Option<usize>,
+        /// Cap on PDF bytes inlined as a Document block for vision providers.
+        /// `None` falls back to `DEFAULT_MAX_PDF_BYTES` (5 MiB).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub max_pdf_bytes: Option<u64>,
+        /// Cap on the number of PDF pages the FileRead handler emits text for.
+        /// `None` falls back to `DEFAULT_MAX_PDF_PAGES` (50).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub max_pdf_pages: Option<usize>,
+        /// Wall-clock budget (seconds) for pdf-extract text extraction.
+        /// `None` falls back to `DEFAULT_PDF_EXTRACT_TIMEOUT_SECS` (30).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub pdf_extract_timeout_secs: Option<u64>,
+
+        // --- Batch 4 configurable parameters (sorted alphabetically) ---
+        /// Max bytes the UPPLI.md loader reads before skipping a file with a
+        /// warning. `None` falls back to `DEFAULT_CLAUDEMD_MAX_BYTES` (40 KiB).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub claudemd_max_bytes: Option<u64>,
+        /// Maximum number of memory files retained by `scan_memory_dir` after
+        /// newest-first sorting. `None` falls back to
+        /// `DEFAULT_MAX_MEMORY_FILES` (200).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub max_memory_files: Option<usize>,
+        /// Maximum number of lines scanned at the top of a memory file when
+        /// extracting YAML frontmatter. `None` falls back to
+        /// `DEFAULT_MEMORY_FRONTMATTER_MAX_LINES` (30).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub memory_frontmatter_max_lines: Option<usize>,
+        /// Maximum height (px) of a captured screenshot before downscaling.
+        /// `None` falls back to `DEFAULT_SCREENSHOT_MAX_HEIGHT` (768).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub screenshot_max_height: Option<u32>,
+        /// Maximum width (px) of a captured screenshot before downscaling.
+        /// `None` falls back to `DEFAULT_SCREENSHOT_MAX_WIDTH` (1366).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub screenshot_max_width: Option<u32>,
+        /// Bytes scanned from the tail of a session transcript when the
+        /// session browser extracts `last-prompt` / `custom-title` metadata.
+        /// `None` falls back to `DEFAULT_SESSION_TAIL_SCAN_BYTES` (64 KiB).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub session_tail_scan_bytes: Option<u64>,
+
+        // --- Batch 3 configurable parameters (sorted alphabetically) ---
+        /// Hard cap (chars) on the foreground Bash tool's combined
+        /// stdout+stderr output before head+tail truncation. `None` falls
+        /// back to `DEFAULT_BASH_OUTPUT_MAX_CHARS` (500 000). Shared by the
+        /// Unix and Windows code paths so they cannot drift apart.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bash_output_max_chars: Option<usize>,
+        /// Defensive cap on the number of `ContentBlock`s a single FileRead
+        /// tool result can carry (images / documents). `None` falls back to
+        /// `DEFAULT_MAX_BLOCKS_PER_RESULT` (20).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub max_blocks_per_result: Option<usize>,
+        /// Cap on the bytes of inline text extracted from a single OOXML
+        /// document (.docx / .xlsx / .pptx). `None` falls back to
+        /// `DEFAULT_MAX_OOXML_TEXT_BYTES` (1.5 MiB).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub max_ooxml_text_bytes: Option<usize>,
+        /// Cap on the number of slides extracted from a PPTX file. `None`
+        /// falls back to `DEFAULT_MAX_PPTX_SLIDES` (20).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub max_pptx_slides: Option<usize>,
+        /// Cap on the chars of the WebFetch tool's HTML-to-text body before
+        /// tail truncation. `None` falls back to
+        /// `DEFAULT_WEB_FETCH_MAX_CHARS` (100 000).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub web_fetch_max_chars: Option<usize>,
+
+        // --- Batch 5 configurable parameters (sorted alphabetically) ---
+        /// Fraction of context window at which proactive auto-compact fires.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub autocompact_trigger_fraction: Option<f64>,
+        /// Buffer (tokens) below context window for "about to compact" warning.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub compact_warning_buffer_tokens: Option<u64>,
+        /// Max bytes loaded from `MEMORY.md` before truncation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub memory_entrypoint_max_bytes: Option<usize>,
+        /// Max lines loaded from `MEMORY.md` before truncation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub memory_entrypoint_max_lines: Option<usize>,
+        /// Inline-vs-disk threshold (bytes) for pasted content in prompt history.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub pasted_content_inline_threshold: Option<usize>,
+        /// Max prompt-history entries returned by up-arrow recall.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub prompt_history_max_items: Option<usize>,
+
+        // --- Batch 9 configurable parameters (sorted alphabetically) ---
+        /// Max overload-retry backoff (seconds) in query loop.
+        /// `None` falls back to `OVERLOAD_RETRY_MAX_BACKOFF_SECS` (30).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub overload_retry_max_backoff_secs: Option<u64>,
+        /// Initial retry backoff (ms) for OpenAI-format providers.
+        /// `None` falls back to `PROVIDER_INITIAL_BACKOFF_MS` (2000).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub provider_initial_backoff_ms: Option<u64>,
+        /// Max retry backoff ceiling (seconds) for OpenAI-format providers.
+        /// `None` falls back to `PROVIDER_MAX_BACKOFF_SECS` (30).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub provider_max_backoff_secs: Option<u64>,
+        /// Capacity of the streaming MPSC channel between provider and consumer.
+        /// `None` falls back to `PROVIDER_STREAM_CHANNEL_CAPACITY` (256).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub provider_stream_channel_capacity: Option<usize>,
+        /// TTFT threshold (seconds) above which the TUI warns the API is slow.
+        /// `None` falls back to `SLOW_TTFT_WARNING_SECS` (30).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub slow_ttft_warning_secs: Option<u64>,
+        /// Context-window floor (tokens) for unknown models lacking metadata.
+        /// `None` falls back to `UNKNOWN_MODEL_CONTEXT_WINDOW_FLOOR` (8192).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub unknown_model_context_window_floor: Option<u64>,
+
+        // --- Batch 8 configurable parameters (sorted alphabetically) ---
+        /// Legacy Anthropic-client retry count. `None` falls back to
+        /// `DEFAULT_ANTHROPIC_LEGACY_MAX_RETRIES` (8).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub anthropic_legacy_max_retries: Option<u32>,
+        /// Legacy Anthropic-client HTTP request timeout (seconds). `None`
+        /// falls back to `DEFAULT_ANTHROPIC_REQUEST_TIMEOUT_SECS` (600).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub anthropic_request_timeout_secs: Option<u64>,
+        /// Throttle (seconds) for the auto-dream session-scan pipeline.
+        /// `None` falls back to `DEFAULT_AUTO_DREAM_SCAN_INTERVAL_SECS` (600).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub auto_dream_scan_interval_secs: Option<u64>,
+        /// Number of trailing messages the away-summary recap considers.
+        /// `None` falls back to `DEFAULT_AWAY_SUMMARY_RECENT_MESSAGES` (30).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub away_summary_recent_messages: Option<usize>,
+        /// Maximum HTTP retries the provider layer attempts before bubbling
+        /// up. `None` falls back to `DEFAULT_PROVIDER_MAX_RETRIES` (5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub provider_max_retries: Option<u32>,
+        /// Per-request HTTP timeout (seconds) the provider layer applies to
+        /// outbound calls. `None` falls back to
+        /// `DEFAULT_PROVIDER_REQUEST_TIMEOUT_SEC` (600).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub provider_request_timeout_sec: Option<u64>,
+
+        // --- Batch 12 configurable parameters (sorted alphabetically) ---
+        /// Hard cap (ms) on the timeout the Bash tool will honour from a
+        /// caller-supplied `timeout`. `None` falls back to
+        /// `DEFAULT_BASH_TIMEOUT_MAX_MS` (600 000).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bash_timeout_max_ms: Option<u64>,
+        /// Wall-clock budget (seconds) for the CodeAudit Python subprocess.
+        /// `None` falls back to `DEFAULT_CODE_AUDIT_TIMEOUT_SECS` (10).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub code_audit_timeout_secs: Option<u64>,
+        /// Wall-clock budget (seconds) for the post-edit syntax-check
+        /// subprocess. `None` falls back to
+        /// `DEFAULT_LINT_SPAWN_TIMEOUT_SECS` (5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub lint_spawn_timeout_secs: Option<u64>,
+        /// Per-line read timeout (seconds) used by the REPL tool while
+        /// waiting for interpreter output. `None` falls back to
+        /// `DEFAULT_REPL_LINE_READ_TIMEOUT_SECS` (30).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub repl_line_read_timeout_secs: Option<u64>,
+        /// Hard cap (ms) on the user-requested sleep duration honoured by
+        /// the Sleep tool. `None` falls back to `DEFAULT_SLEEP_MAX_MS`
+        /// (300 000).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub sleep_max_ms: Option<u64>,
+        /// Max HTTP redirects WebFetch will follow before giving up.
+        /// `None` falls back to `DEFAULT_WEB_FETCH_MAX_REDIRECTS` (10).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub web_fetch_max_redirects: Option<usize>,
+
+        // --- Batch 13 configurable parameters (sorted alphabetically) ---
+        /// Wall-clock budget (seconds) for a single LSP JSON-RPC request
+        /// before the client gives up. `None` falls back to
+        /// `DEFAULT_LSP_REQUEST_TIMEOUT_SECS` (30).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub lsp_request_timeout_secs: Option<u64>,
+        /// Wall-clock budget (seconds) for the OAuth browser-callback HTTP
+        /// listener to accept the redirect. `None` falls back to
+        /// `DEFAULT_OAUTH_CALLBACK_TIMEOUT_SECS` (120).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub oauth_callback_timeout_secs: Option<u64>,
+        /// Wall-clock budget (seconds) for the whole OAuth login flow
+        /// (callback OR manual paste). `None` falls back to
+        /// `DEFAULT_OAUTH_FULL_FLOW_TIMEOUT_SECS` (120).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub oauth_full_flow_timeout_secs: Option<u64>,
+        /// HTTP timeout (seconds) for the OAuth token-exchange POST call.
+        /// `None` falls back to `DEFAULT_OAUTH_TOKEN_EXCHANGE_TIMEOUT_SECS`
+        /// (30).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub oauth_token_exchange_timeout_secs: Option<u64>,
+        /// Wall-clock budget (seconds) for the parent to wait for the IPC
+        /// peer-child to bind its Unix socket. `None` falls back to
+        /// `DEFAULT_PEER_SOCKET_APPEAR_TIMEOUT_SECS` (5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub peer_socket_appear_timeout_secs: Option<u64>,
+        /// Hard cap (ms) on the timeout the PowerShell tool will honour
+        /// from a caller-supplied `timeout`. `None` falls back to
+        /// `DEFAULT_POWERSHELL_TIMEOUT_MAX_MS` (600 000).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub powershell_timeout_max_ms: Option<u64>,
+
+        // --- Batch 14 configurable parameters (sorted alphabetically) ---
+        /// Max retries the bridge poll loop tolerates on HTTP 429 rate-limits
+        /// before bubbling up an error. `None` falls back to
+        /// `DEFAULT_BRIDGE_POLL_MAX_RETRIES` (3). Higher values give slow
+        /// remote sessions more headroom before disconnecting.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bridge_poll_max_retries: Option<u32>,
+        /// Wall-clock budget (seconds) for the LSP client to wait for a
+        /// graceful `exit` after `shutdown` before SIGKILL-ing the server.
+        /// `None` falls back to `DEFAULT_LSP_SHUTDOWN_TIMEOUT_SECS` (5).
+        /// Slow setups (large indexes) need more time to flush state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub lsp_shutdown_timeout_secs: Option<u64>,
+        /// Max directory entries scanned per subdirectory by the LSP
+        /// workspace auto-detect probe (`project_has_matching_files`).
+        /// `None` falls back to `DEFAULT_LSP_WORKSPACE_PROBE_MAX_ENTRIES`
+        /// (50). Raise on monorepos where the dominant language lives past
+        /// the first 50 files.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub lsp_workspace_probe_max_entries: Option<usize>,
+        /// HTTP timeout (seconds) for the OAuth profile-fetch call to
+        /// `/api/auth/oauth/profile`. `None` falls back to
+        /// `DEFAULT_OAUTH_PROFILE_FETCH_TIMEOUT_SECS` (10).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub oauth_profile_fetch_timeout_secs: Option<u64>,
+        /// HTTP timeout (seconds) for the silent OAuth access-token refresh
+        /// performed by `Config::resolve_auth_async`. `None` falls back to
+        /// `DEFAULT_OAUTH_REFRESH_TIMEOUT_SECS` (30). Slow corporate
+        /// proxies need a longer ceiling.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub oauth_refresh_timeout_secs: Option<u64>,
+        /// Interval (seconds) between background pushes of the local
+        /// transcript to the remote-session cloud API. `None` falls back to
+        /// `DEFAULT_REMOTE_TRANSCRIPT_SYNC_INTERVAL_SECS` (30). Smaller
+        /// values reduce data loss on crash but cost more API calls.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub remote_transcript_sync_interval_secs: Option<u64>,
+
+        // --- Batch 15 configurable parameters (bridge runtime tunables, sorted alphabetically) ---
+        /// HTTP request timeout (seconds) shared by every bridge HTTP client
+        /// (register, poll, upload, deregister, response post). `None` falls
+        /// back to `DEFAULT_BRIDGE_HTTP_TIMEOUT_SECS` (30).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bridge_http_timeout_secs: Option<u64>,
+        /// Long-poll fetch timeout (seconds) for the bridge poll endpoints.
+        /// `None` falls back to `DEFAULT_BRIDGE_LONGPOLL_TIMEOUT_SECS` (35).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bridge_longpoll_timeout_secs: Option<u64>,
+        /// Floor (ms) on the bridge `run_poll_loop` base polling interval.
+        /// `None` falls back to `DEFAULT_BRIDGE_POLL_INTERVAL_MIN_MS` (500).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bridge_poll_interval_min_ms: Option<u64>,
+        /// Floor (ms) on the high-level `run_bridge_loop` poll cadence.
+        /// `None` falls back to `DEFAULT_BRIDGE_POLL_LOOP_MIN_MS` (50).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bridge_poll_loop_min_ms: Option<u64>,
+        /// Max backoff ceiling (seconds) for the bridge `run_poll_loop`
+        /// failed-poll retry. `None` falls back to
+        /// `DEFAULT_BRIDGE_POLL_MAX_BACKOFF_SECS` (60).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bridge_poll_max_backoff_secs: Option<u64>,
+        /// Max backoff ceiling (seconds) for the bridge `run_bridge_loop`
+        /// registration retry. `None` falls back to
+        /// `DEFAULT_BRIDGE_REGISTRATION_MAX_BACKOFF_SECS` (30).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bridge_registration_max_backoff_secs: Option<u64>,
+
+        // --- Batch 16 configurable parameters (sorted alphabetically) ---
+        /// HTTP timeout (seconds) for the MCP OAuth authorization-server
+        /// metadata discovery request. `None` falls back to
+        /// `DEFAULT_MCP_OAUTH_METADATA_TIMEOUT_SECS` (10).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub mcp_oauth_metadata_timeout_secs: Option<u64>,
+        /// Seconds of expiry padding before an MCP OAuth token is considered
+        /// expired and a refresh is triggered. `None` falls back to
+        /// `DEFAULT_MCP_TOKEN_EXPIRY_PAD_SECS` (60).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub mcp_token_expiry_pad_secs: Option<u64>,
+        /// Minimum cosine-similarity score retained by RAG search results.
+        /// Results scoring at or below this are dropped silently. `None`
+        /// falls back to `DEFAULT_RAG_SIMILARITY_FLOOR` (0.3).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub rag_similarity_floor: Option<f32>,
+        /// Max lines the TUI renders for a single message before collapsing
+        /// the rest behind a "N more lines" notice. `None` falls back to
+        /// `DEFAULT_TUI_MAX_LINES_PER_MSG` (200).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tui_max_lines_per_msg: Option<usize>,
+        /// Max lines of tool-result output the TUI shows inline before
+        /// collapsing the tail with a "ctrl+o to expand" notice. `None`
+        /// falls back to `DEFAULT_TUI_TOOL_RESULT_MAX_LINES` (30).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tui_tool_result_max_lines: Option<usize>,
+        /// Char threshold above which the TUI head+tail-renders a user
+        /// prompt with the middle hidden. `None` falls back to
+        /// `DEFAULT_TUI_USER_PROMPT_DISPLAY_MAX_CHARS` (10 000).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tui_user_prompt_display_max_chars: Option<usize>,
+
+        // --- Batch 17 configurable parameters (sorted alphabetically) ---
+        /// Retry sleep (ms) used by the FileEdit tool to wait for LSP
+        /// diagnostics after notifying the language server of a saved
+        /// edit. Slow filesystems (network mounts) may need a higher
+        /// value. `None` falls back to `DEFAULT_FILE_EDIT_RETRY_SLEEP_MS`
+        /// (200).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub file_edit_retry_sleep_ms: Option<u64>,
+        /// Retry sleep (ms) used by session-storage write paths between
+        /// successive append attempts on slow disks. `None` falls back
+        /// to `DEFAULT_SESSION_WRITE_RETRY_SLEEP_MS` (5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub session_write_retry_sleep_ms: Option<u64>,
+        /// Poll interval (ms) for the optional `CLAUDE_STATUS_COMMAND`
+        /// external status program. `None` falls back to
+        /// `DEFAULT_STATUS_POLL_INTERVAL_MS` (500).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub status_poll_interval_ms: Option<u64>,
+        /// Max number of (text, cursor) snapshots retained on the TUI
+        /// prompt-input undo stack. Older entries are dropped past this
+        /// cap. `None` falls back to `DEFAULT_TUI_UNDO_HISTORY_MAX`
+        /// (100).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tui_undo_history_max: Option<usize>,
+        /// Head-window length (chars) retained when the TUI head+tail
+        /// truncates an oversized user prompt. Pairs with the
+        /// tail-window setting. `None` falls back to
+        /// `DEFAULT_TUI_USER_PROMPT_HEAD_CHARS` (2 500).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tui_user_prompt_head_chars: Option<usize>,
+        /// Tail-window length (chars) retained when the TUI head+tail
+        /// truncates an oversized user prompt. Pairs with the
+        /// head-window setting. `None` falls back to
+        /// `DEFAULT_TUI_USER_PROMPT_TAIL_CHARS` (2 500).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tui_user_prompt_tail_chars: Option<usize>,
+
+        // --- Batch 18 configurable parameters (sorted alphabetically) ---
+        /// Wait (ms) the Patch tool sleeps after applying a diff before
+        /// re-querying LSP diagnostics for the touched files. `None` falls
+        /// back to `DEFAULT_PATCH_RETRY_SLEEP_MS` (200).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub patch_retry_sleep_ms: Option<u64>,
     }
 
     // ---- Provider configuration ---------------------------------------------
@@ -808,6 +1298,684 @@ pub mod config {
             }
         }
 
+        /// Resolve the effective yellow-warning fraction for the token warning
+        /// banner shown ahead of auto-compact.
+        pub fn effective_compact_warning_pct(&self) -> f64 {
+            self.compact_warning_pct
+                .unwrap_or(crate::constants::DEFAULT_COMPACT_WARNING_PCT)
+        }
+
+        /// Resolve the effective red-critical fraction for the token warning
+        /// banner shown ahead of auto-compact.
+        pub fn effective_compact_critical_pct(&self) -> f64 {
+            self.compact_critical_pct
+                .unwrap_or(crate::constants::DEFAULT_COMPACT_CRITICAL_PCT)
+        }
+
+        /// Resolve the effective count of recent messages preserved verbatim
+        /// after auto-compact.
+        pub fn effective_compact_keep_recent_messages(&self) -> usize {
+            self.compact_keep_recent_messages
+                .unwrap_or(crate::constants::DEFAULT_COMPACT_KEEP_RECENT_MESSAGES)
+        }
+
+        /// Resolve the effective cap on the number of recently-modified files
+        /// reactive-compact re-injects after summarising.
+        pub fn effective_compact_reinject_max_files(&self) -> usize {
+            self.compact_reinject_max_files
+                .unwrap_or(crate::constants::DEFAULT_COMPACT_REINJECT_MAX_FILES)
+        }
+
+        /// Resolve the effective per-file byte cap for reactive-compact
+        /// file re-injection.
+        pub fn effective_compact_reinject_max_file_bytes(&self) -> u64 {
+            self.compact_reinject_max_file_bytes
+                .unwrap_or(crate::constants::DEFAULT_COMPACT_REINJECT_MAX_FILE_BYTES)
+        }
+
+        /// Resolve the effective reactive-compact firing threshold
+        /// (fraction of context window).
+        pub fn effective_reactive_compact_threshold(&self) -> f64 {
+            self.reactive_compact_threshold
+                .unwrap_or(crate::constants::DEFAULT_REACTIVE_COMPACT_THRESHOLD)
+        }
+
+        // --- Batch 7 effective_* helpers ---
+
+        /// Resolve the effective emergency context-collapse threshold (0.0 - 1.0).
+        pub fn effective_context_collapse_threshold(&self) -> f64 {
+            self.context_collapse_threshold
+                .unwrap_or(crate::constants::DEFAULT_CONTEXT_COLLAPSE_THRESHOLD)
+        }
+
+        /// Resolve the effective max-tokens recovery retry budget.
+        pub fn effective_max_tokens_recovery_retries(&self) -> u32 {
+            self.max_tokens_recovery_retries
+                .unwrap_or(crate::constants::DEFAULT_MAX_TOKENS_RECOVERY_LIMIT)
+        }
+
+        /// Resolve the effective overload-retry budget.
+        pub fn effective_max_overload_retries(&self) -> u32 {
+            self.max_overload_retries
+                .unwrap_or(crate::constants::DEFAULT_MAX_OVERLOAD_RETRIES)
+        }
+
+        /// Resolve the effective empty-response retry budget.
+        pub fn effective_max_empty_retries(&self) -> u32 {
+            self.max_empty_retries
+                .unwrap_or(crate::constants::DEFAULT_MAX_EMPTY_RETRIES)
+        }
+
+        /// Resolve the minimum messages threshold for session memory extraction.
+        pub fn effective_session_memory_min_messages(&self) -> usize {
+            self.session_memory_min_messages
+                .unwrap_or(crate::constants::DEFAULT_MIN_MESSAGES_TO_EXTRACT)
+        }
+
+        /// Resolve the minimum tool-call cadence for session memory extraction.
+        pub fn effective_session_memory_min_tool_calls(&self) -> usize {
+            self.session_memory_min_tool_calls
+                .unwrap_or(crate::constants::DEFAULT_MIN_TOOL_CALLS_BETWEEN_EXTRACTIONS)
+        }
+
+        // --- Batch 5 effective_* helpers (sorted alphabetically) ---
+
+        /// Resolve the effective auto-compact trigger fraction (0.0 - 1.0).
+        pub fn effective_autocompact_trigger_fraction(&self) -> f64 {
+            self.autocompact_trigger_fraction
+                .unwrap_or(crate::constants::DEFAULT_AUTOCOMPACT_TRIGGER_FRACTION)
+        }
+
+        /// Resolve the effective warning-buffer tokens (compact warning state).
+        pub fn effective_compact_warning_buffer_tokens(&self) -> u64 {
+            self.compact_warning_buffer_tokens
+                .unwrap_or(crate::constants::DEFAULT_COMPACT_WARNING_BUFFER_TOKENS)
+        }
+
+        /// Resolve the effective `MEMORY.md` byte cap.
+        pub fn effective_memory_entrypoint_max_bytes(&self) -> usize {
+            self.memory_entrypoint_max_bytes
+                .unwrap_or(crate::constants::DEFAULT_MEMORY_ENTRYPOINT_MAX_BYTES)
+        }
+
+        /// Resolve the effective `MEMORY.md` line cap.
+        pub fn effective_memory_entrypoint_max_lines(&self) -> usize {
+            self.memory_entrypoint_max_lines
+                .unwrap_or(crate::constants::DEFAULT_MEMORY_ENTRYPOINT_MAX_LINES)
+        }
+
+        /// Resolve the effective inline-vs-disk threshold for pasted content.
+        pub fn effective_pasted_content_inline_threshold(&self) -> usize {
+            self.pasted_content_inline_threshold
+                .unwrap_or(crate::constants::DEFAULT_PASTED_CONTENT_INLINE_THRESHOLD)
+        }
+
+        /// Resolve the effective cap on prompt-history entries returned.
+        pub fn effective_prompt_history_max_items(&self) -> usize {
+            self.prompt_history_max_items
+                .unwrap_or(crate::constants::DEFAULT_PROMPT_HISTORY_MAX_ITEMS)
+        }
+
+        // --- Batch 10 effective_* helpers (sorted alphabetically) ---
+
+        /// Resolve the fingerprint length used by collapse_read dedup.
+        pub fn effective_collapse_read_fingerprint_chars(&self) -> usize {
+            self.collapse_read_fingerprint_chars
+                .unwrap_or(crate::constants::DEFAULT_COLLAPSE_READ_FINGERPRINT_CHARS)
+        }
+
+        /// Resolve the fingerprint length used by collapse_search dedup.
+        pub fn effective_collapse_search_fingerprint_chars(&self) -> usize {
+            self.collapse_search_fingerprint_chars
+                .unwrap_or(crate::constants::DEFAULT_COLLAPSE_SEARCH_FINGERPRINT_CHARS)
+        }
+
+        /// Resolve the max output tokens used when summarising for compaction.
+        pub fn effective_compact_summary_max_tokens(&self) -> u32 {
+            self.compact_summary_max_tokens
+                .unwrap_or(crate::constants::DEFAULT_COMPACT_SUMMARY_MAX_TOKENS)
+        }
+
+        /// Resolve the context window used by /cost / /ctx-viz.
+        pub fn effective_cost_command_context_window(&self) -> u64 {
+            self.cost_command_context_window
+                .unwrap_or(crate::constants::DEFAULT_COST_COMMAND_CONTEXT_WINDOW)
+        }
+
+        /// Resolve the system prompt token estimate used by /cost / /ctx-viz.
+        pub fn effective_cost_command_system_prompt_tokens(&self) -> u32 {
+            self.cost_command_system_prompt_tokens
+                .unwrap_or(crate::constants::DEFAULT_COST_COMMAND_SYSTEM_PROMPT_TOKENS)
+        }
+
+        /// Resolve the max diff bytes shown by /diff before truncation.
+        pub fn effective_diff_command_max_bytes(&self) -> usize {
+            self.diff_command_max_bytes
+                .unwrap_or(crate::constants::DEFAULT_DIFF_COMMAND_MAX_BYTES)
+        }
+
+        // --- Batch 11 effective_* helpers (sorted alphabetically) ---
+
+        /// Resolve the chars of prompt preview shown by `CronList` per task.
+        pub fn effective_cron_list_prompt_display_chars(&self) -> usize {
+            self.cron_list_prompt_display_chars
+                .unwrap_or(crate::constants::DEFAULT_CRON_LIST_PROMPT_DISPLAY_CHARS)
+        }
+
+        /// Resolve the chars of file preview shown by `/memory`.
+        pub fn effective_file_preview_max_chars(&self) -> usize {
+            self.file_preview_max_chars
+                .unwrap_or(crate::constants::DEFAULT_FILE_PREVIEW_MAX_CHARS)
+        }
+
+        /// Resolve the HTTP timeout (seconds) for GitHub release-check calls.
+        pub fn effective_github_release_check_timeout_secs(&self) -> u64 {
+            self.github_release_check_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_GITHUB_RELEASE_CHECK_TIMEOUT_SECS)
+        }
+
+        /// Resolve the maximum results returned by the Glob tool.
+        pub fn effective_glob_max_results(&self) -> usize {
+            self.glob_max_results
+                .unwrap_or(crate::constants::DEFAULT_GLOB_MAX_RESULTS)
+        }
+
+        /// Resolve the HTTP timeout (seconds) for `/share` session upload.
+        pub fn effective_share_upload_timeout_secs(&self) -> u64 {
+            self.share_upload_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_SHARE_UPLOAD_TIMEOUT_SECS)
+        }
+
+        /// Resolve the HTTP timeout (seconds) for the WebFetch tool.
+        pub fn effective_web_fetch_timeout_secs(&self) -> u64 {
+            self.web_fetch_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_WEB_FETCH_TIMEOUT_SECS)
+        }
+
+        // --- Batch 1 effective_* helpers (sorted alphabetically) ---
+
+        /// Resolve the default `limit` for FileRead when the caller omits it.
+        pub fn effective_default_read_line_limit(&self) -> usize {
+            self.default_read_line_limit
+                .unwrap_or(crate::constants::DEFAULT_LINE_LIMIT)
+        }
+
+        /// Resolve the max consecutive auto-compact failures before the
+        /// circuit breaker opens.
+        pub fn effective_max_compact_retries(&self) -> u32 {
+            self.max_compact_retries
+                .unwrap_or(crate::constants::MAX_COMPACT_RETRIES)
+        }
+
+        /// Resolve the hard cap on inline image bytes for FileRead.
+        pub fn effective_max_image_bytes(&self) -> u64 {
+            self.max_image_bytes
+                .unwrap_or(crate::constants::MAX_IMAGE_BYTES)
+        }
+
+        /// Resolve the per-line truncation cap for FileRead text mode.
+        pub fn effective_max_line_chars(&self) -> usize {
+            self.max_line_chars
+                .unwrap_or(crate::constants::MAX_LINE_CHARS)
+        }
+
+        /// Resolve the byte cap for FileRead text materialisation.
+        pub fn effective_max_text_bytes(&self) -> u64 {
+            self.max_text_bytes
+                .unwrap_or(crate::constants::MAX_TEXT_BYTES)
+        }
+
+        /// Resolve the cumulative tool-result chars budget kept in history.
+        pub fn effective_tool_result_budget(&self) -> usize {
+            self.tool_result_budget
+                .unwrap_or(crate::constants::DEFAULT_TOOL_RESULT_BUDGET)
+        }
+
+        // --- Batch 2 effective_* helpers (file_read limits, sorted alphabetically) ---
+
+        /// Resolve the long-edge pixel target for FileRead image downscale.
+        pub fn effective_image_resize_long_edge(&self) -> u32 {
+            self.image_resize_long_edge
+                .unwrap_or(crate::constants::DEFAULT_IMAGE_RESIZE_LONG_EDGE)
+        }
+
+        /// Resolve the cap on archive entries listed in a single FileRead.
+        pub fn effective_max_archive_members(&self) -> usize {
+            self.max_archive_members
+                .unwrap_or(crate::constants::DEFAULT_MAX_ARCHIVE_MEMBERS)
+        }
+
+        /// Resolve the cap on rows emitted from the OOXML / XLSX fallback.
+        pub fn effective_max_ooxml_rows(&self) -> usize {
+            self.max_ooxml_rows
+                .unwrap_or(crate::constants::DEFAULT_MAX_OOXML_ROWS)
+        }
+
+        /// Resolve the cap on PDF bytes inlined as a Document block.
+        pub fn effective_max_pdf_bytes(&self) -> u64 {
+            self.max_pdf_bytes
+                .unwrap_or(crate::constants::DEFAULT_MAX_PDF_BYTES)
+        }
+
+        /// Resolve the cap on the number of PDF pages emitted as text.
+        pub fn effective_max_pdf_pages(&self) -> usize {
+            self.max_pdf_pages
+                .unwrap_or(crate::constants::DEFAULT_MAX_PDF_PAGES)
+        }
+
+        /// Resolve the wall-clock budget (seconds) for pdf-extract.
+        pub fn effective_pdf_extract_timeout_secs(&self) -> u64 {
+            self.pdf_extract_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_PDF_EXTRACT_TIMEOUT_SECS)
+        }
+
+        // --- Batch 4 effective_* helpers (sorted alphabetically) ---
+
+        /// Resolve the max bytes the UPPLI.md loader reads before skipping
+        /// a file with a warning.
+        pub fn effective_claudemd_max_bytes(&self) -> u64 {
+            self.claudemd_max_bytes
+                .unwrap_or(crate::constants::DEFAULT_CLAUDEMD_MAX_BYTES)
+        }
+
+        /// Resolve the maximum number of memory files retained by
+        /// `scan_memory_dir` after newest-first sorting.
+        pub fn effective_max_memory_files(&self) -> usize {
+            self.max_memory_files
+                .unwrap_or(crate::constants::DEFAULT_MAX_MEMORY_FILES)
+        }
+
+        /// Resolve the maximum number of lines scanned at the top of a
+        /// memory file when extracting YAML frontmatter.
+        pub fn effective_memory_frontmatter_max_lines(&self) -> usize {
+            self.memory_frontmatter_max_lines
+                .unwrap_or(crate::constants::DEFAULT_MEMORY_FRONTMATTER_MAX_LINES)
+        }
+
+        /// Resolve the maximum height (px) of a captured screenshot before
+        /// downscaling.
+        pub fn effective_screenshot_max_height(&self) -> u32 {
+            self.screenshot_max_height
+                .unwrap_or(crate::constants::DEFAULT_SCREENSHOT_MAX_HEIGHT)
+        }
+
+        /// Resolve the maximum width (px) of a captured screenshot before
+        /// downscaling.
+        pub fn effective_screenshot_max_width(&self) -> u32 {
+            self.screenshot_max_width
+                .unwrap_or(crate::constants::DEFAULT_SCREENSHOT_MAX_WIDTH)
+        }
+
+        /// Resolve the bytes scanned from the tail of a session transcript
+        /// when the session browser extracts metadata.
+        pub fn effective_session_tail_scan_bytes(&self) -> u64 {
+            self.session_tail_scan_bytes
+                .unwrap_or(crate::constants::DEFAULT_SESSION_TAIL_SCAN_BYTES)
+        }
+
+        // --- Batch 3 effective_* helpers (sorted alphabetically) ---
+
+        /// Resolve the cap (chars) on the foreground Bash tool's combined
+        /// stdout+stderr output before head+tail truncation.
+        pub fn effective_bash_output_max_chars(&self) -> usize {
+            self.bash_output_max_chars
+                .unwrap_or(crate::constants::DEFAULT_BASH_OUTPUT_MAX_CHARS)
+        }
+
+        /// Resolve the defensive cap on `ContentBlock`s carried by a single
+        /// FileRead tool result.
+        pub fn effective_max_blocks_per_result(&self) -> usize {
+            self.max_blocks_per_result
+                .unwrap_or(crate::constants::DEFAULT_MAX_BLOCKS_PER_RESULT)
+        }
+
+        /// Resolve the cap on bytes of inline text extracted from a single
+        /// OOXML document.
+        pub fn effective_max_ooxml_text_bytes(&self) -> usize {
+            self.max_ooxml_text_bytes
+                .unwrap_or(crate::constants::DEFAULT_MAX_OOXML_TEXT_BYTES)
+        }
+
+        /// Resolve the cap on the number of PPTX slides extracted.
+        pub fn effective_max_pptx_slides(&self) -> usize {
+            self.max_pptx_slides
+                .unwrap_or(crate::constants::DEFAULT_MAX_PPTX_SLIDES)
+        }
+
+        /// Resolve the cap on chars of the WebFetch tool's HTML-to-text body.
+        pub fn effective_web_fetch_max_chars(&self) -> usize {
+            self.web_fetch_max_chars
+                .unwrap_or(crate::constants::DEFAULT_WEB_FETCH_MAX_CHARS)
+        }
+
+        // --- Batch 9 effective_* helpers (sorted alphabetically) ---
+
+        /// Resolve the max overload-retry backoff ceiling in seconds.
+        pub fn effective_overload_retry_max_backoff_secs(&self) -> u64 {
+            self.overload_retry_max_backoff_secs
+                .unwrap_or(crate::constants::OVERLOAD_RETRY_MAX_BACKOFF_SECS)
+        }
+
+        /// Resolve the initial retry backoff (ms) for OpenAI-format providers.
+        pub fn effective_provider_initial_backoff_ms(&self) -> u64 {
+            self.provider_initial_backoff_ms
+                .unwrap_or(crate::constants::PROVIDER_INITIAL_BACKOFF_MS)
+        }
+
+        /// Resolve the retry backoff ceiling (seconds) for OpenAI-format providers.
+        pub fn effective_provider_max_backoff_secs(&self) -> u64 {
+            self.provider_max_backoff_secs
+                .unwrap_or(crate::constants::PROVIDER_MAX_BACKOFF_SECS)
+        }
+
+        /// Resolve the streaming MPSC channel capacity for OpenAI-format providers.
+        pub fn effective_provider_stream_channel_capacity(&self) -> usize {
+            self.provider_stream_channel_capacity
+                .unwrap_or(crate::constants::PROVIDER_STREAM_CHANNEL_CAPACITY)
+        }
+
+        /// Resolve the slow-TTFT warning threshold (seconds).
+        pub fn effective_slow_ttft_warning_secs(&self) -> u64 {
+            self.slow_ttft_warning_secs
+                .unwrap_or(crate::constants::SLOW_TTFT_WARNING_SECS)
+        }
+
+        /// Resolve the context-window floor (tokens) for unknown models.
+        pub fn effective_unknown_model_context_window_floor(&self) -> u64 {
+            self.unknown_model_context_window_floor
+                .unwrap_or(crate::constants::UNKNOWN_MODEL_CONTEXT_WINDOW_FLOOR)
+        }
+
+        // --- Batch 8 effective_* helpers (sorted alphabetically) ---
+
+        /// Resolve the legacy Anthropic-client retry count.
+        pub fn effective_anthropic_legacy_max_retries(&self) -> u32 {
+            self.anthropic_legacy_max_retries
+                .unwrap_or(crate::constants::DEFAULT_ANTHROPIC_LEGACY_MAX_RETRIES)
+        }
+
+        /// Resolve the legacy Anthropic-client HTTP request timeout (seconds).
+        pub fn effective_anthropic_request_timeout_secs(&self) -> u64 {
+            self.anthropic_request_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_ANTHROPIC_REQUEST_TIMEOUT_SECS)
+        }
+
+        /// Resolve the auto-dream session-scan throttle (seconds).
+        pub fn effective_auto_dream_scan_interval_secs(&self) -> u64 {
+            self.auto_dream_scan_interval_secs
+                .unwrap_or(crate::constants::DEFAULT_AUTO_DREAM_SCAN_INTERVAL_SECS)
+        }
+
+        /// Resolve the number of trailing messages the away-summary considers.
+        pub fn effective_away_summary_recent_messages(&self) -> usize {
+            self.away_summary_recent_messages
+                .unwrap_or(crate::constants::DEFAULT_AWAY_SUMMARY_RECENT_MESSAGES)
+        }
+
+        /// Resolve the provider-layer HTTP retry count.
+        pub fn effective_provider_max_retries(&self) -> u32 {
+            self.provider_max_retries
+                .unwrap_or(crate::constants::DEFAULT_PROVIDER_MAX_RETRIES)
+        }
+
+        /// Resolve the provider-layer per-request HTTP timeout (seconds).
+        pub fn effective_provider_request_timeout_sec(&self) -> u64 {
+            self.provider_request_timeout_sec
+                .unwrap_or(crate::constants::DEFAULT_PROVIDER_REQUEST_TIMEOUT_SEC)
+        }
+
+        // --- Batch 12 effective_* helpers (sorted alphabetically) ---
+
+        /// Resolve the hard cap (ms) on the Bash tool's caller-supplied timeout.
+        pub fn effective_bash_timeout_max_ms(&self) -> u64 {
+            self.bash_timeout_max_ms
+                .unwrap_or(crate::constants::DEFAULT_BASH_TIMEOUT_MAX_MS)
+        }
+
+        /// Resolve the wall-clock budget (seconds) for the CodeAudit subprocess.
+        pub fn effective_code_audit_timeout_secs(&self) -> u64 {
+            self.code_audit_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_CODE_AUDIT_TIMEOUT_SECS)
+        }
+
+        /// Resolve the wall-clock budget (seconds) for the post-edit lint subprocess.
+        pub fn effective_lint_spawn_timeout_secs(&self) -> u64 {
+            self.lint_spawn_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_LINT_SPAWN_TIMEOUT_SECS)
+        }
+
+        /// Resolve the per-line REPL read timeout (seconds).
+        pub fn effective_repl_line_read_timeout_secs(&self) -> u64 {
+            self.repl_line_read_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_REPL_LINE_READ_TIMEOUT_SECS)
+        }
+
+        /// Resolve the hard cap (ms) on the Sleep tool's caller-supplied duration.
+        pub fn effective_sleep_max_ms(&self) -> u64 {
+            self.sleep_max_ms
+                .unwrap_or(crate::constants::DEFAULT_SLEEP_MAX_MS)
+        }
+
+        /// Resolve the max HTTP redirects WebFetch will follow.
+        pub fn effective_web_fetch_max_redirects(&self) -> usize {
+            self.web_fetch_max_redirects
+                .unwrap_or(crate::constants::DEFAULT_WEB_FETCH_MAX_REDIRECTS)
+        }
+
+        // --- Batch 13 effective_* helpers (sorted alphabetically) ---
+
+        /// Resolve the per-request timeout (seconds) for LSP JSON-RPC calls.
+        pub fn effective_lsp_request_timeout_secs(&self) -> u64 {
+            self.lsp_request_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_LSP_REQUEST_TIMEOUT_SECS)
+        }
+
+        /// Resolve the OAuth browser-callback listener timeout (seconds).
+        pub fn effective_oauth_callback_timeout_secs(&self) -> u64 {
+            self.oauth_callback_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_OAUTH_CALLBACK_TIMEOUT_SECS)
+        }
+
+        /// Resolve the whole-OAuth-flow timeout (seconds).
+        pub fn effective_oauth_full_flow_timeout_secs(&self) -> u64 {
+            self.oauth_full_flow_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_OAUTH_FULL_FLOW_TIMEOUT_SECS)
+        }
+
+        /// Resolve the OAuth token-exchange HTTP timeout (seconds).
+        pub fn effective_oauth_token_exchange_timeout_secs(&self) -> u64 {
+            self.oauth_token_exchange_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_OAUTH_TOKEN_EXCHANGE_TIMEOUT_SECS)
+        }
+
+        /// Resolve the timeout (seconds) the parent waits for the peer
+        /// child to bind its IPC socket before aborting.
+        pub fn effective_peer_socket_appear_timeout_secs(&self) -> u64 {
+            self.peer_socket_appear_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_PEER_SOCKET_APPEAR_TIMEOUT_SECS)
+        }
+
+        /// Resolve the hard cap (ms) on the PowerShell tool's
+        /// caller-supplied timeout.
+        pub fn effective_powershell_timeout_max_ms(&self) -> u64 {
+            self.powershell_timeout_max_ms
+                .unwrap_or(crate::constants::DEFAULT_POWERSHELL_TIMEOUT_MAX_MS)
+        }
+
+        // --- Batch 14 effective_* helpers (sorted alphabetically) ---
+
+        /// Resolve the max retries the bridge poll loop will tolerate on
+        /// HTTP 429 rate-limits before bubbling up.
+        pub fn effective_bridge_poll_max_retries(&self) -> u32 {
+            self.bridge_poll_max_retries
+                .unwrap_or(crate::constants::DEFAULT_BRIDGE_POLL_MAX_RETRIES)
+        }
+
+        /// Resolve the LSP shutdown grace period (seconds) before SIGKILL.
+        pub fn effective_lsp_shutdown_timeout_secs(&self) -> u64 {
+            self.lsp_shutdown_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_LSP_SHUTDOWN_TIMEOUT_SECS)
+        }
+
+        /// Resolve the per-subdir entry cap for the LSP workspace probe.
+        pub fn effective_lsp_workspace_probe_max_entries(&self) -> usize {
+            self.lsp_workspace_probe_max_entries
+                .unwrap_or(crate::constants::DEFAULT_LSP_WORKSPACE_PROBE_MAX_ENTRIES)
+        }
+
+        /// Resolve the OAuth profile-fetch HTTP timeout (seconds).
+        pub fn effective_oauth_profile_fetch_timeout_secs(&self) -> u64 {
+            self.oauth_profile_fetch_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_OAUTH_PROFILE_FETCH_TIMEOUT_SECS)
+        }
+
+        /// Resolve the silent OAuth refresh HTTP timeout (seconds).
+        pub fn effective_oauth_refresh_timeout_secs(&self) -> u64 {
+            self.oauth_refresh_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_OAUTH_REFRESH_TIMEOUT_SECS)
+        }
+
+        /// Resolve the remote-session transcript-sync interval (seconds).
+        pub fn effective_remote_transcript_sync_interval_secs(&self) -> u64 {
+            self.remote_transcript_sync_interval_secs
+                .unwrap_or(crate::constants::DEFAULT_REMOTE_TRANSCRIPT_SYNC_INTERVAL_SECS)
+        }
+
+        // --- Batch 15 effective_* helpers (bridge runtime tunables, sorted alphabetically) ---
+
+        /// Resolve the bridge HTTP request timeout (seconds) used by every
+        /// bridge HTTP client.
+        pub fn effective_bridge_http_timeout_secs(&self) -> u64 {
+            self.bridge_http_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_BRIDGE_HTTP_TIMEOUT_SECS)
+        }
+
+        /// Resolve the bridge long-poll fetch timeout (seconds).
+        pub fn effective_bridge_longpoll_timeout_secs(&self) -> u64 {
+            self.bridge_longpoll_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_BRIDGE_LONGPOLL_TIMEOUT_SECS)
+        }
+
+        /// Resolve the bridge `run_poll_loop` base-interval floor (ms).
+        pub fn effective_bridge_poll_interval_min_ms(&self) -> u64 {
+            self.bridge_poll_interval_min_ms
+                .unwrap_or(crate::constants::DEFAULT_BRIDGE_POLL_INTERVAL_MIN_MS)
+        }
+
+        /// Resolve the bridge `run_bridge_loop` poll-loop floor (ms).
+        pub fn effective_bridge_poll_loop_min_ms(&self) -> u64 {
+            self.bridge_poll_loop_min_ms
+                .unwrap_or(crate::constants::DEFAULT_BRIDGE_POLL_LOOP_MIN_MS)
+        }
+
+        /// Resolve the bridge `run_poll_loop` failed-poll max-backoff (seconds).
+        pub fn effective_bridge_poll_max_backoff_secs(&self) -> u64 {
+            self.bridge_poll_max_backoff_secs
+                .unwrap_or(crate::constants::DEFAULT_BRIDGE_POLL_MAX_BACKOFF_SECS)
+        }
+
+        /// Resolve the bridge `run_bridge_loop` registration max-backoff (seconds).
+        pub fn effective_bridge_registration_max_backoff_secs(&self) -> u64 {
+            self.bridge_registration_max_backoff_secs
+                .unwrap_or(crate::constants::DEFAULT_BRIDGE_REGISTRATION_MAX_BACKOFF_SECS)
+        }
+
+        // --- Batch 16 effective_* helpers (sorted alphabetically) ---
+
+        /// Resolve the HTTP timeout (seconds) for the MCP OAuth metadata
+        /// discovery request.
+        pub fn effective_mcp_oauth_metadata_timeout_secs(&self) -> u64 {
+            self.mcp_oauth_metadata_timeout_secs
+                .unwrap_or(crate::constants::DEFAULT_MCP_OAUTH_METADATA_TIMEOUT_SECS)
+        }
+
+        /// Resolve the seconds of expiry padding before an MCP OAuth token
+        /// is considered expired and a refresh is triggered.
+        pub fn effective_mcp_token_expiry_pad_secs(&self) -> u64 {
+            self.mcp_token_expiry_pad_secs
+                .unwrap_or(crate::constants::DEFAULT_MCP_TOKEN_EXPIRY_PAD_SECS)
+        }
+
+        /// Resolve the minimum cosine-similarity score retained by RAG
+        /// search results.
+        pub fn effective_rag_similarity_floor(&self) -> f32 {
+            self.rag_similarity_floor
+                .unwrap_or(crate::constants::DEFAULT_RAG_SIMILARITY_FLOOR)
+        }
+
+        /// Resolve the max lines the TUI renders per message before
+        /// collapsing the tail.
+        pub fn effective_tui_max_lines_per_msg(&self) -> usize {
+            self.tui_max_lines_per_msg
+                .unwrap_or(crate::constants::DEFAULT_TUI_MAX_LINES_PER_MSG)
+        }
+
+        /// Resolve the max lines of tool-result output the TUI shows
+        /// inline before collapsing the tail.
+        pub fn effective_tui_tool_result_max_lines(&self) -> usize {
+            self.tui_tool_result_max_lines
+                .unwrap_or(crate::constants::DEFAULT_TUI_TOOL_RESULT_MAX_LINES)
+        }
+
+        /// Resolve the char threshold above which the TUI head+tail-renders
+        /// a user prompt.
+        pub fn effective_tui_user_prompt_display_max_chars(&self) -> usize {
+            self.tui_user_prompt_display_max_chars
+                .unwrap_or(crate::constants::DEFAULT_TUI_USER_PROMPT_DISPLAY_MAX_CHARS)
+        }
+
+        // --- Batch 17 effective_* helpers (sorted alphabetically) ---
+
+        /// Resolve the FileEdit tool's LSP-diagnostics wait (ms) after
+        /// notifying the language server of a saved edit.
+        pub fn effective_file_edit_retry_sleep_ms(&self) -> u64 {
+            self.file_edit_retry_sleep_ms
+                .unwrap_or(crate::constants::DEFAULT_FILE_EDIT_RETRY_SLEEP_MS)
+        }
+
+        /// Resolve the session-storage write retry sleep (ms).
+        pub fn effective_session_write_retry_sleep_ms(&self) -> u64 {
+            self.session_write_retry_sleep_ms
+                .unwrap_or(crate::constants::DEFAULT_SESSION_WRITE_RETRY_SLEEP_MS)
+        }
+
+        /// Resolve the poll interval (ms) for the optional
+        /// `CLAUDE_STATUS_COMMAND` external status program.
+        pub fn effective_status_poll_interval_ms(&self) -> u64 {
+            self.status_poll_interval_ms
+                .unwrap_or(crate::constants::DEFAULT_STATUS_POLL_INTERVAL_MS)
+        }
+
+        /// Resolve the max number of (text, cursor) snapshots retained
+        /// on the TUI prompt-input undo stack.
+        pub fn effective_tui_undo_history_max(&self) -> usize {
+            self.tui_undo_history_max
+                .unwrap_or(crate::constants::DEFAULT_TUI_UNDO_HISTORY_MAX)
+        }
+
+        /// Resolve the head-window length (chars) retained when the
+        /// TUI head+tail truncates an oversized user prompt.
+        pub fn effective_tui_user_prompt_head_chars(&self) -> usize {
+            self.tui_user_prompt_head_chars
+                .unwrap_or(crate::constants::DEFAULT_TUI_USER_PROMPT_HEAD_CHARS)
+        }
+
+        /// Resolve the tail-window length (chars) retained when the
+        /// TUI head+tail truncates an oversized user prompt.
+        pub fn effective_tui_user_prompt_tail_chars(&self) -> usize {
+            self.tui_user_prompt_tail_chars
+                .unwrap_or(crate::constants::DEFAULT_TUI_USER_PROMPT_TAIL_CHARS)
+        }
+
+        // --- Batch 18 effective_* helpers (sorted alphabetically) ---
+
+        /// Resolve the wait (ms) the Patch tool sleeps after applying a diff
+        /// before re-querying LSP diagnostics for the touched files.
+        pub fn effective_patch_retry_sleep_ms(&self) -> u64 {
+            self.patch_retry_sleep_ms
+                .unwrap_or(crate::constants::DEFAULT_PATCH_RETRY_SLEEP_MS)
+        }
+
         /// Resolve the effective output style for system-prompt assembly.
         pub fn effective_output_style(&self) -> crate::system_prompt::OutputStyle {
             self.output_style
@@ -873,7 +2041,9 @@ pub mod config {
                     });
                     let refreshed = 'refresh: {
                         let Ok(client) = reqwest::Client::builder()
-                            .timeout(std::time::Duration::from_secs(30))
+                            .timeout(std::time::Duration::from_secs(
+                                self.effective_oauth_refresh_timeout_secs(),
+                            ))
                             .build()
                         else {
                             break 'refresh None;
@@ -1019,10 +2189,75 @@ pub mod constants {
     //   - deepseek-reasoner: 64K  (deprecating)
     //   - deepseek-chat:     8K   (deprecating)
     pub const DEFAULT_MAX_TOKENS: u32 = 64_000;
-    pub const MAX_TOKENS_HARD_LIMIT: u32 = 128_000;
     pub const DEFAULT_COMPACT_THRESHOLD: f32 = 0.9;
+    /// Yellow "warning" threshold (fraction of context window used) for the
+    /// auto-compact warning notice.
+    pub const DEFAULT_COMPACT_WARNING_PCT: f64 = 0.90;
+    /// Red "critical" threshold (fraction of context window used) for the
+    /// auto-compact critical notice.
+    pub const DEFAULT_COMPACT_CRITICAL_PCT: f64 = 0.98;
+    /// How many recent messages to preserve verbatim after auto-compact
+    /// (mirrors TS autoCompact.ts KEEP_RECENT_MESSAGES).
+    pub const DEFAULT_COMPACT_KEEP_RECENT_MESSAGES: usize = 10;
+    /// Max number of recently-modified files re-injected after a reactive
+    /// compact.
+    pub const DEFAULT_COMPACT_REINJECT_MAX_FILES: usize = 5;
+    /// Files larger than this many bytes are skipped during reactive-compact
+    /// file re-injection.
+    pub const DEFAULT_COMPACT_REINJECT_MAX_FILE_BYTES: u64 = 50 * 1024;
+    /// Reactive-compact firing threshold (fraction of context window used).
+    /// Intentionally identical to the auto-compact trigger fraction so that
+    /// the two paths fire in lockstep.
+    pub const DEFAULT_REACTIVE_COMPACT_THRESHOLD: f64 = 0.95;
+    // ---- Batch 7 — runtime retry / threshold tunables ----
+    /// Default emergency context-collapse threshold (fraction of context window).
+    /// Mirrors the historical `CONTEXT_COLLAPSE_THRESHOLD` in
+    /// `cc_query::compact`.
+    pub const DEFAULT_CONTEXT_COLLAPSE_THRESHOLD: f64 = 0.99;
+    /// Default retries when the model hits `max_tokens` before surfacing the
+    /// partial response. Mirrors `MAX_TOKENS_RECOVERY_LIMIT` in `cc_query`.
+    pub const DEFAULT_MAX_TOKENS_RECOVERY_LIMIT: u32 = 3;
+    /// Default retries on transient overload errors before giving up.
+    /// Mirrors `MAX_OVERLOAD_RETRIES` in `cc_query`.
+    pub const DEFAULT_MAX_OVERLOAD_RETRIES: u32 = 5;
+    /// Default retries on empty-response API failures (no tools, no text)
+    /// before bubbling up. Mirrors `MAX_EMPTY_RETRIES` in `cc_query`.
+    pub const DEFAULT_MAX_EMPTY_RETRIES: u32 = 5;
+    /// Default minimum messages required before session memory extraction
+    /// runs. Mirrors `MIN_MESSAGES_TO_EXTRACT` in
+    /// `cc_query::session_memory`.
+    pub const DEFAULT_MIN_MESSAGES_TO_EXTRACT: usize = 20;
+    /// Default minimum tool calls between session memory extractions.
+    /// Mirrors `MIN_TOOL_CALLS_BETWEEN_EXTRACTIONS` in
+    /// `cc_query::session_memory`.
+    pub const DEFAULT_MIN_TOOL_CALLS_BETWEEN_EXTRACTIONS: usize = 3;
+    // ---- Batch 8 — runtime tunables (defaults; overridable via CLI / settings) ----
+    //
+    // The original constants in away_summary.rs, auto_dream.rs,
+    // api/providers/schema.rs, and api/client::ClientConfig are KEPT — they
+    // remain the fallback used by `Config::effective_*()` helpers when no
+    // override is set.
+    /// Default `RECENT_MESSAGE_WINDOW` for away-summary recap. See
+    /// `cc_query::away_summary::RECENT_MESSAGE_WINDOW`.
+    pub const DEFAULT_AWAY_SUMMARY_RECENT_MESSAGES: usize = 30;
+    /// Default `SESSION_SCAN_INTERVAL_SECS` for the auto-dream pipeline. See
+    /// `cc_query::auto_dream::SESSION_SCAN_INTERVAL_SECS`.
+    pub const DEFAULT_AUTO_DREAM_SCAN_INTERVAL_SECS: u64 = 600;
+    /// Default provider HTTP request timeout (seconds). Mirrors
+    /// `cc_api::providers::schema::default_timeout_sec`.
+    pub const DEFAULT_PROVIDER_REQUEST_TIMEOUT_SEC: u64 = 600;
+    /// Default provider HTTP retry count. Mirrors
+    /// `cc_api::providers::schema::default_max_retries`.
+    pub const DEFAULT_PROVIDER_MAX_RETRIES: u32 = 5;
+    /// Default legacy Anthropic client retry count. Mirrors
+    /// `cc_api::client::ClientConfig::default().max_retries`. Drifts from the
+    /// provider TOML — surfaced separately so the deprecation path can land
+    /// without changing observed behaviour.
+    pub const DEFAULT_ANTHROPIC_LEGACY_MAX_RETRIES: u32 = 8;
+    /// Default legacy Anthropic client HTTP timeout (seconds). Mirrors
+    /// `cc_api::client::ClientConfig::default().request_timeout`.
+    pub const DEFAULT_ANTHROPIC_REQUEST_TIMEOUT_SECS: u64 = 600;
     pub const MAX_TURNS_DEFAULT: u32 = 100;
-    pub const MAX_TOOL_ERRORS: u32 = 3;
     /// Maximum cumulative size (chars) of tool results kept in conversation
     /// history before older results are replaced with a truncation notice.
     pub const DEFAULT_TOOL_RESULT_BUDGET: usize = 150_000;
@@ -1067,11 +2302,402 @@ pub mod constants {
     pub const SESSION_ID_PREFIX_TEAMMATE: &str = "t";
 
     // Retry budget
-    pub const MAX_OUTPUT_TOKENS_RETRIES: u32 = 3;
     pub const MAX_COMPACT_RETRIES: u32 = 3;
 
     // Stop sequences
     pub const STOP_SEQUENCE_END_OF_TURN: &str = "\n\nHuman:";
+
+    // --- Batch 4 configurable defaults ---
+    /// Default maximum screenshot width in pixels before downscaling.
+    /// Configurable via `Config.screenshot_max_width` /
+    /// `--screenshot-max-width`.
+    pub const DEFAULT_SCREENSHOT_MAX_WIDTH: u32 = 1366;
+    /// Default maximum screenshot height in pixels before downscaling.
+    /// Configurable via `Config.screenshot_max_height` /
+    /// `--screenshot-max-height`.
+    pub const DEFAULT_SCREENSHOT_MAX_HEIGHT: u32 = 768;
+    /// Default bytes scanned from the end of a session transcript when
+    /// extracting `last-prompt` / `custom-title` metadata for the session
+    /// browser.  Configurable via `Config.session_tail_scan_bytes` /
+    /// `--session-tail-scan-bytes`.
+    pub const DEFAULT_SESSION_TAIL_SCAN_BYTES: u64 = 65_536;
+    /// Default maximum bytes read from a UPPLI.md file before skipping it
+    /// with a warning.  Configurable via `Config.claudemd_max_bytes` /
+    /// `--claudemd-max-bytes`.
+    pub const DEFAULT_CLAUDEMD_MAX_BYTES: u64 = 40 * 1024;
+    /// Default maximum number of memory files retained when scanning the
+    /// auto-memory directory.  Configurable via `Config.max_memory_files`
+    /// / `--max-memory-files`.
+    pub const DEFAULT_MAX_MEMORY_FILES: usize = 200;
+    /// Default maximum number of lines scanned at the top of a memory
+    /// file when parsing YAML frontmatter.  Configurable via
+    /// `Config.memory_frontmatter_max_lines` /
+    /// `--memory-frontmatter-max-lines`.
+    pub const DEFAULT_MEMORY_FRONTMATTER_MAX_LINES: usize = 30;
+
+    // --- Batch 3 configurable defaults ---
+    /// Cap (chars) on the foreground Bash tool's combined stdout+stderr
+    /// output before head+tail truncation kicks in. Shared by Unix and
+    /// Windows code paths.
+    pub const DEFAULT_BASH_OUTPUT_MAX_CHARS: usize = 500_000;
+    /// Defensive cap on the number of `ContentBlock`s a single FileRead
+    /// tool result can carry.
+    pub const DEFAULT_MAX_BLOCKS_PER_RESULT: usize = 20;
+    /// Cap on the bytes of inline text extracted from a single OOXML
+    /// document (.docx / .xlsx / .pptx).
+    pub const DEFAULT_MAX_OOXML_TEXT_BYTES: usize = 1_500_000;
+    /// Cap on the number of slides extracted from a PPTX file.
+    pub const DEFAULT_MAX_PPTX_SLIDES: usize = 20;
+    /// Cap (chars) on the WebFetch tool's HTML-to-text body before tail
+    /// truncation.
+    pub const DEFAULT_WEB_FETCH_MAX_CHARS: usize = 100_000;
+
+    // --- Batch 10 configurable defaults ---
+    /// Maximum tokens used for the compact-conversation summary call.
+    pub const DEFAULT_COMPACT_SUMMARY_MAX_TOKENS: u32 = 20_000;
+    /// Number of leading chars used as fingerprint for collapse_read dedup.
+    pub const DEFAULT_COLLAPSE_READ_FINGERPRINT_CHARS: usize = 120;
+    /// Number of leading chars used as fingerprint for collapse_search dedup.
+    pub const DEFAULT_COLLAPSE_SEARCH_FINGERPRINT_CHARS: usize = 200;
+    /// Context window assumed by the /cost / /ctx-viz commands.
+    pub const DEFAULT_COST_COMMAND_CONTEXT_WINDOW: u64 = 200_000;
+    /// System prompt token estimate fallback used by /cost / /ctx-viz.
+    pub const DEFAULT_COST_COMMAND_SYSTEM_PROMPT_TOKENS: u32 = 9_600;
+    /// Max bytes of diff output shown by the /diff command before truncation.
+    pub const DEFAULT_DIFF_COMMAND_MAX_BYTES: usize = 8_000;
+
+    // --- Batch 11 configurable defaults ---
+    /// Chars of prompt preview shown by `CronList` per task before truncation
+    /// with an ellipsis. Mirrors the historical hardcoded `60` in
+    /// `cc_tools::cron::CronListTool::execute`.
+    pub const DEFAULT_CRON_LIST_PROMPT_DISPLAY_CHARS: usize = 60;
+    /// Chars of file preview shown by `/memory` when displaying UPPLI.md
+    /// files. Mirrors the historical hardcoded `2000` in
+    /// `cc_commands::MemoryCommand`.
+    pub const DEFAULT_FILE_PREVIEW_MAX_CHARS: usize = 2_000;
+    /// HTTP timeout (seconds) for `/upgrade` and `/release-notes` GitHub
+    /// release-check calls. Mirrors the historical hardcoded `8s` in
+    /// `cc_commands::UpgradeCommand` / `ReleaseNotesCommand`.
+    pub const DEFAULT_GITHUB_RELEASE_CHECK_TIMEOUT_SECS: u64 = 8;
+    /// Maximum results returned by the Glob tool before truncation. Mirrors
+    /// the historical hardcoded `250` in `cc_tools::glob_tool::GlobTool`.
+    pub const DEFAULT_GLOB_MAX_RESULTS: usize = 250;
+    /// HTTP timeout (seconds) for `/share` session upload. Mirrors the
+    /// historical hardcoded `15s` in `cc_commands::ShareCommand`.
+    pub const DEFAULT_SHARE_UPLOAD_TIMEOUT_SECS: u64 = 15;
+    /// HTTP timeout (seconds) for the WebFetch tool. Mirrors the historical
+    /// hardcoded `30s` in `cc_tools::web_fetch::WebFetchTool`.
+    pub const DEFAULT_WEB_FETCH_TIMEOUT_SECS: u64 = 30;
+
+    // --- Batch 1 configurable defaults ---
+    /// Default line count when the FileRead caller omits the `limit` param.
+    /// Mirrors the historical `file_read::limits::DEFAULT_LINE_LIMIT`.
+    pub const DEFAULT_LINE_LIMIT: usize = 2_000;
+    /// Hard cap on the raw image bytes the FileRead handler will inline as
+    /// base64. Beyond this → caption-only fallback. Mirrors the historical
+    /// `file_read::limits::MAX_IMAGE_BYTES`.
+    pub const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB
+    /// Per-line truncation for text reads — defeats single-line megabyte
+    /// minified files. Mirrors the historical
+    /// `file_read::limits::MAX_LINE_CHARS`.
+    pub const MAX_LINE_CHARS: usize = 16_384;
+    /// Cap on the bytes a text-path FileRead will materialise as String.
+    /// Mirrors the historical `file_read::limits::MAX_TEXT_BYTES`.
+    pub const MAX_TEXT_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
+
+    // --- Batch 2 configurable defaults (file_read limits) ---
+    /// Long-edge pixel target when downscaling oversized images for the
+    /// FileRead tool. Mirrors the historical
+    /// `file_read::limits::IMAGE_RESIZE_LONG_EDGE`.
+    pub const DEFAULT_IMAGE_RESIZE_LONG_EDGE: u32 = 2_048;
+    /// Cap on archive entries listed in a single FileRead invocation.
+    /// Mirrors the historical `file_read::limits::MAX_ARCHIVE_MEMBERS`.
+    pub const DEFAULT_MAX_ARCHIVE_MEMBERS: usize = 1_024;
+    /// Cap on rows emitted from the OOXML / XLSX text fallback. Mirrors
+    /// the historical `file_read::limits::MAX_OOXML_ROWS`.
+    pub const DEFAULT_MAX_OOXML_ROWS: usize = 500;
+    /// Cap on PDF bytes inlined as a Document block for vision providers.
+    /// Mirrors the historical `file_read::limits::MAX_PDF_BYTES`.
+    pub const DEFAULT_MAX_PDF_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB
+    /// Cap on the number of PDF pages the FileRead handler emits text for.
+    /// Mirrors the historical `file_read::limits::MAX_PDF_PAGES`.
+    pub const DEFAULT_MAX_PDF_PAGES: usize = 50;
+    /// Wall-clock budget (seconds) for pdf-extract text extraction. Mirrors
+    /// the historical `file_read::limits::PDF_EXTRACT_TIMEOUT_SECS`.
+    pub const DEFAULT_PDF_EXTRACT_TIMEOUT_SECS: u64 = 30;
+
+    // --- Batch 5 configurable defaults (sorted alphabetically) ---
+    /// Default fraction of context window at which proactive auto-compact fires.
+    /// Mirrors `AUTOCOMPACT_TRIGGER_FRACTION` in query::compact.
+    pub const DEFAULT_AUTOCOMPACT_TRIGGER_FRACTION: f64 = 0.95;
+    /// Default buffer (tokens) below the context window for the
+    /// "about to compact" warning state. Mirrors
+    /// `WARNING_THRESHOLD_BUFFER_TOKENS` in query::compact.
+    pub const DEFAULT_COMPACT_WARNING_BUFFER_TOKENS: u64 = 20_000;
+    /// Default `MEMORY.md` byte cap. Mirrors `MAX_ENTRYPOINT_BYTES` in memdir.
+    pub const DEFAULT_MEMORY_ENTRYPOINT_MAX_BYTES: usize = 25_000;
+    /// Default `MEMORY.md` line cap. Mirrors `MAX_ENTRYPOINT_LINES` in memdir.
+    pub const DEFAULT_MEMORY_ENTRYPOINT_MAX_LINES: usize = 200;
+    /// Default inline-vs-disk threshold (bytes) for pasted content in prompt
+    /// history. Mirrors `MAX_PASTED_CONTENT_LENGTH` in prompt_history.
+    pub const DEFAULT_PASTED_CONTENT_INLINE_THRESHOLD: usize = 1024;
+    /// Default cap on prompt-history entries returned by up-arrow recall.
+    /// Mirrors `MAX_HISTORY_ITEMS` in prompt_history.
+    pub const DEFAULT_PROMPT_HISTORY_MAX_ITEMS: usize = 100;
+
+    // --- Batch 9 configurable defaults ---
+    /// Max overload-retry backoff ceiling (seconds) in the query loop.
+    /// Mirrors the historical hardcoded `30` in
+    /// `cc_query::run_query_loop`'s overload retry path.
+    pub const OVERLOAD_RETRY_MAX_BACKOFF_SECS: u64 = 30;
+    /// Initial retry backoff (ms) for OpenAI-format providers. Mirrors the
+    /// historical hardcoded `2s` in `OpenAiProvider::send_with_retry`.
+    pub const PROVIDER_INITIAL_BACKOFF_MS: u64 = 2_000;
+    /// Max retry backoff ceiling (seconds) for OpenAI-format providers.
+    /// Mirrors the historical hardcoded `30s` in
+    /// `OpenAiProvider::send_with_retry`.
+    pub const PROVIDER_MAX_BACKOFF_SECS: u64 = 30;
+    /// Capacity of the streaming MPSC channel between the OpenAI-format
+    /// provider task and the consumer (TUI / query loop). Mirrors the
+    /// historical hardcoded `256` in
+    /// `OpenAiProvider::create_message_stream`.
+    pub const PROVIDER_STREAM_CHANNEL_CAPACITY: usize = 256;
+    /// TTFT threshold (seconds) above which the TUI surfaces a "slow API"
+    /// warning. Mirrors the historical hardcoded `30s` in
+    /// `cc_query::run_query_loop`.
+    pub const SLOW_TTFT_WARNING_SECS: u64 = 30;
+    /// Context-window floor (tokens) for unknown models that lack metadata.
+    /// Mirrors the historical hardcoded `8_192` floor in
+    /// `LlmProvider::context_window`.
+    pub const UNKNOWN_MODEL_CONTEXT_WINDOW_FLOOR: u64 = 8_192;
+
+    // --- Batch 12 configurable defaults (sorted alphabetically) ---
+    /// Hard cap (ms) on the timeout the Bash tool will honour from a
+    /// caller-supplied `timeout` parameter. Mirrors the historical hardcoded
+    /// `600_000` ceiling in `cc_tools::bash`. Configurable via
+    /// `Config.bash_timeout_max_ms` / `--bash-timeout-max-ms`.
+    pub const DEFAULT_BASH_TIMEOUT_MAX_MS: u64 = 600_000;
+    /// Wall-clock budget (seconds) for the CodeAudit Python subprocess.
+    /// Mirrors the historical hardcoded `10s` in `cc_tools::code_audit`.
+    /// Configurable via `Config.code_audit_timeout_secs` /
+    /// `--code-audit-timeout-secs`.
+    pub const DEFAULT_CODE_AUDIT_TIMEOUT_SECS: u64 = 10;
+    /// Wall-clock budget (seconds) for the post-edit syntax-check subprocess
+    /// (`check_syntax`). Mirrors the historical hardcoded `5s` in
+    /// `cc_tools::lint`. Configurable via `Config.lint_spawn_timeout_secs`
+    /// / `--lint-spawn-timeout-secs`.
+    pub const DEFAULT_LINT_SPAWN_TIMEOUT_SECS: u64 = 5;
+    /// Per-line read timeout (seconds) used by the REPL tool while waiting
+    /// for interpreter output. Mirrors the historical hardcoded `30s` in
+    /// `cc_tools::repl_tool`. Configurable via
+    /// `Config.repl_line_read_timeout_secs` /
+    /// `--repl-line-read-timeout-secs`.
+    pub const DEFAULT_REPL_LINE_READ_TIMEOUT_SECS: u64 = 30;
+    /// Hard cap (ms) on the user-requested sleep duration honoured by the
+    /// Sleep tool. Mirrors the historical hardcoded `300_000` (5min) ceiling
+    /// in `cc_tools::sleep`. Configurable via `Config.sleep_max_ms` /
+    /// `--sleep-max-ms`.
+    pub const DEFAULT_SLEEP_MAX_MS: u64 = 300_000;
+    /// Max HTTP redirects WebFetch will follow before giving up. Mirrors the
+    /// historical hardcoded `10` in `cc_tools::web_fetch`. Configurable via
+    /// `Config.web_fetch_max_redirects` / `--web-fetch-max-redirects`.
+    pub const DEFAULT_WEB_FETCH_MAX_REDIRECTS: usize = 10;
+
+    // --- Batch 13 configurable defaults (sorted alphabetically) ---
+    /// Wall-clock budget (seconds) for a single LSP JSON-RPC request before
+    /// the client gives up and surfaces a timeout. Mirrors the historical
+    /// hardcoded `30s` in `cc_core::lsp::LspClient::send_request_inner`.
+    /// Configurable via `Config.lsp_request_timeout_secs` /
+    /// `--lsp-request-timeout-secs`.
+    pub const DEFAULT_LSP_REQUEST_TIMEOUT_SECS: u64 = 30;
+    /// Wall-clock budget (seconds) for the OAuth browser-callback HTTP
+    /// listener to accept the redirect from the authorization server.
+    /// Mirrors the historical hardcoded `120s` in
+    /// `cli::oauth_flow::run_callback_server`. Configurable via
+    /// `Config.oauth_callback_timeout_secs` /
+    /// `--oauth-callback-timeout-secs`.
+    pub const DEFAULT_OAUTH_CALLBACK_TIMEOUT_SECS: u64 = 120;
+    /// Wall-clock budget (seconds) for the whole OAuth login flow (auto
+    /// callback OR manual paste). Mirrors the historical hardcoded `120s`
+    /// in `cli::oauth_flow::wait_for_auth_code_impl`. Configurable via
+    /// `Config.oauth_full_flow_timeout_secs` /
+    /// `--oauth-full-flow-timeout-secs`.
+    pub const DEFAULT_OAUTH_FULL_FLOW_TIMEOUT_SECS: u64 = 120;
+    /// HTTP timeout (seconds) for the OAuth token-exchange POST call.
+    /// Mirrors the historical hardcoded `30s` in
+    /// `cli::oauth_flow::exchange_code_for_tokens`. Configurable via
+    /// `Config.oauth_token_exchange_timeout_secs` /
+    /// `--oauth-token-exchange-timeout-secs`.
+    pub const DEFAULT_OAUTH_TOKEN_EXCHANGE_TIMEOUT_SECS: u64 = 30;
+    /// Wall-clock budget (seconds) for the parent process to wait for the
+    /// IPC peer-child to bind its Unix socket before aborting. Mirrors the
+    /// historical hardcoded `5s` in `cli::spawn_peer_child`. Configurable
+    /// via `Config.peer_socket_appear_timeout_secs` /
+    /// `--peer-socket-appear-timeout-secs`.
+    pub const DEFAULT_PEER_SOCKET_APPEAR_TIMEOUT_SECS: u64 = 5;
+    /// Hard cap (ms) on the timeout the PowerShell tool will honour from a
+    /// caller-supplied `timeout` parameter. Mirrors the historical
+    /// hardcoded `600_000` ceiling in `cc_tools::powershell`. Configurable
+    /// via `Config.powershell_timeout_max_ms` /
+    /// `--powershell-timeout-max-ms`.
+    pub const DEFAULT_POWERSHELL_TIMEOUT_MAX_MS: u64 = 600_000;
+
+    // --- Batch 14 configurable defaults (sorted alphabetically) ---
+    /// Max retries the bridge poll loop tolerates on HTTP 429 rate-limits
+    /// before bubbling up. Mirrors the historical hardcoded `3` in
+    /// `cc_bridge::poll_bridge_messages`. Configurable via
+    /// `Config.bridge_poll_max_retries` / `--bridge-poll-max-retries`.
+    pub const DEFAULT_BRIDGE_POLL_MAX_RETRIES: u32 = 3;
+    /// Wall-clock budget (seconds) for the LSP client to wait for a
+    /// graceful `exit` after `shutdown` before SIGKILL-ing the server.
+    /// Mirrors the historical hardcoded `5s` ceiling in
+    /// `cc_core::lsp::LspClient::shutdown`. Configurable via
+    /// `Config.lsp_shutdown_timeout_secs` / `--lsp-shutdown-timeout-secs`.
+    pub const DEFAULT_LSP_SHUTDOWN_TIMEOUT_SECS: u64 = 5;
+    /// Max directory entries scanned per subdirectory by the LSP workspace
+    /// auto-detect probe (`project_has_matching_files`). Mirrors the
+    /// historical hardcoded `take(50)` in `cc_core::lsp`. Configurable via
+    /// `Config.lsp_workspace_probe_max_entries` /
+    /// `--lsp-workspace-probe-max-entries`.
+    pub const DEFAULT_LSP_WORKSPACE_PROBE_MAX_ENTRIES: usize = 50;
+    /// HTTP timeout (seconds) for the OAuth profile-fetch call to
+    /// `/api/auth/oauth/profile`. Mirrors the historical hardcoded `10s`
+    /// in `cc_core::oauth_config::fetch_oauth_profile`. Configurable via
+    /// `Config.oauth_profile_fetch_timeout_secs` /
+    /// `--oauth-profile-fetch-timeout-secs`.
+    pub const DEFAULT_OAUTH_PROFILE_FETCH_TIMEOUT_SECS: u64 = 10;
+    /// HTTP timeout (seconds) for the silent OAuth access-token refresh
+    /// performed by `Config::resolve_auth_async`. Mirrors the historical
+    /// hardcoded `30s` reqwest timeout. Configurable via
+    /// `Config.oauth_refresh_timeout_secs` / `--oauth-refresh-timeout-secs`.
+    pub const DEFAULT_OAUTH_REFRESH_TIMEOUT_SECS: u64 = 30;
+    /// Interval (seconds) between background pushes of the local transcript
+    /// to the remote-session cloud API. Mirrors the historical hardcoded
+    /// `30s` `tokio::time::interval` in
+    /// `cc_core::remote_session::RemoteSessionManager::start_background_sync`.
+    /// Configurable via `Config.remote_transcript_sync_interval_secs` /
+    /// `--remote-transcript-sync-interval-secs`.
+    pub const DEFAULT_REMOTE_TRANSCRIPT_SYNC_INTERVAL_SECS: u64 = 30;
+
+    // --- Batch 15 configurable defaults (bridge runtime tunables, sorted alphabetically) ---
+    /// HTTP request timeout (seconds) shared by every bridge HTTP client
+    /// (register, poll, upload, deregister, response post). Mirrors the
+    /// historical hardcoded `30s` reqwest builder timeout in `cc_bridge`.
+    /// Configurable via `Config.bridge_http_timeout_secs` /
+    /// `--bridge-http-timeout-secs`.
+    pub const DEFAULT_BRIDGE_HTTP_TIMEOUT_SECS: u64 = 30;
+    /// Long-poll fetch timeout (seconds) for `GET /sessions/{id}/poll` and
+    /// `poll_bridge_messages`. Mirrors the historical hardcoded `35s` in
+    /// `cc_bridge`. Configurable via `Config.bridge_longpoll_timeout_secs`
+    /// / `--bridge-longpoll-timeout-secs`.
+    pub const DEFAULT_BRIDGE_LONGPOLL_TIMEOUT_SECS: u64 = 35;
+    /// Floor (ms) on the bridge `run_poll_loop` base polling interval — when
+    /// the user-supplied `polling_interval_ms` falls below this, the floor
+    /// silently takes over. Mirrors the historical hardcoded `500ms` in
+    /// `cc_bridge::BridgeSession::run_poll_loop`. Configurable via
+    /// `Config.bridge_poll_interval_min_ms` / `--bridge-poll-interval-min-ms`.
+    pub const DEFAULT_BRIDGE_POLL_INTERVAL_MIN_MS: u64 = 500;
+    /// Floor (ms) on the high-level `run_bridge_loop` poll cadence — when
+    /// the user-supplied `polling_interval_ms` falls below this, the floor
+    /// silently takes over. Mirrors the historical hardcoded `50ms` in
+    /// `cc_bridge::run_bridge_loop`. Configurable via
+    /// `Config.bridge_poll_loop_min_ms` / `--bridge-poll-loop-min-ms`.
+    pub const DEFAULT_BRIDGE_POLL_LOOP_MIN_MS: u64 = 50;
+    /// Max backoff ceiling (seconds) the bridge `run_poll_loop` will wait
+    /// between failed polls. Mirrors the historical hardcoded `60s` in
+    /// `cc_bridge::BridgeSession::run_poll_loop`. Configurable via
+    /// `Config.bridge_poll_max_backoff_secs` /
+    /// `--bridge-poll-max-backoff-secs`.
+    pub const DEFAULT_BRIDGE_POLL_MAX_BACKOFF_SECS: u64 = 60;
+    /// Max backoff ceiling (seconds) for the bridge `run_bridge_loop`
+    /// registration retry loop. Mirrors the historical hardcoded `30s` in
+    /// `cc_bridge::run_bridge_loop`. Configurable via
+    /// `Config.bridge_registration_max_backoff_secs` /
+    /// `--bridge-registration-max-backoff-secs`.
+    pub const DEFAULT_BRIDGE_REGISTRATION_MAX_BACKOFF_SECS: u64 = 30;
+
+    // --- Batch 17 configurable defaults (sorted alphabetically) ---
+    /// Retry sleep (ms) used by the FileEdit tool to wait for LSP
+    /// diagnostics after notifying the language server of a saved
+    /// edit. Mirrors the historical hardcoded `200ms` in
+    /// `cc_tools::file_edit`. Configurable via
+    /// `Config.file_edit_retry_sleep_ms` /
+    /// `--file-edit-retry-sleep-ms`.
+    pub const DEFAULT_FILE_EDIT_RETRY_SLEEP_MS: u64 = 200;
+    /// Retry sleep (ms) used by session-storage write paths between
+    /// successive append attempts on slow disks. Mirrors the
+    /// historical hardcoded `5ms` in `cc_core::session_storage`.
+    /// Configurable via `Config.session_write_retry_sleep_ms` /
+    /// `--session-write-retry-sleep-ms`.
+    pub const DEFAULT_SESSION_WRITE_RETRY_SLEEP_MS: u64 = 5;
+    /// Poll interval (ms) for the optional `CLAUDE_STATUS_COMMAND`
+    /// external status program. Mirrors the historical hardcoded
+    /// `500ms` in `cc_cli::main`. Configurable via
+    /// `Config.status_poll_interval_ms` / `--status-poll-interval-ms`.
+    pub const DEFAULT_STATUS_POLL_INTERVAL_MS: u64 = 500;
+    /// Max number of (text, cursor) snapshots retained on the TUI
+    /// prompt-input undo stack. Older entries are dropped past this
+    /// cap. Mirrors the historical hardcoded `100` in
+    /// `cc_tui::prompt_input`. Configurable via
+    /// `Config.tui_undo_history_max` / `--tui-undo-history-max`.
+    pub const DEFAULT_TUI_UNDO_HISTORY_MAX: usize = 100;
+    /// Head-window length (chars) retained when the TUI head+tail
+    /// truncates an oversized user prompt. Mirrors the historical
+    /// hardcoded `2_500` in `cc_tui::messages`. Configurable via
+    /// `Config.tui_user_prompt_head_chars` /
+    /// `--tui-user-prompt-head-chars`.
+    pub const DEFAULT_TUI_USER_PROMPT_HEAD_CHARS: usize = 2_500;
+    /// Tail-window length (chars) retained when the TUI head+tail
+    /// truncates an oversized user prompt. Mirrors the historical
+    /// hardcoded `2_500` in `cc_tui::messages`. Configurable via
+    /// `Config.tui_user_prompt_tail_chars` /
+    /// `--tui-user-prompt-tail-chars`.
+    pub const DEFAULT_TUI_USER_PROMPT_TAIL_CHARS: usize = 2_500;
+
+    // --- Batch 18 configurable defaults (sorted alphabetically) ---
+    /// Wait (ms) the Patch tool sleeps after applying a diff before
+    /// re-querying LSP diagnostics for the touched files. Mirrors the
+    /// historical hardcoded `200ms` in `cc_tools::patch_tool`. Configurable
+    /// via `Config.patch_retry_sleep_ms` / `--patch-retry-sleep-ms`.
+    pub const DEFAULT_PATCH_RETRY_SLEEP_MS: u64 = 200;
+
+    // --- Batch 16 configurable defaults (sorted alphabetically) ---
+    /// HTTP timeout (seconds) for the MCP OAuth authorization-server
+    /// metadata discovery request. Mirrors the historical hardcoded `10s`
+    /// in `cc_mcp::McpManager::initiate_auth`. Configurable via
+    /// `Config.mcp_oauth_metadata_timeout_secs` /
+    /// `--mcp-oauth-metadata-timeout-secs`.
+    pub const DEFAULT_MCP_OAUTH_METADATA_TIMEOUT_SECS: u64 = 10;
+    /// Seconds of expiry padding before an MCP OAuth token is considered
+    /// expired and a refresh is triggered. Mirrors the historical
+    /// hardcoded `60` in `cc_mcp::McpManager::auth_state`. Configurable
+    /// via `Config.mcp_token_expiry_pad_secs` /
+    /// `--mcp-token-expiry-pad-secs`.
+    pub const DEFAULT_MCP_TOKEN_EXPIRY_PAD_SECS: u64 = 60;
+    /// Minimum cosine-similarity score retained by RAG search results.
+    /// Results scoring at or below this are dropped silently. Mirrors the
+    /// historical hardcoded `0.3` in `cc_rag::store::ChunkStore::search`.
+    /// Configurable via `Config.rag_similarity_floor` /
+    /// `--rag-similarity-floor`.
+    pub const DEFAULT_RAG_SIMILARITY_FLOOR: f32 = 0.3;
+    /// Max lines the TUI renders for a single message before collapsing
+    /// the rest behind a "N more lines" notice. Mirrors the historical
+    /// hardcoded `200` in `cc_tui::render::render_assistant_message_lines`.
+    /// Configurable via `Config.tui_max_lines_per_msg` /
+    /// `--tui-max-lines-per-msg`.
+    pub const DEFAULT_TUI_MAX_LINES_PER_MSG: usize = 200;
+    /// Max lines of tool-result output the TUI shows inline before
+    /// collapsing the tail with a "ctrl+o to expand" notice. Mirrors the
+    /// historical hardcoded `30` `TOOL_RESULT_MAX_LINES` in
+    /// `cc_tui::messages`. Configurable via
+    /// `Config.tui_tool_result_max_lines` / `--tui-tool-result-max-lines`.
+    pub const DEFAULT_TUI_TOOL_RESULT_MAX_LINES: usize = 30;
+    /// Char threshold above which the TUI head+tail-renders a user
+    /// prompt with the middle hidden. Mirrors the historical hardcoded
+    /// `10_000` `MAX_USER_PROMPT_DISPLAY_CHARS` in `cc_tui::messages`.
+    /// Configurable via `Config.tui_user_prompt_display_max_chars` /
+    /// `--tui-user-prompt-display-max-chars`.
+    pub const DEFAULT_TUI_USER_PROMPT_DISPLAY_MAX_CHARS: usize = 10_000;
 }
 
 // ---------------------------------------------------------------------------
