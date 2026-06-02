@@ -4,6 +4,13 @@ All notable changes to uppli-code are documented in this file.
 
 ## Unreleased
 
+### Architecture: AnthropicClient reads caps from deepseek.toml (PR C, full DRY)
+
+- **AnthropicClient no longer hardcodes DeepSeek's capabilities.** Previously the same `ProviderCapabilities` (model list, pricing, supports_vision, default_model, etc.) lived in BOTH `crates/api/presets/deepseek.toml` AND a `OnceLock` inside `AnthropicClient::capabilities()`. Editing one without the other silently lied to the runtime — guarded only by a workspace consistency test.
+- **Now there is one source of truth: the TOML.** `AnthropicClient::new(cfg, caps)` accepts a `ProviderCapabilities` constructed by the loader. The factory branch for DeepSeek (`provider_factory::create_deepseek_provider`) passes `loaded.capabilities.clone()` so the runtime caps come directly from `deepseek.toml`. The `from_config` convenience constructor does the same lookup automatically.
+- **Removed**: the OnceLock in `lib.rs::client::AnthropicClient::capabilities()` and the `⚠ ADVISORY ONLY` block in `deepseek.toml`. The `test_deepseek_toml_caps_match_static_anthropic_client_caps` test was deleted (it would assert TOML == TOML, which is vacuous).
+- The provider construction path is now homogeneous across all 7 providers — each one reads its caps from its TOML preset and there is no second declaration anywhere.
+
 ### Architecture: CLI provider-agnostic + provider rejects, never degrades silently (PR C)
 
 User's directive: **"CLI agnostique du provider, et si le provider ne sait pas faire un truc ça retourne une erreur, ça évite 40 millions de paramètres."** Translated into code:

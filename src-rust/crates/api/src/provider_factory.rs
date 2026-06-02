@@ -165,12 +165,15 @@ fn create_deepseek_provider(
 
     let use_bearer_auth = api_key.starts_with("eyJ");
 
-    let client = crate::AnthropicClient::new(crate::client::ClientConfig {
-        api_key,
-        api_base,
-        use_bearer_auth,
-        ..Default::default()
-    })?;
+    let client = crate::AnthropicClient::new(
+        crate::client::ClientConfig {
+            api_key,
+            api_base,
+            use_bearer_auth,
+            ..Default::default()
+        },
+        loaded.capabilities.clone(),
+    )?;
 
     Ok(Box::new(client))
 }
