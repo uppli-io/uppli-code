@@ -1651,7 +1651,6 @@ async fn run_sdk_headless(
                         /cost — Show session cost\n\
                         /compact — Compact context\n\
                         /model — Current model info\n\
-                        /fast — Toggle fast mode\n\
                         /thinking — Toggle extended thinking\n\
                         /effort — Set effort level\n\
                         /memory — View UPPLI.md files\n\
@@ -2838,7 +2837,7 @@ async fn run_interactive(
                             //   /model claude-haiku  → set model, don't open picker
                             //   /theme dark          → set theme, don't open picker
                             //   /resume <id>         → load session, don't open browser
-                            // Also skip TUI for /vim, /voice, /fast with explicit
+                            // Also skip TUI for /vim, /voice with explicit
                             // on|off args so the blind-toggle doesn't misfire.
                             let skip_tui_for_args = !cmd_args.is_empty()
                                 && matches!(
@@ -2850,8 +2849,6 @@ async fn run_interactive(
                                         | "vim"
                                         | "vi"
                                         | "voice"
-                                        | "fast"
-                                        | "speed"
                                 );
                             let handled_by_tui = if skip_tui_for_args {
                                 false
@@ -2968,12 +2965,6 @@ async fn run_interactive(
                                     if let Some(ref model) = new_cfg.model {
                                         app.model_name = model.clone();
                                     }
-                                    // Sync fast_mode visual indicator.
-                                    app.fast_mode = new_cfg
-                                        .model
-                                        .as_deref()
-                                        .map(|m| m.contains("haiku"))
-                                        .unwrap_or(false);
                                     // Sync plan_mode visual indicator.
                                     app.plan_mode = matches!(
                                         new_cfg.permission_mode,
@@ -2983,13 +2974,9 @@ async fn run_interactive(
                                 }
                                 Some(CommandResult::ConfigChangeMessage(new_cfg, msg)) => {
                                     cmd_ctx.config = new_cfg.clone();
-                                    // Sync model name + fast_mode visual indicator.
+                                    // Sync model name shown in the TUI header.
                                     if let Some(ref model) = new_cfg.model {
                                         app.model_name = model.clone();
-                                        app.fast_mode = model.contains("haiku");
-                                    } else {
-                                        // model reset to None means fast mode off.
-                                        app.fast_mode = false;
                                     }
                                     app.config = new_cfg;
                                     app.status_message = Some(msg);

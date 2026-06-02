@@ -150,7 +150,6 @@ pub struct StatuslineCommand;
 pub struct SecurityReviewCommand;
 pub struct TerminalSetupCommand;
 pub struct ExtraUsageCommand;
-pub struct FastCommand;
 pub struct ThinkBackCommand;
 pub struct ThinkBackPlayCommand;
 pub struct FeedbackCommand;
@@ -1154,7 +1153,6 @@ impl SlashCommand for StatusCommand {
         // UI settings
         let ui = load_ui_settings();
         let editor_mode = ui.editor_mode.as_deref().unwrap_or("normal");
-        let fast_mode = ui.fast_mode.unwrap_or(false);
 
         // Git status
         let git_branch = tokio::process::Command::new("git")
@@ -1171,7 +1169,6 @@ impl SlashCommand for StatusCommand {
              Auth:           {auth_status}\n\
              Model:          {model}\n\
              Permission mode: {perm:?}\n\
-             Fast mode:      {fast}\n\
              Editor mode:    {editor}\n\n\
              Session\n\
              ───────\n\
@@ -1190,7 +1187,6 @@ impl SlashCommand for StatusCommand {
             auth_status = auth_status,
             model = ctx.config.effective_model(),
             perm = ctx.config.permission_mode,
-            fast = if fast_mode { "on" } else { "off" },
             editor = editor_mode,
             sid = &ctx.session_id[..ctx.session_id.len().min(12)],
             title = ctx.session_title.as_deref().unwrap_or("(untitled)"),
@@ -3472,8 +3468,6 @@ struct UiSettings {
     #[serde(default)]
     pub editor_mode: Option<String>, // "vim" or "normal"
     #[serde(default)]
-    pub fast_mode: Option<bool>,
-    #[serde(default)]
     pub voice_enabled: Option<bool>,
     #[serde(default)]
     pub statusline_show_cost: Option<bool>,
@@ -4825,72 +4819,6 @@ impl SlashCommand for InstallSlackAppCommand {
     }
 }
 
-// ---- /fast (/speed) ------------------------------------------------------
-
-#[async_trait]
-impl SlashCommand for FastCommand {
-    fn name(&self) -> &str {
-        "fast"
-    }
-    fn aliases(&self) -> Vec<&str> {
-        vec!["speed"]
-    }
-    fn description(&self) -> &str {
-        "Toggle fast mode (uses a faster/cheaper model)"
-    }
-    fn help(&self) -> &str {
-        "Usage: /fast [on|off]\n\n\
-         Fast mode switches to a faster, more economical model variant\n\
-         (claude-haiku) for quick responses. Toggle without argument to switch.\n\
-         The setting is persisted to ~/.uppli/ui-settings.json."
-    }
-
-    async fn execute(&self, args: &str, ctx: &mut CommandContext) -> CommandResult {
-        let current = load_ui_settings();
-        let currently_on = current.fast_mode.unwrap_or(false);
-
-        let enable = match args.trim() {
-            "on" | "enable" | "true" | "1" => true,
-            "off" | "disable" | "false" | "0" => false,
-            "" => !currently_on,
-            other => {
-                return CommandResult::Error(format!(
-                    "Unknown argument '{}'. Use: /fast [on|off]",
-                    other
-                ))
-            }
-        };
-
-        if let Err(e) = mutate_ui_settings(|s| s.fast_mode = Some(enable)) {
-            return CommandResult::Error(format!("Failed to save setting: {}", e));
-        }
-
-        let fast_model = ""; // provider-driven
-        let normal_model = ctx.config.model.as_deref().unwrap_or("unknown");
-
-        if enable {
-            let mut new_config = ctx.config.clone();
-            new_config.model = Some(fast_model.to_string());
-            CommandResult::ConfigChangeMessage(
-                new_config,
-                format!(
-                    "Fast mode ON. Using {} for quicker, cheaper responses.\n\
-                     Use /fast off to return to {}.",
-                    fast_model, normal_model
-                ),
-            )
-        } else {
-            let mut new_config = ctx.config.clone();
-            // Restore default / saved model
-            new_config.model = None;
-            CommandResult::ConfigChangeMessage(
-                new_config,
-                "Fast mode OFF. Restored to provider default model.".to_string(),
-            )
-        }
-    }
-}
-
 // ---- /think-back ---------------------------------------------------------
 
 #[async_trait]
@@ -5912,7 +5840,6 @@ pub fn all_commands() -> Vec<Box<dyn SlashCommand>> {
         Box::new(SecurityReviewCommand),
         Box::new(TerminalSetupCommand),
         Box::new(ExtraUsageCommand),
-        Box::new(FastCommand),
         Box::new(ThinkBackCommand),
         Box::new(ThinkBackPlayCommand),
         Box::new(FeedbackCommand),

@@ -138,9 +138,6 @@ pub struct ModelPickerState {
     pub loading_models: bool,
 
     // ── Provider metadata (provider-agnostic) ─────────────────
-    /// The model ID that fast-mode locks to (from `ProviderCapabilities::fast_model`).
-    /// `None` means the provider has no fast-mode concept.
-    pub fast_model_id: Option<String>,
     /// Per-model metadata from the provider — used to derive effort support,
     /// descriptions, and max-effort eligibility without hardcoded model IDs.
     known_metadata: Vec<ModelMetadata>,
@@ -166,7 +163,6 @@ impl ModelPickerState {
             fast_mode: false,
             models_loaded: false,
             loading_models: false,
-            fast_model_id: None,
             known_metadata: Vec::new(),
         }
     }
@@ -176,7 +172,6 @@ impl ModelPickerState {
     /// Populates the model list, fast-mode model, and per-model metadata
     /// so that effort support and descriptions are fully provider-agnostic.
     pub fn init_from_capabilities(&mut self, caps: &ProviderCapabilities) {
-        self.fast_model_id = caps.fast_model.clone();
         self.known_metadata = caps.known_models.clone();
         self.models = Self::models_from_metadata(&caps.known_models);
         // Mark as loaded so the picker doesn't show "loading…" on first open.
@@ -485,24 +480,6 @@ pub fn render_model_picker(state: &ModelPickerState, area: Rect, buf: &mut Buffe
 
     // --- Build line list --------------------------------------------------
     let mut lines: Vec<Line> = Vec::new();
-
-    // Fast-mode notice
-    if state.fast_mode {
-        let fast_label = state.fast_model_id.as_deref().unwrap_or("fast model");
-        lines.push(Line::from(vec![
-            Span::styled("  \u{26a1} ", Style::default().fg(Color::Yellow)),
-            Span::styled(
-                format!(
-                    "Fast mode is ON ({} only). Switching turns it off.",
-                    fast_label
-                ),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::ITALIC),
-            ),
-        ]));
-        lines.push(Line::from(""));
-    }
 
     // Loading-models notice
     if state.loading_models {
@@ -898,13 +875,6 @@ mod tests {
         p.selected_idx = p.models.iter().position(|m| m.id == "test-chat").unwrap();
         let effort = p.confirm();
         assert!(effort.is_some_and(|(_, e)| e.is_none()));
-    }
-
-    // 14. fast_model_id is set from capabilities.
-    #[test]
-    fn fast_model_from_capabilities() {
-        let p = make_picker();
-        assert_eq!(p.fast_model_id.as_deref(), Some("test-chat"));
     }
 
     // 15. render_model_picker does not panic for a default-area call.
