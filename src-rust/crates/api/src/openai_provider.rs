@@ -1179,18 +1179,42 @@ impl OpenAiProvider {
     }
 
     /// Build the streaming URL based on provider format.
+    ///
+    /// Most OpenAI-compatible endpoints follow the convention
+    /// `<api_base>/v1/chat/completions`. Some — notably z.ai / Zhipu's
+    /// bigmodel API — already include the version segment in their
+    /// `api_base` (e.g. `https://api.z.ai/api/paas/v4`) and the real
+    /// path is `<api_base>/chat/completions` without an extra `/v1/`.
+    /// Detect this via the trailing version segment and skip the
+    /// redundant `/v1/` to avoid a 404.
     fn stream_url(&self) -> String {
         match self.config.api_format {
             ApiFormat::Ollama => format!("{}/api/chat", self.config.api_base),
-            _ => format!("{}/v1/chat/completions", self.config.api_base),
+            _ => format!(
+                "{}{}/chat/completions",
+                self.config.api_base,
+                if base_already_versioned(&self.config.api_base) {
+                    ""
+                } else {
+                    "/v1"
+                }
+            ),
         }
     }
 
-    /// Build the models URL.
+    /// Build the models URL. Same versioning rule as `stream_url`.
     fn models_url(&self) -> String {
         match self.config.api_format {
             ApiFormat::Ollama => format!("{}/api/tags", self.config.api_base),
-            _ => format!("{}/v1/models", self.config.api_base),
+            _ => format!(
+                "{}{}/models",
+                self.config.api_base,
+                if base_already_versioned(&self.config.api_base) {
+                    ""
+                } else {
+                    "/v1"
+                }
+            ),
         }
     }
 
@@ -1275,6 +1299,16 @@ impl LlmProvider for OpenAiProvider {
         let openai_req = self.translate_request(&request);
         let url = self.stream_url();
         let body = serde_json::to_value(&openai_req).map_err(ClaudeError::Json)?;
+
+        // Diagnostic body dump under RUST_LOG=trace — invaluable for the
+        // GLM/z.ai "400 invalid api parameter" class of errors where the
+        // server returns no detail. Pretty-printed; truncated for sanity.
+        if tracing::enabled!(tracing::Level::TRACE) {
+            let preview = serde_json::to_string_pretty(&body)
+                .unwrap_or_else(|_| "<unserialisable>".to_string());
+            let cut = preview.chars().take(50000).collect::<String>();
+            tracing::trace!(url = %url, body = %cut, "openai_provider outgoing request");
+        }
 
         let resp = self.send_with_retry(&url, &body).await?;
         let (tx, rx) = mpsc::channel(256);
@@ -1530,6 +1564,21 @@ fn image_url_from_source(block_type: &str, block: &Value) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Detect whether `api_base` already ends with a `/vN` segment so the
+/// stream/models URL builders don't tack on a redundant `/v1/`. Used to
+/// support z.ai / Zhipu (api_base = "...paas/v4") whose real chat path
+/// is just `<api_base>/chat/completions` — no extra `/v1/`.
+fn base_already_versioned(api_base: &str) -> bool {
+    // Match trailing /vDIGITS (optionally with trailing /).
+    let trimmed = api_base.trim_end_matches('/');
+    if let Some(last) = trimmed.rsplit('/').next() {
+        if let Some(rest) = last.strip_prefix('v') {
+            return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit());
+        }
+    }
+    false
 }
 
 /// Build the same explicit-error text that AnthropicClient injects when
@@ -1938,6 +1987,25 @@ mod tests {
             s.contains("Restart") || s.contains("--provider"),
             "must instruct the user to relaunch with a vision-capable provider, got: {s}"
         );
+    }
+
+    #[test]
+    fn base_already_versioned_recognises_v4_suffix() {
+        assert!(base_already_versioned("https://api.z.ai/api/paas/v4"));
+        assert!(base_already_versioned("https://api.z.ai/api/paas/v4/"));
+        assert!(base_already_versioned(
+            "https://open.bigmodel.cn/api/paas/v4"
+        ));
+        assert!(base_already_versioned("https://example.com/v123"));
+    }
+
+    #[test]
+    fn base_already_versioned_rejects_non_version_suffixes() {
+        assert!(!base_already_versioned("https://api.openai.com"));
+        assert!(!base_already_versioned("https://api.mistral.ai"));
+        assert!(!base_already_versioned("https://api.deepseek.com"));
+        assert!(!base_already_versioned("https://api.example.com/v"));
+        assert!(!base_already_versioned("https://api.example.com/vapor"));
     }
 
     #[test]

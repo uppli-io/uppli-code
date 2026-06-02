@@ -325,17 +325,26 @@ mod tests {
     fn glm_loaded() {
         let registry = load_all_bundled().unwrap();
         let glm = registry.find("glm").expect("glm present");
-        // Default model is now the vision variant (PR S follow-up: bench
-        // needs PDF/image reading; text-only model can't do it).
-        assert_eq!(glm.capabilities.default_model, "glm-4.6v");
+        // Default model is the vision variant (PR C live fix: z.ai
+        // returns 400 for glm-4.6v; the actual API model is glm-4.5v).
+        assert_eq!(glm.capabilities.default_model, "glm-4.5v");
         assert!(glm.matches("zhipu"));
         assert!(glm.matches("bigmodel"));
-        // Verify glm-4.6 is still present as a non-default text-only option
+        assert!(glm.matches("z.ai"));
+        // Verify glm-4.5 is still present as a non-default text-only option
+        // (NOT marked fast_model — hybrid mode would route image
+        // tool-result turns to it and 400 on z.ai).
         assert!(glm
             .capabilities
             .known_models
             .iter()
-            .any(|m| m.id == "glm-4.6"));
+            .any(|m| m.id == "glm-4.5"));
+        assert!(
+            glm.capabilities.fast_model.is_none(),
+            "glm must NOT declare a fast_model — switching mid-session \
+             to a non-vision model would fail any tool-result containing \
+             an image with API 400 on z.ai"
+        );
     }
 
     #[test]

@@ -2,14 +2,18 @@ schema_version = 1
 
 [provider]
 name = "glm"
-aliases = ["zhipu", "bigmodel"]
+aliases = ["zhipu", "bigmodel", "z.ai"]
 display_name = "Zhipu (GLM)"
-description = "GLM 4.6 — Zhipu AI, OpenAI-compatible"
+description = "GLM via z.ai — OpenAI-compatible, vision-capable"
 attribution = "powered by Zhipu AI (GLM)"
 provider_type = "openai_compat"
 api_format = "openai"
-api_base = "https://open.bigmodel.cn/api/paas/v4"
-# GLM 4.6v is the default model and accepts image + PDF inputs.
+# z.ai is the international rebrand of Zhipu's BigModel API. The endpoint
+# already includes the /v4 version segment, so openai_provider's URL
+# builder detects this and skips the redundant /v1/ prefix (see
+# `base_already_versioned` in openai_provider.rs).
+api_base = "https://api.z.ai/api/paas/v4"
+# glm-4.5v is the default model and accepts image + PDF inputs.
 supports_vision = true
 
 [auth]
@@ -24,12 +28,15 @@ thinking_budget = 16000
 request_timeout_sec = 600
 max_retries = 5
 
-# Pricing per Zhipu public price sheet. Verify at https://open.bigmodel.cn/pricing
-# before relying on these for refacturation.
+# Model catalogue verified live on z.ai 2026-06. glm-4.6/4.6v existed
+# on the legacy bigmodel.cn endpoint but z.ai's API returns 400 for
+# them. Use 4.5v (vision) and 4.5 (text) as the canonical IDs.
+# Pricing per z.ai public price sheet — verify before relying on these
+# for refacturation.
 
 [[models]]
-id = "glm-4.6v"
-display_name = "GLM 4.6 Vision"
+id = "glm-4.5v"
+display_name = "GLM 4.5V"
 description = "Multimodal GLM — accepts image + PDF inputs (default for this provider)"
 context_window = 128000
 max_output_tokens = 16384
@@ -41,36 +48,11 @@ input_per_mtk = 0.30
 output_per_mtk = 0.90
 
 [[models]]
-id = "glm-4.6"
-display_name = "GLM 4.6"
-description = "Flagship GLM reasoning model (text-only)"
-context_window = 128000
-max_output_tokens = 16384
-supports_thinking = true
-
-[models.pricing]
-input_per_mtk = 0.50
-output_per_mtk = 1.50
-
-[[models]]
-id = "glm-4.6-flash"
-display_name = "GLM 4.6 Flash"
-description = "Fast GLM model for tool-result turns"
-context_window = 128000
-max_output_tokens = 16384
-supports_thinking = false
-fast = true
-
-[models.pricing]
-input_per_mtk = 0.10
-output_per_mtk = 0.30
-
-[[models]]
 id = "glm-4.5"
 display_name = "GLM 4.5"
-description = "Previous generation, kept for back-compat"
+description = "Flagship GLM reasoning model (text-only). NOT marked as fast_model: the hybrid fast-vs-thinking switch would otherwise route tool-result turns containing images to a non-vision model, producing a 400. On GLM we stay on the vision model end-to-end for correctness."
 context_window = 128000
-max_output_tokens = 8192
+max_output_tokens = 16384
 supports_thinking = false
 
 [models.pricing]
