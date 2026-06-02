@@ -1206,12 +1206,22 @@ pub async fn run_query_loop(
                     // requiring an Arc in the existing run_query_loop signature.
                     if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
                         if !api_key.is_empty() {
-                            if let Ok(sm_client) =
-                                cc_api::AnthropicClient::new(cc_api::client::ClientConfig {
-                                    api_key,
-                                    ..Default::default()
-                                })
-                            {
+                            // Pull DeepSeek's caps from the TOML loader —
+                            // single source of truth post PR C.
+                            let deepseek_caps = cc_api::providers::loader::registry()
+                                .find("deepseek")
+                                .map(|p| p.capabilities.clone());
+                            let sm_client_built = deepseek_caps.and_then(|caps| {
+                                cc_api::AnthropicClient::new(
+                                    cc_api::client::ClientConfig {
+                                        api_key,
+                                        ..Default::default()
+                                    },
+                                    caps,
+                                )
+                                .ok()
+                            });
+                            if let Some(sm_client) = sm_client_built {
                                 let sm_client: std::sync::Arc<dyn cc_api::LlmProvider> =
                                     std::sync::Arc::new(sm_client);
                                 tokio::spawn(async move {
@@ -1940,10 +1950,17 @@ mod tests {
 
     #[test]
     fn test_from_provider_max_tokens_uses_per_model_max_for_deepseek_default() {
-        let client = cc_api::client::AnthropicClient::new(cc_api::client::ClientConfig {
-            api_key: "test-key-not-used".to_string(),
-            ..Default::default()
-        })
+        let client = cc_api::client::AnthropicClient::new(
+            cc_api::client::ClientConfig {
+                api_key: "test-key-not-used".to_string(),
+                ..Default::default()
+            },
+            cc_api::providers::loader::registry()
+                .find("deepseek")
+                .expect("deepseek preset must exist")
+                .capabilities
+                .clone(),
+        )
         .expect("test client builds");
 
         let cfg = cc_core::config::Config::default();
@@ -1960,10 +1977,17 @@ mod tests {
 
     #[test]
     fn test_from_provider_respects_explicit_max_tokens_in_config() {
-        let client = cc_api::client::AnthropicClient::new(cc_api::client::ClientConfig {
-            api_key: "test-key-not-used".to_string(),
-            ..Default::default()
-        })
+        let client = cc_api::client::AnthropicClient::new(
+            cc_api::client::ClientConfig {
+                api_key: "test-key-not-used".to_string(),
+                ..Default::default()
+            },
+            cc_api::providers::loader::registry()
+                .find("deepseek")
+                .expect("deepseek preset must exist")
+                .capabilities
+                .clone(),
+        )
         .expect("test client builds");
 
         let cfg = cc_core::config::Config {

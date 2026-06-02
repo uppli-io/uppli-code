@@ -400,14 +400,29 @@ pub mod client {
     }
 
     /// The main Anthropic API client.
+    ///
+    /// The capabilities (model list, pricing, supports_vision, auth) are
+    /// loaded ONCE from the TOML preset (`crates/api/presets/<name>.toml`)
+    /// at construction time and stored here. There is no second source of
+    /// truth — editing the TOML edits the runtime behaviour. The previous
+    /// design hard-coded the same caps in a `OnceLock`, which forced a
+    /// "TOML matches static" consistency test to guard against drift.
+    /// That duplication is now gone.
     pub struct AnthropicClient {
         http: reqwest::Client,
         config: ClientConfig,
+        pub(crate) capabilities: provider::ProviderCapabilities,
     }
 
     impl AnthropicClient {
-        /// Build a new client.  Panics if `config.api_key` is empty.
-        pub fn new(config: ClientConfig) -> anyhow::Result<Self> {
+        /// Build a new client given an HTTP config and a fully-built
+        /// `ProviderCapabilities`. The caps are usually produced by the
+        /// TOML loader (`providers::loader::registry().find("deepseek")`),
+        /// but tests may pass a hand-built struct.
+        pub fn new(
+            config: ClientConfig,
+            capabilities: provider::ProviderCapabilities,
+        ) -> anyhow::Result<Self> {
             if config.api_key.is_empty() {
                 return Err(anyhow::anyhow!(
                     "Anthropic API key is required. Set ANTHROPIC_API_KEY or pass --api-key."
@@ -418,21 +433,34 @@ pub mod client {
                 .timeout(config.request_timeout)
                 .build()?;
 
-            Ok(Self { http, config })
+            Ok(Self {
+                http,
+                config,
+                capabilities,
+            })
         }
 
-        /// Convenience constructor that resolves the key from config/env.
+        /// Convenience constructor that fetches the DeepSeek preset from
+        /// the TOML loader and resolves the API key from config / env.
+        /// Single line of indirection between deepseek.toml and the
+        /// runtime client.
         pub fn from_config(cfg: &cc_core::config::Config) -> anyhow::Result<Self> {
             let api_key = cfg
                 .resolve_api_key()
                 .ok_or_else(|| anyhow::anyhow!("No API key found"))?;
             let api_base = cfg.resolve_api_base();
+            let loaded = crate::providers::loader::registry()
+                .find("deepseek")
+                .ok_or_else(|| anyhow::anyhow!("deepseek preset missing from TOML registry"))?;
 
-            Self::new(ClientConfig {
-                api_key,
-                api_base,
-                ..Default::default()
-            })
+            Self::new(
+                ClientConfig {
+                    api_key,
+                    api_base,
+                    ..Default::default()
+                },
+                loaded.capabilities.clone(),
+            )
         }
 
         // ---- Provider-side block degradation -----------------------------
@@ -448,10 +476,9 @@ pub mod client {
         // The model never sees a block it can't read, but the textual
         // signal is preserved so it can still reason about the payload.
         pub(crate) fn degrade_blocks_if_needed(&self, request: &mut CreateMessageRequest) {
-            // `capabilities()` comes from the LlmProvider trait impl on
-            // AnthropicClient below; needs to be in scope here.
-            use provider::LlmProvider as _;
-            if self.capabilities().supports_vision {
+            // Direct field access — the trait method has the same name
+            // so calling `self.capabilities()` here would recurse.
+            if self.capabilities.supports_vision {
                 return;
             }
             for msg in request.messages.iter_mut() {
@@ -942,94 +969,11 @@ impl provider::LlmProvider for client::AnthropicClient {
     }
 
     fn capabilities(&self) -> &provider::ProviderCapabilities {
-        use once_cell::sync::Lazy;
-        static CAPS: Lazy<provider::ProviderCapabilities> = Lazy::new(|| {
-            provider::ProviderCapabilities {
-                name: "deepseek".to_string(),
-                display_name: "DeepSeek".to_string(),
-                attribution: "powered by DeepSeek".to_string(),
-                default_model: "deepseek-v4-pro".to_string(),
-                fast_model: Some("deepseek-v4-flash".to_string()),
-                // Pricing + capabilities sourced from official DeepSeek docs:
-                //   https://api-docs.deepseek.com/quick_start/pricing
-                // NOTE: v4-pro currently shows a 75% promotional discount on
-                // the docs (regular: $1.74 in / $3.48 out per Mtk). Revisit
-                // when the promo ends.
-                known_models: vec![
-                    provider::ModelMetadata {
-                        id: "deepseek-v4-pro".to_string(),
-                        display_name: "DeepSeek V4 Pro".to_string(),
-                        description: "Flagship V4 reasoning model — 1M context, 384k max output, deep reasoning".to_string(),
-                        context_window: 1_000_000,
-                        max_output_tokens: 384_000,
-                        supports_thinking: true,
-                        pricing: Some(provider::ModelPricing {
-                            input_per_mtk: 0.435,
-                            output_per_mtk: 0.87,
-                            cache_creation_per_mtk: 0.0,
-                            cache_read_per_mtk: 0.003625,
-                        }),
-                    },
-                    provider::ModelMetadata {
-                        id: "deepseek-v4-flash".to_string(),
-                        display_name: "DeepSeek V4 Flash".to_string(),
-                        description: "Fast V4 model — 1M context, 384k max output, cheaper than V4 Pro".to_string(),
-                        context_window: 1_000_000,
-                        max_output_tokens: 384_000,
-                        supports_thinking: true,
-                        pricing: Some(provider::ModelPricing {
-                            input_per_mtk: 0.14,
-                            output_per_mtk: 0.28,
-                            cache_creation_per_mtk: 0.0,
-                            cache_read_per_mtk: 0.0028,
-                        }),
-                    },
-                    provider::ModelMetadata {
-                        id: "deepseek-reasoner".to_string(),
-                        display_name: "DeepSeek Reasoner (R2)".to_string(),
-                        description: "Deprecating — superseded by deepseek-v4-pro".to_string(),
-                        context_window: 128_000,
-                        max_output_tokens: 64_000,
-                        supports_thinking: true,
-                        pricing: Some(provider::ModelPricing {
-                            input_per_mtk: 0.55,
-                            output_per_mtk: 2.19,
-                            cache_creation_per_mtk: 0.0,
-                            cache_read_per_mtk: 0.14,
-                        }),
-                    },
-                    provider::ModelMetadata {
-                        id: "deepseek-chat".to_string(),
-                        display_name: "DeepSeek Chat (V4)".to_string(),
-                        description: "Deprecating — superseded by deepseek-v4-flash".to_string(),
-                        context_window: 128_000,
-                        max_output_tokens: 8_192,
-                        supports_thinking: false,
-                        pricing: Some(provider::ModelPricing {
-                            input_per_mtk: 0.27,
-                            output_per_mtk: 1.10,
-                            cache_creation_per_mtk: 0.0,
-                            cache_read_per_mtk: 0.07,
-                        }),
-                    },
-                ],
-                default_max_tokens: 64_000,
-                default_thinking_budget: Some(32_000),
-                api_format: provider::ApiFormat::Anthropic,
-                default_api_base: "https://api.deepseek.com/anthropic".to_string(),
-                // DeepSeek's V4 family does not (yet) accept image/document
-                // blocks in its Anthropic-compatible endpoint. Conservative
-                // default — flip to true if/when DeepSeek ships vision.
-                supports_vision: false,
-                auth: provider::AuthConfig {
-                    env_vars: &["DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY"],
-                    keychain_key: "deepseek",
-                    display_label: "DeepSeek",
-                    required: true,
-                },
-            }
-        });
-        &CAPS
+        // Caps are loaded from `crates/api/presets/deepseek.toml` at
+        // construction time (see `AnthropicClient::new` /
+        // `from_config`) and stored on the client. Single source of
+        // truth: edit the TOML, the runtime behaviour follows.
+        &self.capabilities
     }
 
     // model_supports_thinking, fast_model_for, context_window, max_output_tokens
@@ -1479,11 +1423,7 @@ mod tests {
         // End-to-end: build a CreateMessageRequest with an Image block,
         // run it through `degrade_blocks_if_needed`, assert the wire
         // body carries an EXPLICIT error text (no silent caption).
-        let cfg = client::ClientConfig {
-            api_key: "test-key-not-used".to_string(),
-            ..Default::default()
-        };
-        let client = client::AnthropicClient::new(cfg).expect("client builds");
+        let client = deepseek_test_client();
         let mut req = CreateMessageRequest::builder("deepseek-v4-pro", 4096).build();
         req.messages.push(ApiMessage {
             role: "user".to_string(),
@@ -1641,17 +1581,29 @@ mod tests {
     //   - fast_model is a different, cheaper model than default
     //   - deprecated models stay listed for back-compat but flagged
 
-    fn deepseek_caps_for_test() -> &'static provider::ProviderCapabilities {
-        use provider::LlmProvider;
-        // Build with a dummy key — AnthropicClient::new only checks non-empty.
-        // We only read .capabilities(), no network calls.
+    /// Build a `ProviderCapabilities` for DeepSeek by reading the
+    /// TOML preset. Single source of truth — the same caps the
+    /// runtime client uses.
+    fn deepseek_test_caps() -> provider::ProviderCapabilities {
+        crate::providers::loader::registry()
+            .find("deepseek")
+            .expect("deepseek preset must exist")
+            .capabilities
+            .clone()
+    }
+
+    /// Build a fake AnthropicClient that won't be used over the wire.
+    fn deepseek_test_client() -> client::AnthropicClient {
         let cfg = client::ClientConfig {
             api_key: "test-key-not-used".to_string(),
             ..Default::default()
         };
-        let client = Box::leak(Box::new(
-            client::AnthropicClient::new(cfg).expect("test client builds"),
-        ));
+        client::AnthropicClient::new(cfg, deepseek_test_caps()).expect("test client builds")
+    }
+
+    fn deepseek_caps_for_test() -> &'static provider::ProviderCapabilities {
+        use provider::LlmProvider;
+        let client = Box::leak(Box::new(deepseek_test_client()));
         client.capabilities()
     }
 
@@ -1687,11 +1639,7 @@ mod tests {
     #[test]
     fn test_deepseek_default_model_supports_thinking() {
         use provider::LlmProvider;
-        let cfg = client::ClientConfig {
-            api_key: "test-key".to_string(),
-            ..Default::default()
-        };
-        let client = client::AnthropicClient::new(cfg).expect("test client builds");
+        let client = deepseek_test_client();
         let default_model = client.capabilities().default_model.clone();
         assert!(
             client.model_supports_thinking(&default_model),
@@ -1700,28 +1648,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_deepseek_toml_caps_match_static_anthropic_client_caps() {
-        // The TOML at crates/api/presets/deepseek.toml declares
-        // `supports_vision`, BUT it is not actually read at runtime:
-        // DeepSeek goes through AnthropicClient whose ProviderCapabilities
-        // is a hardcoded OnceLock. This is a documented (annotated in the
-        // TOML) trap: edit one side, the other silently lies.
-        //
-        // The test asserts the single remaining flag stays in sync.
-        // Remove (or invert) when AnthropicClient is wired through the
-        // loader registry — see TODO(pr-c) in deepseek.toml.
-        let loaded = crate::providers::loader::registry()
-            .find("deepseek")
-            .expect("deepseek must be in the registry");
-        let static_caps = deepseek_caps_for_test();
-        assert_eq!(
-            loaded.capabilities.supports_vision, static_caps.supports_vision,
-            "deepseek.toml supports_vision ({}) drifted from AnthropicClient static caps ({}). \
-             Update both — see TODO(pr-c) in deepseek.toml.",
-            loaded.capabilities.supports_vision, static_caps.supports_vision
-        );
-    }
+    // Note: the previous `test_deepseek_toml_caps_match_static_anthropic_client_caps`
+    // test has been REMOVED. After AnthropicClient was wired through the
+    // TOML loader (commit "refactor(api): AnthropicClient loads caps from
+    // deepseek.toml"), there is no longer a static OnceLock to compare
+    // against — the runtime caps ARE the TOML caps. Asserting "TOML == TOML"
+    // would be vacuous.
 
     #[test]
     fn test_deepseek_fast_model_differs_from_default() {
