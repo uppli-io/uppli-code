@@ -35,13 +35,7 @@ display_name = "Qwen 3.6 Plus"
 description = "Agentic coding model, 1M context"
 context_window = 1000000
 max_output_tokens = 32768
-# Thinking via OpenRouter is OFF until we implement and live-verify
-# their normalized `reasoning: {effort, max_tokens}` dialect (a 4th
-# wire shape distinct from anthropic_nested / qwen3 / ollama_think).
-# Without it, `--effort` would silently drop on this route — and the
-# loader guard in providers/loader.rs refuses configs that promise
-# thinking without a declared dialect. Re-enable once the OpenRouter
-# dialect is wired into ThinkingFormat and tested live.
+# OpenRouter does not declare a thinking dialect supported by this adapter.
 supports_thinking = false
 default = true
 

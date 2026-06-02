@@ -113,22 +113,12 @@ struct OpenAiRequest {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OpenAiTool>>,
-    /// Qwen3 dialect (Alibaba DashScope): `enable_thinking: true`.
-    /// Only set when the provider's thinking_format = Qwen3.
     #[serde(skip_serializing_if = "Option::is_none")]
     enable_thinking: Option<bool>,
-    /// Qwen3 dialect: max tokens for thinking. Paired with `enable_thinking`.
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking_budget: Option<u32>,
-    /// Ollama dialect: `think: bool`.
-    /// Only set when the provider's thinking_format = OllamaThink.
     #[serde(skip_serializing_if = "Option::is_none")]
     think: Option<bool>,
-    /// Anthropic-nested dialect on the OpenAI-compat wire (z.ai for GLM-5+,
-    /// or any provider whose `thinking_format = AnthropicNested`).
-    /// Shape: `thinking: {type: "enabled", budget_tokens: N}`.
-    /// Mirrors the official Anthropic Messages API spec verbatim — we
-    /// never invent our own dialect here.
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<crate::types::ThinkingConfig>,
 }
@@ -343,37 +333,23 @@ impl OpenAiProvider {
                 .collect()
         });
 
-        // ── Thinking wire dispatch ────────────────────────────────
-        //
-        // Each provider declares its thinking dialect via the
-        // ProviderCapabilities.thinking_format field (mirrored into
-        // OpenAiProviderConfig). We mirror EACH dialect verbatim to its
-        // upstream spec — uppli-code is a transparent adapter, it never
-        // invents fields. The budget value comes from the user's
-        // --effort flag (EffortLevel::thinking_budget_tokens in cc-core),
-        // there is no per-provider budget override.
+        // Mirror each provider's upstream thinking dialect verbatim.
         use crate::provider::ThinkingFormat;
         let user_wants_thinking = req.thinking.is_some();
         let budget = req.thinking.as_ref().map(|t| t.budget_tokens);
 
         let (enable_thinking, thinking_budget, think, thinking_nested) =
             match (self.config.thinking_format, user_wants_thinking) {
-                (Some(ThinkingFormat::Qwen3), _) => {
-                    // Qwen3 docs require both fields even when disabled
-                    // (enable_thinking=false on non-streaming).
-                    (
-                        Some(user_wants_thinking),
-                        if user_wants_thinking { budget } else { None },
-                        None,
-                        None,
-                    )
-                }
+                (Some(ThinkingFormat::Qwen3), _) => (
+                    Some(user_wants_thinking),
+                    if user_wants_thinking { budget } else { None },
+                    None,
+                    None,
+                ),
                 (Some(ThinkingFormat::OllamaThink), _) => {
                     (None, None, Some(user_wants_thinking), None)
                 }
                 (Some(ThinkingFormat::AnthropicNested), true) => {
-                    // z.ai / future Anthropic-on-OpenAI-wire providers.
-                    // Forward the ThinkingConfig as-is (Anthropic spec).
                     (None, None, None, req.thinking.clone())
                 }
                 _ => (None, None, None, None),
@@ -2513,5 +2489,246 @@ data: [DONE]\n\n";
         let (msg, _, stop) = acc.finish();
         assert_eq!(msg.get_text(), Some("The answer is 42."));
         assert_eq!(stop.as_deref(), Some("end_turn"));
+    }
+
+    // Wire-payload snapshot tests: pin the JSON shape of translate_request
+    // across the four thinking-dialect branches. Effort→budget mapping is the
+    // canonical table in crates/core/src/effort.rs.
+
+    /// Translate a thinking request through the given preset and return the serialized wire payload.
+    fn snapshot_wire_payload(
+        provider_preset: &str,
+        model: &str,
+        budget: Option<u32>,
+    ) -> serde_json::Value {
+        let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry()
+                .find(provider_preset)
+                .unwrap_or_else(|| panic!("unknown provider preset '{}'", provider_preset)),
+            "test-key-long-enough".to_string(),
+            Some(model.to_string()),
+        ))
+        .unwrap();
+
+        let req = CreateMessageRequest {
+            model: model.to_string(),
+            max_tokens: 4096,
+            messages: vec![crate::types::ApiMessage {
+                role: "user".to_string(),
+                content: Value::String("Think about this".to_string()),
+            }],
+            system: None,
+            tools: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: true,
+            thinking: budget.map(crate::types::ThinkingConfig::enabled),
+            output_config: None,
+        };
+
+        let openai_req = provider.translate_request(&req);
+        serde_json::to_value(&openai_req).expect("OpenAiRequest must serialize")
+    }
+
+    /// None = field absent; Some = field present with the given value.
+    fn assert_thinking_fields(
+        payload: &serde_json::Value,
+        enable_thinking: Option<bool>,
+        thinking_budget: Option<u64>,
+        think: Option<bool>,
+        thinking_nested: Option<u64>,
+    ) {
+        let obj = payload.as_object().expect("payload must be a JSON object");
+
+        match enable_thinking {
+            Some(b) => assert_eq!(
+                obj.get("enable_thinking"),
+                Some(&serde_json::Value::Bool(b)),
+                "enable_thinking expected {} in payload {:?}",
+                b,
+                obj
+            ),
+            None => assert!(
+                !obj.contains_key("enable_thinking"),
+                "enable_thinking must be ABSENT but found {:?} in {:?}",
+                obj.get("enable_thinking"),
+                obj
+            ),
+        }
+
+        match thinking_budget {
+            Some(n) => assert_eq!(
+                obj.get("thinking_budget").and_then(|v| v.as_u64()),
+                Some(n),
+                "thinking_budget expected {} in payload {:?}",
+                n,
+                obj
+            ),
+            None => assert!(
+                !obj.contains_key("thinking_budget"),
+                "thinking_budget must be ABSENT but found {:?} in {:?}",
+                obj.get("thinking_budget"),
+                obj
+            ),
+        }
+
+        match think {
+            Some(b) => assert_eq!(
+                obj.get("think"),
+                Some(&serde_json::Value::Bool(b)),
+                "think expected {} in payload {:?}",
+                b,
+                obj
+            ),
+            None => assert!(
+                !obj.contains_key("think"),
+                "think must be ABSENT but found {:?} in {:?}",
+                obj.get("think"),
+                obj
+            ),
+        }
+
+        match thinking_nested {
+            Some(n) => {
+                let nested = obj
+                    .get("thinking")
+                    .expect("thinking nested object expected to be present");
+                let nested_obj = nested
+                    .as_object()
+                    .expect("thinking field must be a JSON object");
+                assert_eq!(
+                    nested_obj.get("type").and_then(|v| v.as_str()),
+                    Some("enabled"),
+                    "thinking.type must equal 'enabled' (Anthropic spec)"
+                );
+                assert_eq!(
+                    nested_obj.get("budget_tokens").and_then(|v| v.as_u64()),
+                    Some(n),
+                    "thinking.budget_tokens expected {} got {:?}",
+                    n,
+                    nested_obj.get("budget_tokens")
+                );
+            }
+            None => assert!(
+                !obj.contains_key("thinking"),
+                "thinking nested object must be ABSENT but found {:?} in {:?}",
+                obj.get("thinking"),
+                obj
+            ),
+        }
+    }
+
+    // ── alibaba (Qwen3 dialect) ────────────────────────────────────────
+
+    #[test]
+    fn snapshot_alibaba_none_emits_enable_thinking_false_no_budget() {
+        let payload = snapshot_wire_payload("alibaba", "qwen3-235b-a22b", None);
+        assert_thinking_fields(&payload, Some(false), None, None, None);
+    }
+
+    #[test]
+    fn snapshot_alibaba_low_emits_enable_thinking_true_budget_8000() {
+        let payload = snapshot_wire_payload("alibaba", "qwen3-235b-a22b", Some(8_000));
+        assert_thinking_fields(&payload, Some(true), Some(8_000), None, None);
+    }
+
+    #[test]
+    fn snapshot_alibaba_medium_emits_enable_thinking_true_budget_16000() {
+        let payload = snapshot_wire_payload("alibaba", "qwen3-235b-a22b", Some(16_000));
+        assert_thinking_fields(&payload, Some(true), Some(16_000), None, None);
+    }
+
+    #[test]
+    fn snapshot_alibaba_high_emits_enable_thinking_true_budget_32000() {
+        let payload = snapshot_wire_payload("alibaba", "qwen3-235b-a22b", Some(32_000));
+        assert_thinking_fields(&payload, Some(true), Some(32_000), None, None);
+    }
+
+    #[test]
+    fn snapshot_alibaba_max_emits_enable_thinking_true_budget_64000() {
+        let payload = snapshot_wire_payload("alibaba", "qwen3-235b-a22b", Some(64_000));
+        assert_thinking_fields(&payload, Some(true), Some(64_000), None, None);
+    }
+
+    // ── glm (AnthropicNested dialect) ──────────────────────────────────
+
+    #[test]
+    fn snapshot_glm_none_emits_nothing() {
+        let payload = snapshot_wire_payload("glm", "glm-5", None);
+        assert_thinking_fields(&payload, None, None, None, None);
+    }
+
+    #[test]
+    fn snapshot_glm_low_emits_anthropic_nested_budget_8000() {
+        let payload = snapshot_wire_payload("glm", "glm-5", Some(8_000));
+        assert_thinking_fields(&payload, None, None, None, Some(8_000));
+    }
+
+    #[test]
+    fn snapshot_glm_medium_emits_anthropic_nested_budget_16000() {
+        let payload = snapshot_wire_payload("glm", "glm-5", Some(16_000));
+        assert_thinking_fields(&payload, None, None, None, Some(16_000));
+    }
+
+    #[test]
+    fn snapshot_glm_high_emits_anthropic_nested_budget_32000() {
+        let payload = snapshot_wire_payload("glm", "glm-5", Some(32_000));
+        assert_thinking_fields(&payload, None, None, None, Some(32_000));
+    }
+
+    #[test]
+    fn snapshot_glm_max_emits_anthropic_nested_budget_64000() {
+        let payload = snapshot_wire_payload("glm", "glm-5", Some(64_000));
+        assert_thinking_fields(&payload, None, None, None, Some(64_000));
+    }
+
+    // ── ollama (OllamaThink dialect) ───────────────────────────────────
+
+    #[test]
+    fn snapshot_ollama_none_emits_think_false() {
+        // Ollama's `think` is a bool — no budget channel exists. Even with
+        // no --effort, the flag is sent to explicitly disable.
+        let payload = snapshot_wire_payload("ollama", "qwen3:14b", None);
+        assert_thinking_fields(&payload, None, None, Some(false), None);
+    }
+
+    #[test]
+    fn snapshot_ollama_low_emits_think_true_budget_ignored() {
+        let payload = snapshot_wire_payload("ollama", "qwen3:14b", Some(8_000));
+        assert_thinking_fields(&payload, None, None, Some(true), None);
+    }
+
+    #[test]
+    fn snapshot_ollama_max_emits_think_true_budget_ignored() {
+        let payload = snapshot_wire_payload("ollama", "qwen3:14b", Some(64_000));
+        assert_thinking_fields(&payload, None, None, Some(true), None);
+    }
+
+    #[test]
+    fn snapshot_mistral_none_emits_nothing() {
+        let payload = snapshot_wire_payload("mistral", "mistral-large-latest", None);
+        assert_thinking_fields(&payload, None, None, None, None);
+    }
+
+    #[test]
+    fn snapshot_mistral_max_emits_nothing_even_with_effort() {
+        let payload = snapshot_wire_payload("mistral", "mistral-large-latest", Some(64_000));
+        assert_thinking_fields(&payload, None, None, None, None);
+    }
+
+    #[test]
+    fn snapshot_openai_max_emits_nothing_even_with_effort() {
+        let payload = snapshot_wire_payload("openai", "default", Some(64_000));
+        assert_thinking_fields(&payload, None, None, None, None);
+    }
+
+    #[test]
+    fn snapshot_openrouter_max_emits_nothing_even_with_effort() {
+        // OpenRouter declares no thinking_format — --effort must drop
+        // silently rather than leak a foreign dialect on the wire.
+        let payload = snapshot_wire_payload("openrouter", "qwen/qwen3.6-plus", Some(64_000));
+        assert_thinking_fields(&payload, None, None, None, None);
     }
 }

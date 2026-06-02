@@ -667,15 +667,6 @@ pub mod config {
         pub model: Option<String>,
         /// Fast model for hybrid mode (optional).
         pub fast_model: Option<String>,
-        /// DEPRECATED (PR D): kept only so existing settings.json files
-        /// keep deserializing. The thinking wire dialect now lives in
-        /// the provider preset TOML's `thinking_format` field — that's
-        /// the single source of truth. Any value here is IGNORED at
-        /// runtime. `skip_serializing_if = Option::is_none` so it
-        /// doesn't get written back when None; new onboarding flows
-        /// never set it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub supports_thinking: Option<bool>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]

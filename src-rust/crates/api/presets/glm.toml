@@ -18,10 +18,7 @@ api_base = "https://api.z.ai/api/paas/v4"
 # region / plan), and is enforced by the API itself.
 supports_vision = true
 # z.ai expects the Anthropic-spec `thinking: {type: "enabled",
-# budget_tokens: N}` block on its OpenAI-compat wire (per z.ai docs
-# for GLM-5+). It's NOT the Qwen3 `enable_thinking` dialect — this
-# is the exact case that motivated the per-provider thinking_format
-# field: api_format=openai but thinking dialect=Anthropic.
+# budget_tokens: N}` block on its OpenAI-compat wire (per z.ai GLM-5+ docs).
 thinking_format = "anthropic_nested"
 
 [auth]

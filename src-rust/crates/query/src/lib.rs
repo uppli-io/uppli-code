@@ -226,7 +226,8 @@ impl Default for QueryConfig {
             thinking_budget: Some(cc_core::constants::DEFAULT_THINKING_BUDGET),
             temperature: None,
             tool_result_budget: cc_core::constants::DEFAULT_TOOL_RESULT_BUDGET,
-            effort_level: Some(cc_core::effort::EffortLevel::High),
+            // effort_level=None means no thinking on wire; --effort sets it explicitly.
+            effort_level: None,
             command_queue: None,
             skill_index: None,
             max_total_tokens: None,
@@ -266,10 +267,6 @@ impl QueryConfig {
         Self {
             model: default_model,
             max_tokens,
-            // PR D: thinking_budget is derived ONLY from --effort flag
-            // (EffortLevel::thinking_budget_tokens). No per-provider
-            // override. Default to None — the cc-cli main builds the
-            // EffortLevel-driven value into the request shape.
             thinking_budget: None,
             fallback_model: caps.fast_model.clone(),
             output_style: cfg.effective_output_style(),

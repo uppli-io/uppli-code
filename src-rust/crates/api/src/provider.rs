@@ -87,7 +87,6 @@ pub struct ProviderPreset {
     pub description: &'static str,
     pub default_model: &'static str,
     pub fast_model: Option<&'static str>,
-    pub supports_thinking: bool,
     pub auth: AuthConfig,
     pub provider_type: cc_core::config::ProviderType,
 }
@@ -135,10 +134,7 @@ pub struct ProviderCapabilities {
     pub api_format: ApiFormat,
     /// Default API base URL.
     pub default_api_base: String,
-    /// Wire-level thinking dialect declared by the provider preset.
-    /// See `ProviderToml::thinking_format` for the rationale; this is
-    /// the runtime equivalent. `None` = no thinking on the wire (the
-    /// provider's model decides on its own per its default behaviour).
+    /// Wire-level thinking dialect declared by the preset; None = no thinking field on the wire.
     pub thinking_format: Option<ThinkingFormat>,
 
     // ── Multi-modal support ──────────────────────────────────
@@ -164,19 +160,14 @@ pub enum ApiFormat {
     Ollama,
 }
 
-/// Thinking dialect declared by the provider at load time.
-///
-/// Each variant mirrors the upstream API's official spec — uppli-code is
-/// a transparent adapter and never invents its own thinking format. See
-/// `crates/api/src/providers/schema.rs` for the TOML side.
+/// Wire dialect for the thinking field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThinkingFormat {
-    /// Anthropic Messages API spec: `thinking: {type: "enabled", budget_tokens: N}`.
-    /// Also the format z.ai expects on its OpenAI-compat wire for GLM-5+.
+    /// Anthropic Messages API.
     AnthropicNested,
-    /// Qwen3 / Alibaba DashScope: `enable_thinking: true, thinking_budget: N`.
+    /// Qwen3 DashScope.
     Qwen3,
-    /// Ollama: `think: true`.
+    /// Ollama `think` boolean.
     OllamaThink,
 }
 
@@ -228,10 +219,6 @@ pub trait LlmProvider: Send + Sync {
             .iter()
             .find(|m| m.id == model)
             .map(|m| m.supports_thinking)
-            // Unknown model: fall back to whether the provider declares a
-            // wire-level thinking dialect. If yes, it's reasonable to
-            // assume the unknown model the operator picked also thinks
-            // (they're plugging it into a thinking-capable wire).
             .unwrap_or_else(|| caps.thinking_format.is_some())
     }
 

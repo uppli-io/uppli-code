@@ -192,11 +192,7 @@ fn parse_and_validate(filename: &str, src: &str) -> Result<LoadedProvider, LoadE
         }
     }
 
-    // PR D guard: if any model claims supports_thinking but no dialect
-    // is declared AND none is inferable from api_format, the runtime
-    // would silently drop the user's `--effort` request. The user
-    // principle is that uppli-code mirrors upstream specs verbatim —
-    // refuse this config loudly at load time instead.
+    // Refuse configs that promise thinking without a declared or inferable dialect.
     let any_thinking = cfg.models.iter().find(|m| m.supports_thinking);
     let dialect_inferable = matches!(
         cfg.provider.api_format,
@@ -275,10 +271,7 @@ fn into_loaded(cfg: ProviderConfigFile, provider_type: ProviderType) -> LoadedPr
     let keychain_key: &'static str = Box::leak(cfg.auth.keychain_key.clone().into_boxed_str());
     let display_label: &'static str = Box::leak(cfg.auth.display_label.clone().into_boxed_str());
 
-    // Thinking dialect resolution: TOML field wins, else infer from
-    // api_format (Anthropic → AnthropicNested, Ollama → OllamaThink,
-    // OpenAI → None because most OpenAI-compat endpoints don't accept
-    // thinking fields; Qwen3 and z.ai opt in explicitly).
+    // TOML override beats api_format inference.
     let thinking_format: Option<crate::provider::ThinkingFormat> = cfg
         .provider
         .thinking_format
@@ -462,10 +455,10 @@ max_output_tokens = 100
 
     #[test]
     fn thinking_without_dialect_on_openai_format_is_rejected() {
-        // Guard from PR D: a provider with api_format=openai that has
-        // models claiming supports_thinking but no thinking_format
-        // declared would silently drop --effort at runtime. Loader
-        // must refuse the config at startup.
+        // A provider with api_format=openai that has models claiming
+        // supports_thinking but no thinking_format declared would
+        // silently drop --effort at runtime. Loader must refuse the
+        // config at startup.
         let src = r#"
 schema_version = 1
 
@@ -535,6 +528,44 @@ default = true
         assert!(
             res.is_ok(),
             "anthropic format must infer the dialect; got: {res:?}"
+        );
+    }
+
+    #[test]
+    fn thinking_without_explicit_dialect_on_ollama_format_is_accepted() {
+        // Counter-case: api_format=ollama auto-infers OllamaThink,
+        // so the same supports_thinking=true model loads cleanly.
+        let src = r#"
+schema_version = 1
+
+[provider]
+name = "ollama_thinking"
+display_name = "Ollama Thinking"
+description = "Inherits thinking dialect from api_format=ollama"
+attribution = "test"
+provider_type = "ollama"
+api_format = "ollama"
+api_base = "https://example.com"
+
+[auth]
+keychain_key = "x"
+display_label = "X"
+
+[defaults]
+max_tokens = 1000
+
+[[models]]
+id = "claims-thinking"
+display_name = "Claims Thinking"
+context_window = 1000
+max_output_tokens = 100
+supports_thinking = true
+default = true
+"#;
+        let res = parse_and_validate("ollama_thinking", src);
+        assert!(
+            res.is_ok(),
+            "ollama format must infer the dialect; got: {res:?}"
         );
     }
 

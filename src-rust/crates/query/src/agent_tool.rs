@@ -183,10 +183,7 @@ impl Tool for AgentTool {
             output_style: ctx.config.effective_output_style(),
             output_style_prompt: ctx.config.resolve_output_style_prompt(),
             working_directory: Some(ctx.working_dir.display().to_string()),
-            // PR D: leave thinking_budget None — the runtime derives it
-            // from effort_level (set just below). Setting both here
-            // would re-introduce two sources of truth for the same
-            // value, the exact pattern PR D was built to eliminate.
+            // Budget derives from effort_level — keep this None to avoid two sources of truth.
             thinking_budget: None,
             temperature: None,
             tool_result_budget: cc_core::constants::DEFAULT_TOOL_RESULT_BUDGET,

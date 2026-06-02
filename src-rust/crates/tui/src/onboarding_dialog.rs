@@ -71,7 +71,6 @@ pub struct ProviderPresetInfo {
     pub auth_label: String,
     pub auth_env_hint: String,
     pub keychain_key: String,
-    pub supports_thinking: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +78,6 @@ pub struct ModelInfo {
     pub id: String,
     pub display_name: String,
     pub description: String,
-    pub supports_thinking: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -126,7 +124,6 @@ impl OnboardingDialogState {
                 auth_label: p.auth.display_label.to_string(),
                 auth_env_hint: p.auth.env_vars.first().copied().unwrap_or("").to_string(),
                 keychain_key: p.auth.keychain_key.to_string(),
-                supports_thinking: p.supports_thinking,
             })
             .collect();
     }
@@ -196,7 +193,6 @@ impl OnboardingDialogState {
                             id: m.id.clone(),
                             display_name: m.display_name.clone(),
                             description: m.description.clone(),
-                            supports_thinking: m.supports_thinking,
                         })
                         .collect();
                     self.fast_model = preset.fast_model.map(|s| s.to_string());
@@ -328,10 +324,6 @@ impl OnboardingDialogState {
                     .or_default();
                 ps.model = self.chosen_model.clone();
                 ps.fast_model = self.chosen_fast.clone();
-                // PR D: stopped persisting supports_thinking — it was a
-                // snapshot of preset state that went stale on every
-                // upstream update. Thinking dispatch now derives from
-                // the preset's thinking_format at runtime.
             }
             settings.has_completed_onboarding = true;
             let _ = settings.save_sync();
@@ -352,20 +344,29 @@ fn build_temp_capabilities(preset: &ProviderPreset) -> Vec<ModelMetadata> {
     // For now, build from the preset info.
     let mut models = Vec::new();
 
-    // The preset has default_model and fast_model as &str.
-    // We look up the full known_models from the provider factory.
-    // Since we can't construct the provider, use the preset's static data.
+    // Use per-model supports_thinking from the loaded registry, not preset-level.
+    let default_supports_thinking = cc_api::providers::loader::registry()
+        .find(preset.name)
+        .and_then(|lp| {
+            lp.capabilities
+                .known_models
+                .iter()
+                .find(|m| m.id == preset.default_model)
+        })
+        .map(|m| m.supports_thinking)
+        .unwrap_or(false);
+
     models.push(ModelMetadata {
         id: preset.default_model.to_string(),
         display_name: format!("{} (default)", preset.default_model),
-        description: if preset.supports_thinking {
+        description: if default_supports_thinking {
             "Reasoning model".to_string()
         } else {
             "Default model".to_string()
         },
         context_window: 128_000,
         max_output_tokens: 16_384,
-        supports_thinking: preset.supports_thinking,
+        supports_thinking: default_supports_thinking,
         pricing: None,
     });
 
