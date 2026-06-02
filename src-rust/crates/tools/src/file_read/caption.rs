@@ -13,9 +13,12 @@
 //      before the compact API call to avoid paying the image-token cost.
 //      When the flatten happens, the caption is what the model retains —
 //      so it must be informative on its own.
-//   2. Providers without `supports_vision = true` (the majority today
-//      including DeepSeek) never see the block — the caption IS the
-//      whole tool_result for them.
+//   2. Non-vision providers (e.g. DeepSeek today) strip Image/Document
+//      blocks inside their translation layer
+//      (`AnthropicClient::degrade_blocks_if_needed`,
+//      `OpenAiProvider::translate_message`) BEFORE the wire. The model
+//      behind those providers sees only the textual caption — so the
+//      caption is the whole signal for them.
 
 use std::path::Path;
 

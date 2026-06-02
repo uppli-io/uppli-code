@@ -5,21 +5,23 @@
 
 // HandlerOutput — the contract every format handler returns.
 //
-// Centralises the single dispatch decision: when does `ToolResult.blocks`
-// get populated, and when does it stay None? This decision lives in ONE
-// place (`finalize`) so the per-format handlers don't drift on the
-// invariant.
+// Centralises the tool-level packaging decision: when does the tool
+// emit `ToolResult.blocks` vs fold everything into `content`?
 //
-// The invariant (mirrors PR A's dispatch at query/src/lib.rs):
+// Since the CLI became provider-agnostic (PR C), the query loop always
+// forwards `ToolResult.blocks` verbatim to the provider when present.
+// It is the PROVIDER's translation layer that degrades visual blocks
+// for non-vision models (see `AnthropicClient::degrade_blocks_if_needed`
+// and `OpenAiProvider::translate_message`). So this struct's job is:
+//
 //   - `ToolResult.content` is ALWAYS a non-empty self-sufficient text
-//     string. Providers without `supports_tool_result_blocks` only see
-//     this — it must be useful on its own.
+//     string. The provider may strip Image/Document blocks before they
+//     reach the model, leaving `content` as the only signal — it must
+//     stand alone.
 //   - `ToolResult.blocks` is `Some(v)` iff v is non-empty AND contains
-//     at least one Image or Document block AND each block's payload is
-//     already captured in `content`.
-//   - Anything else → `blocks = None`. In particular, text-only blocks
-//     are folded into `content` here — the per-format handler doesn't
-//     have to decide.
+//     at least one Image or Document block. Pure text-only blocks are
+//     folded into `content` here because no provider currently needs
+//     them as structured payloads.
 
 use crate::ToolResult;
 use cc_core::types::ContentBlock;
@@ -149,8 +151,10 @@ impl HandlerOutput {
         // or Document. Pure-text structured blocks (a future multi-part
         // table dialect, etc.) are valuable on capable providers but
         // we don't have an emitter for them yet — fold them into
-        // content silently. This keeps the dispatch criterion stable
-        // (`blocks_carry_visual_payload` in cc-query).
+        // content silently. The provider's translation layer is the
+        // one that decides whether to forward Image/Document to the
+        // model or degrade to text (see AnthropicClient::
+        // degrade_blocks_if_needed and OpenAiProvider::translate_message).
         let has_visual = self.blocks.iter().any(|b| {
             matches!(
                 b,

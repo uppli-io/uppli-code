@@ -435,6 +435,30 @@ pub mod client {
             })
         }
 
+        // ---- Provider-side block degradation -----------------------------
+        //
+        // The CLI is provider-agnostic — it always emits the richest
+        // representation (Image, Document, ...). It is the PROVIDER's job
+        // to translate or degrade those blocks for the model behind it.
+        // For AnthropicClient, the wire format IS Anthropic native, so:
+        //   - When the model supports vision → forward blocks verbatim.
+        //   - When it doesn't (DeepSeek today) → replace Image and
+        //     Document blocks with a Text block carrying a caption,
+        //     across both user messages and nested tool_result.Blocks.
+        // The model never sees a block it can't read, but the textual
+        // signal is preserved so it can still reason about the payload.
+        pub(crate) fn degrade_blocks_if_needed(&self, request: &mut CreateMessageRequest) {
+            // `capabilities()` comes from the LlmProvider trait impl on
+            // AnthropicClient below; needs to be in scope here.
+            use provider::LlmProvider as _;
+            if self.capabilities().supports_vision {
+                return;
+            }
+            for msg in request.messages.iter_mut() {
+                degrade_value(&mut msg.content);
+            }
+        }
+
         // ---- Non-streaming create message --------------------------------
 
         /// Send a non-streaming `POST /v1/messages` and return the full response.
@@ -443,6 +467,7 @@ pub mod client {
             mut request: CreateMessageRequest,
         ) -> Result<CreateMessageResponse, ClaudeError> {
             request.stream = false;
+            self.degrade_blocks_if_needed(&mut request);
             let body = serde_json::to_value(&request).map_err(ClaudeError::Json)?;
 
             let resp = self.send_with_retry(&body).await?;
@@ -467,6 +492,7 @@ pub mod client {
             handler: Arc<dyn StreamHandler>,
         ) -> Result<mpsc::Receiver<StreamEvent>, ClaudeError> {
             request.stream = true;
+            self.degrade_blocks_if_needed(&mut request);
             let body = serde_json::to_value(&request).map_err(ClaudeError::Json)?;
 
             let resp = self.send_with_retry(&body).await?;
@@ -752,6 +778,84 @@ pub mod client {
                 }
             }
         }
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Block degradation for non-vision-capable models
+    // ────────────────────────────────────────────────────────────────────
+    //
+    // Walks an `ApiMessage.content` JSON value in-place and replaces every
+    // `{"type":"image", "source":{...}}` / `{"type":"document", "source":
+    // {...}}` block with a `{"type":"text", "text":"[image dropped: model
+    // does not support vision]"}` placeholder. Also recurses into
+    // `{"type":"tool_result", "content":[<blocks>]}` so nested tool
+    // payloads degrade too.
+    //
+    // The function is intentionally permissive: if `content` is a string,
+    // or an array of strings, or anything else, it's left untouched.
+    pub(super) fn degrade_value(content: &mut Value) {
+        // Only array-shaped content can carry blocks; strings / other
+        // shapes have nothing to degrade.
+        if let Value::Array(blocks) = content {
+            for block in blocks.iter_mut() {
+                degrade_block(block);
+            }
+        }
+    }
+
+    fn degrade_block(block: &mut Value) {
+        let block_type = block
+            .get("type")
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string());
+        match block_type.as_deref() {
+            Some("image") => replace_with_caption(block, "image"),
+            Some("document") => replace_with_caption(block, "document"),
+            Some("tool_result") => {
+                if let Some(inner) = block.get_mut("content") {
+                    degrade_value(inner);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn replace_with_caption(block: &mut Value, kind_label: &str) {
+        // Document blocks carry a `title` (filename) we should preserve
+        // when present — it's the single most useful piece of context
+        // for a model that can no longer see the bytes.
+        let title_hint = block
+            .get("title")
+            .and_then(|t| t.as_str())
+            .map(|t| format!(" \"{}\"", t))
+            .unwrap_or_default();
+        let media = block
+            .get("source")
+            .and_then(|s| s.get("media_type"))
+            .and_then(|m| m.as_str());
+        // URL hint when present (url-source blocks).
+        let url_hint = block
+            .get("source")
+            .and_then(|s| s.get("url"))
+            .and_then(|u| u.as_str())
+            .map(|u| format!(" url={}", u))
+            .unwrap_or_default();
+        // Compose the suffix in a way that elides "(unknown)" when no
+        // media_type was on the wire — keeps the caption readable for
+        // url-source blocks that legitimately omit it.
+        let detail = match (media, url_hint.is_empty()) {
+            (Some(m), _) => format!(" ({}){}", m, url_hint),
+            (None, false) => url_hint,
+            (None, true) => String::new(),
+        };
+        let caption = format!(
+            "[{}{} dropped: model does not support vision{}]",
+            kind_label, title_hint, detail
+        );
+        *block = serde_json::json!({
+            "type": "text",
+            "text": caption,
+        });
     }
 }
 
@@ -1161,6 +1265,210 @@ impl StreamAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── degrade_value: provider-side block degradation ───────────────────
+    //
+    // The CLI is provider-agnostic — it emits Image/Document blocks
+    // unconditionally. AnthropicClient calls `degrade_value` on every
+    // outgoing message when its backing model doesn't support vision
+    // (DeepSeek today). These tests pin the substitution rules.
+
+    #[test]
+    fn degrade_value_replaces_image_block_with_caption() {
+        let mut content = serde_json::json!([
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "iVBORw0KGgo="
+                }
+            }
+        ]);
+        client::degrade_value(&mut content);
+        let arr = content.as_array().expect("still an array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["type"], "text");
+        let text = arr[0]["text"].as_str().unwrap();
+        assert!(text.contains("image dropped"));
+        assert!(text.contains("image/png"));
+    }
+
+    #[test]
+    fn degrade_value_replaces_document_block_with_caption() {
+        let mut content = serde_json::json!([
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": "JVBERi0="
+                }
+            }
+        ]);
+        client::degrade_value(&mut content);
+        let arr = content.as_array().expect("still an array");
+        assert_eq!(arr[0]["type"], "text");
+        assert!(arr[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("document dropped"));
+        assert!(arr[0]["text"].as_str().unwrap().contains("application/pdf"));
+    }
+
+    #[test]
+    fn degrade_value_preserves_text_blocks() {
+        let mut content = serde_json::json!([
+            { "type": "text", "text": "hello" },
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/jpeg", "data": "x"}
+            },
+            { "type": "text", "text": "world" }
+        ]);
+        client::degrade_value(&mut content);
+        let arr = content.as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0]["text"], "hello");
+        assert_eq!(arr[1]["type"], "text"); // ex-image, now text
+        assert_eq!(arr[2]["text"], "world");
+    }
+
+    #[test]
+    fn degrade_value_recurses_into_tool_result_blocks() {
+        let mut content = serde_json::json!([
+            {
+                "type": "tool_result",
+                "tool_use_id": "tu_1",
+                "content": [
+                    { "type": "text", "text": "[Image: foo.png, 1x1]" },
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": "x"}
+                    }
+                ]
+            }
+        ]);
+        client::degrade_value(&mut content);
+        let tr = &content.as_array().unwrap()[0];
+        assert_eq!(tr["type"], "tool_result");
+        let inner = tr["content"].as_array().unwrap();
+        assert_eq!(inner.len(), 2);
+        assert_eq!(inner[0]["text"], "[Image: foo.png, 1x1]");
+        assert_eq!(inner[1]["type"], "text");
+        assert!(inner[1]["text"].as_str().unwrap().contains("image dropped"));
+    }
+
+    #[test]
+    fn degrade_value_ignores_plain_string_content() {
+        let mut content = serde_json::json!("plain user message");
+        let before = content.clone();
+        client::degrade_value(&mut content);
+        assert_eq!(content, before);
+    }
+
+    #[test]
+    fn deepseek_client_degrades_image_block_end_to_end() {
+        // End-to-end: build a CreateMessageRequest with an Image block,
+        // run it through `degrade_blocks_if_needed`, assert the wire
+        // body no longer carries an `image` block. Pins the contract
+        // that DeepSeek's API never sees a block it can't read.
+        let cfg = client::ClientConfig {
+            api_key: "test-key-not-used".to_string(),
+            ..Default::default()
+        };
+        let client = client::AnthropicClient::new(cfg).expect("client builds");
+        let mut req = CreateMessageRequest::builder("deepseek-v4-pro", 4096).build();
+        req.messages.push(ApiMessage {
+            role: "user".to_string(),
+            content: serde_json::json!([
+                { "type": "text", "text": "What's in this image?" },
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/png", "data": "x"}
+                }
+            ]),
+        });
+        client.degrade_blocks_if_needed(&mut req);
+        let body = serde_json::to_value(&req).unwrap();
+        let blocks = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "text"); // original text intact
+        assert_eq!(blocks[1]["type"], "text"); // ex-image, now text
+        assert!(blocks[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("image dropped"));
+    }
+
+    #[test]
+    fn degrade_value_preserves_document_title_in_caption() {
+        // A DOCX or PDF block typically carries a `title` field with
+        // the original filename. That's the single most useful hint
+        // for a model that can't see the bytes — preserve it.
+        let mut content = serde_json::json!([
+            {
+                "type": "document",
+                "source": {"type": "base64", "media_type": "application/pdf", "data": "x"},
+                "title": "Contract-v3-final.pdf"
+            }
+        ]);
+        client::degrade_value(&mut content);
+        let caption = content[0]["text"].as_str().unwrap();
+        assert!(
+            caption.contains("Contract-v3-final.pdf"),
+            "title must survive degradation, got: {}",
+            caption
+        );
+        assert!(caption.contains("application/pdf"));
+    }
+
+    #[test]
+    fn degrade_value_handles_deep_tool_result_nesting() {
+        // tool_result inside tool_result inside tool_result — the
+        // walker should recurse through arbitrarily deep nesting and
+        // degrade every Image block it encounters.
+        let mut content = serde_json::json!([
+            {
+                "type": "tool_result",
+                "tool_use_id": "tu_outer",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_inner",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {"type": "base64", "media_type": "image/png", "data": "x"}
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]);
+        client::degrade_value(&mut content);
+        let outer = &content[0]["content"][0];
+        assert_eq!(outer["type"], "tool_result");
+        let inner_arr = outer["content"].as_array().unwrap();
+        assert_eq!(inner_arr[0]["type"], "text");
+        assert!(inner_arr[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("image dropped"));
+    }
+
+    #[test]
+    fn degrade_value_url_source_includes_url_in_caption() {
+        let mut content = serde_json::json!([
+            {
+                "type": "image",
+                "source": {"type": "url", "url": "https://example.com/x.png"}
+            }
+        ]);
+        client::degrade_value(&mut content);
+        let caption = content[0]["text"].as_str().unwrap();
+        assert!(caption.contains("https://example.com/x.png"));
+    }
 
     #[test]
     fn test_sse_parser_basic() {

@@ -4,6 +4,15 @@ All notable changes to uppli-code are documented in this file.
 
 ## Unreleased
 
+### Architecture: CLI is provider-agnostic (PR C)
+
+- **The CLI no longer consults provider capabilities to decide tool_result shape.** Previously `cc-query::run_query_loop` checked `ProviderCapabilities.supports_vision` / `supports_tool_result_blocks` to decide whether to emit `ToolResultContent::Blocks` or fall back to `Text`. Now the CLI always emits the richest representation when a tool returned structured blocks, and it is the **provider's translation layer** that adapts for its model's actual capabilities. The CLI is a complete core; providers are bridges that adapt.
+- `AnthropicClient::degrade_blocks_if_needed` is the new provider-side gate for the DeepSeek wire (Anthropic format). When `supports_vision = false`, Image / Document blocks are replaced in-place with a Text caption (preserving the original `title` for documents and `media_type` / url for images) immediately before serialisation. The model never receives a block it can't read; the caption stays visible.
+- `OpenAiProvider::translate_message` already did the equivalent for OpenAI-compatible wires (vision-aware multi-part array on supports_vision providers; flat string fallback otherwise) — unchanged. Symmetry achieved across both providers.
+- **Removed**: `pub fn blocks_carry_visual_payload` from `cc-query` (no in-tree callers). Reverts the dispatch logic introduced in PR A commit "feat(query): dispatch ToolResult.blocks based on provider capabilities".
+- Doc rewrite across `crates/tools/src/{lib.rs, file_read/output.rs, file_read/caption.rs}` to reflect the new contract: the query loop forwards blocks verbatim, the provider decides what to do with them.
+- 9 new tests pinning the degrade path (Image / Document / nested tool_result / deep recursion / title preservation / url-source / plain-string no-op / end-to-end).
+
 ### Multimodal file ingestion (PR B)
 
 - **`Read` tool now handles every file kind a user can paste at the agent.** Previous behaviour: only text via `read_to_string` (hard-errored on non-UTF-8), with placeholder strings for images and PDFs. New behaviour: per-format dispatch through magic-byte sniffing.
