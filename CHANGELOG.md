@@ -4,14 +4,18 @@ All notable changes to uppli-code are documented in this file.
 
 ## Unreleased
 
-### Architecture: CLI is provider-agnostic (PR C)
+### Architecture: CLI provider-agnostic + provider rejects, never degrades silently (PR C)
 
-- **The CLI no longer consults provider capabilities to decide tool_result shape.** Previously `cc-query::run_query_loop` checked `ProviderCapabilities.supports_vision` / `supports_tool_result_blocks` to decide whether to emit `ToolResultContent::Blocks` or fall back to `Text`. Now the CLI always emits the richest representation when a tool returned structured blocks, and it is the **provider's translation layer** that adapts for its model's actual capabilities. The CLI is a complete core; providers are bridges that adapt.
-- `AnthropicClient::degrade_blocks_if_needed` is the new provider-side gate for the DeepSeek wire (Anthropic format). When `supports_vision = false`, Image / Document blocks are replaced in-place with a Text caption (preserving the original `title` for documents and `media_type` / url for images) immediately before serialisation. The model never receives a block it can't read; the caption stays visible.
-- `OpenAiProvider::translate_message` already did the equivalent for OpenAI-compatible wires (vision-aware multi-part array on supports_vision providers; flat string fallback otherwise) — unchanged. Symmetry achieved across both providers.
-- **Removed**: `pub fn blocks_carry_visual_payload` from `cc-query` (no in-tree callers). Reverts the dispatch logic introduced in PR A commit "feat(query): dispatch ToolResult.blocks based on provider capabilities".
-- Doc rewrite across `crates/tools/src/{lib.rs, file_read/output.rs, file_read/caption.rs}` to reflect the new contract: the query loop forwards blocks verbatim, the provider decides what to do with them.
-- 9 new tests pinning the degrade path (Image / Document / nested tool_result / deep recursion / title preservation / url-source / plain-string no-op / end-to-end).
+User's directive: **"CLI agnostique du provider, et si le provider ne sait pas faire un truc ça retourne une erreur, ça évite 40 millions de paramètres."** Translated into code:
+
+- **The CLI no longer consults provider capabilities to decide tool_result shape.** Previously `cc-query::run_query_loop` checked `ProviderCapabilities` to choose between `ToolResultContent::Blocks` and `Text`. Now the CLI always emits the richest representation when a tool returned structured blocks; the provider's translation layer is responsible for adapting.
+- **Provider rejects rather than silently caps**. When the active model doesn't support a block kind (Image / Document on DeepSeek today), the provider rewrites the surrounding `tool_result` with an EXPLICIT error: `is_error: true` and a single text block reading `[ERROR: image "foo.png" (image/png) cannot be read — the current provider does not support vision. Switch to a vision-capable provider (e.g. --provider glm) or convert the file to text out-of-band.]`. The model never receives a caption it might mistake for the real content.
+- **One flag, one fact**: `supports_tool_result_blocks` is REMOVED across the entire codebase (ProviderCapabilities, ProviderToml schema, loader, OpenAiProviderConfig, AnthropicClient static caps, all 7 TOML presets, model_picker test fixture, consistency test). The flag had become dead weight after PR A's dispatch removal — keeping it would have invited "40 millions de paramètres" drift. The sole remaining provider capability flag is `supports_vision`.
+- `AnthropicClient::degrade_blocks_if_needed` is the provider-side rejection gate for DeepSeek's Anthropic wire. Top-level Image/Document blocks in user messages become error text inline; visual blocks nested inside a `tool_result` flip the wrapper to `is_error=true` and compose surviving captions + the error message into one text payload.
+- `OpenAiProvider::translate_message` already did the equivalent dispatch via `self.capabilities.supports_vision`. Symmetric across both wires; no code change needed there.
+- **Removed**: `pub fn blocks_carry_visual_payload` from `cc-query` (no in-tree callers). Reverts the dispatch logic from PR A commit "feat(query): dispatch ToolResult.blocks based on provider capabilities".
+- Doc rewrite across `crates/tools/src/{lib.rs, file_read/output.rs, file_read/caption.rs}` to reflect the new contract: the query loop forwards blocks verbatim; the provider decides what to do.
+- 8 unit tests + 1 end-to-end test pin the rejection path (top-level Image → error, top-level Document → error, mixed text+image, tool_result flips is_error, text-only tool_result stays intact, plain-string no-op, url-source includes URL in error, document title preserved in error, end-to-end via real `CreateMessageRequest`).
 
 ### Multimodal file ingestion (PR B)
 

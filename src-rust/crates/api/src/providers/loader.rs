@@ -256,7 +256,6 @@ fn into_loaded(cfg: ProviderConfigFile, provider_type: ProviderType) -> LoadedPr
         api_format,
         default_api_base: cfg.provider.api_base.clone(),
         supports_vision: cfg.provider.supports_vision,
-        supports_tool_result_blocks: cfg.provider.supports_tool_result_blocks,
         auth: AuthConfig {
             env_vars,
             keychain_key,

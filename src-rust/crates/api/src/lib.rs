@@ -781,49 +781,112 @@ pub mod client {
     }
 
     // ────────────────────────────────────────────────────────────────────
-    // Block degradation for non-vision-capable models
+    // Block rejection for non-vision-capable models (iso Claude Code UX)
     // ────────────────────────────────────────────────────────────────────
     //
-    // Walks an `ApiMessage.content` JSON value in-place and replaces every
-    // `{"type":"image", "source":{...}}` / `{"type":"document", "source":
-    // {...}}` block with a `{"type":"text", "text":"[image dropped: model
-    // does not support vision]"}` placeholder. Also recurses into
-    // `{"type":"tool_result", "content":[<blocks>]}` so nested tool
-    // payloads degrade too.
+    // The CLI is provider-agnostic — it always emits the richest blocks
+    // (Image, Document). The provider's job is then trivial:
+    //   - Vision-capable model → blocks forwarded verbatim on the wire.
+    //   - Non-vision model → reject loudly. The block is replaced with
+    //     an EXPLICIT error in the surrounding tool_result so the LLM
+    //     sees `is_error: true` and a clear message telling the user
+    //     to switch provider. No silent caption that would let the
+    //     model pretend it had read the file.
     //
-    // The function is intentionally permissive: if `content` is a string,
-    // or an array of strings, or anything else, it's left untouched.
+    // Walks ApiMessage.content in place:
+    //   - tool_result with Image/Document inside → tool_result becomes
+    //     a single error text block, parent `is_error` flipped true.
+    //   - Top-level Image/Document inside a user message → replaced
+    //     with an error text block. There is no tool_result wrapper at
+    //     this layer, so the model just sees a clear refusal message.
+    //   - Strings, plain text, tool_use, thinking, etc. → untouched.
     pub(super) fn degrade_value(content: &mut Value) {
-        // Only array-shaped content can carry blocks; strings / other
-        // shapes have nothing to degrade.
         if let Value::Array(blocks) = content {
             for block in blocks.iter_mut() {
-                degrade_block(block);
+                reject_block(block);
             }
         }
     }
 
-    fn degrade_block(block: &mut Value) {
+    fn reject_block(block: &mut Value) {
         let block_type = block
             .get("type")
             .and_then(|t| t.as_str())
             .map(|s| s.to_string());
         match block_type.as_deref() {
-            Some("image") => replace_with_caption(block, "image"),
-            Some("document") => replace_with_caption(block, "document"),
-            Some("tool_result") => {
-                if let Some(inner) = block.get_mut("content") {
-                    degrade_value(inner);
-                }
+            Some("image") => {
+                let msg = unsupported_block_message("image", block);
+                *block = serde_json::json!({ "type": "text", "text": msg });
             }
+            Some("document") => {
+                let msg = unsupported_block_message("document", block);
+                *block = serde_json::json!({ "type": "text", "text": msg });
+            }
+            Some("tool_result") => reject_tool_result(block),
             _ => {}
         }
     }
 
-    fn replace_with_caption(block: &mut Value, kind_label: &str) {
-        // Document blocks carry a `title` (filename) we should preserve
-        // when present — it's the single most useful piece of context
-        // for a model that can no longer see the bytes.
+    /// Rewrite a tool_result that carries an unsupported block. Walk its
+    /// inner blocks; if ANY visual block is found, replace the whole
+    /// inner content with a single error text and flip is_error=true.
+    fn reject_tool_result(block: &mut Value) {
+        let Some(inner) = block.get_mut("content") else {
+            return;
+        };
+        // Only Array content can carry blocks worth inspecting.
+        let Value::Array(inner_blocks) = inner else {
+            return;
+        };
+        let mut error_messages: Vec<String> = Vec::new();
+        let mut surviving_text: Vec<String> = Vec::new();
+        for b in inner_blocks.iter() {
+            let t = b.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            match t {
+                "image" => error_messages.push(unsupported_block_message("image", b)),
+                "document" => error_messages.push(unsupported_block_message("document", b)),
+                "text" => {
+                    if let Some(s) = b.get("text").and_then(|v| v.as_str()) {
+                        surviving_text.push(s.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        if error_messages.is_empty() {
+            return; // nothing to reject in this tool_result
+        }
+        // Compose final text: captions first (so the model has context),
+        // then the error message naming the failure mode and the fix.
+        let mut composed = String::new();
+        for s in surviving_text {
+            composed.push_str(&s);
+            if !composed.ends_with('\n') {
+                composed.push('\n');
+            }
+        }
+        for e in error_messages {
+            composed.push_str(&e);
+            composed.push('\n');
+        }
+        // Replace inner content with a single text block, flip is_error.
+        if let Some(obj) = block.as_object_mut() {
+            obj.insert(
+                "content".to_string(),
+                Value::Array(vec![serde_json::json!({
+                    "type": "text",
+                    "text": composed.trim_end().to_string(),
+                })]),
+            );
+            obj.insert("is_error".to_string(), Value::Bool(true));
+        }
+    }
+
+    /// Build the error message a non-vision provider returns for an
+    /// Image / Document block. Preserves the original title (filename
+    /// for documents) and media_type / url hints so the model can
+    /// reason about what was refused.
+    fn unsupported_block_message(kind: &str, block: &Value) -> String {
         let title_hint = block
             .get("title")
             .and_then(|t| t.as_str())
@@ -833,29 +896,22 @@ pub mod client {
             .get("source")
             .and_then(|s| s.get("media_type"))
             .and_then(|m| m.as_str());
-        // URL hint when present (url-source blocks).
-        let url_hint = block
+        let url = block
             .get("source")
             .and_then(|s| s.get("url"))
-            .and_then(|u| u.as_str())
-            .map(|u| format!(" url={}", u))
-            .unwrap_or_default();
-        // Compose the suffix in a way that elides "(unknown)" when no
-        // media_type was on the wire — keeps the caption readable for
-        // url-source blocks that legitimately omit it.
-        let detail = match (media, url_hint.is_empty()) {
-            (Some(m), _) => format!(" ({}){}", m, url_hint),
-            (None, false) => url_hint,
-            (None, true) => String::new(),
+            .and_then(|u| u.as_str());
+        let detail = match (media, url) {
+            (Some(m), Some(u)) => format!(" ({}, url={})", m, u),
+            (Some(m), None) => format!(" ({})", m),
+            (None, Some(u)) => format!(" (url={})", u),
+            (None, None) => String::new(),
         };
-        let caption = format!(
-            "[{}{} dropped: model does not support vision{}]",
-            kind_label, title_hint, detail
-        );
-        *block = serde_json::json!({
-            "type": "text",
-            "text": caption,
-        });
+        format!(
+            "[ERROR: {}{}{} cannot be read — the current provider does not support vision. \
+             Switch to a vision-capable provider (e.g. --provider glm) or convert the \
+             file to text out-of-band.]",
+            kind, title_hint, detail
+        )
     }
 }
 
@@ -964,11 +1020,6 @@ impl provider::LlmProvider for client::AnthropicClient {
                 // blocks in its Anthropic-compatible endpoint. Conservative
                 // default — flip to true if/when DeepSeek ships vision.
                 supports_vision: false,
-                // Anthropic wire format accepts tool_result with structured
-                // blocks. Keep enabled even when supports_vision is false:
-                // future text-only multi-part tool results (e.g. tables) ride
-                // the same channel.
-                supports_tool_result_blocks: true,
                 auth: provider::AuthConfig {
                     env_vars: &["DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY"],
                     keychain_key: "deepseek",
@@ -1266,15 +1317,19 @@ impl StreamAccumulator {
 mod tests {
     use super::*;
 
-    // ─── degrade_value: provider-side block degradation ───────────────────
+    // ─── degrade_value: provider-side block rejection (iso Claude Code) ───
     //
     // The CLI is provider-agnostic — it emits Image/Document blocks
-    // unconditionally. AnthropicClient calls `degrade_value` on every
-    // outgoing message when its backing model doesn't support vision
-    // (DeepSeek today). These tests pin the substitution rules.
+    // unconditionally. When the backing model doesn't support vision
+    // (DeepSeek today), AnthropicClient rewrites those blocks as
+    // EXPLICIT error text. Tool_result wrappers also get is_error=true
+    // so the LLM sees the failure clearly, instead of silently
+    // accepting a fallback caption it might mistake for the real
+    // content. Iso Claude Code: "il marche ou il erreur, pas de
+    // dégradation cachée".
 
     #[test]
-    fn degrade_value_replaces_image_block_with_caption() {
+    fn degrade_value_top_level_image_becomes_explicit_error() {
         let mut content = serde_json::json!([
             {
                 "type": "image",
@@ -1290,12 +1345,22 @@ mod tests {
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["type"], "text");
         let text = arr[0]["text"].as_str().unwrap();
-        assert!(text.contains("image dropped"));
+        assert!(
+            text.contains("ERROR"),
+            "must be an explicit error, got: {}",
+            text
+        );
+        assert!(text.contains("image"));
         assert!(text.contains("image/png"));
+        assert!(
+            text.contains("Switch") || text.contains("switch"),
+            "must instruct user to switch provider, got: {}",
+            text
+        );
     }
 
     #[test]
-    fn degrade_value_replaces_document_block_with_caption() {
+    fn degrade_value_top_level_document_becomes_explicit_error() {
         let mut content = serde_json::json!([
             {
                 "type": "document",
@@ -1309,15 +1374,16 @@ mod tests {
         client::degrade_value(&mut content);
         let arr = content.as_array().expect("still an array");
         assert_eq!(arr[0]["type"], "text");
-        assert!(arr[0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("document dropped"));
-        assert!(arr[0]["text"].as_str().unwrap().contains("application/pdf"));
+        let text = arr[0]["text"].as_str().unwrap();
+        assert!(text.contains("ERROR"));
+        assert!(text.contains("document"));
+        assert!(text.contains("application/pdf"));
     }
 
     #[test]
-    fn degrade_value_preserves_text_blocks() {
+    fn degrade_value_preserves_text_blocks_alongside_rejected_images() {
+        // Top-level user message with mixed text and image: the text
+        // survives, the image becomes an error block in place.
         let mut content = serde_json::json!([
             { "type": "text", "text": "hello" },
             {
@@ -1330,12 +1396,18 @@ mod tests {
         let arr = content.as_array().unwrap();
         assert_eq!(arr.len(), 3);
         assert_eq!(arr[0]["text"], "hello");
-        assert_eq!(arr[1]["type"], "text"); // ex-image, now text
+        assert_eq!(arr[1]["type"], "text");
+        assert!(arr[1]["text"].as_str().unwrap().contains("ERROR"));
         assert_eq!(arr[2]["text"], "world");
     }
 
     #[test]
-    fn degrade_value_recurses_into_tool_result_blocks() {
+    fn degrade_value_tool_result_with_image_flips_is_error_true() {
+        // Critical invariant: when a tool_result contains an Image the
+        // provider can't read, the WHOLE tool_result is marked
+        // is_error=true so the LLM treats it as a failed tool call.
+        // The textual caption inside the tool_result survives so the
+        // model still has context about what was attempted.
         let mut content = serde_json::json!([
             {
                 "type": "tool_result",
@@ -1352,11 +1424,45 @@ mod tests {
         client::degrade_value(&mut content);
         let tr = &content.as_array().unwrap()[0];
         assert_eq!(tr["type"], "tool_result");
+        assert_eq!(
+            tr["is_error"], true,
+            "tool_result carrying an unsupported block must flip is_error=true"
+        );
         let inner = tr["content"].as_array().unwrap();
-        assert_eq!(inner.len(), 2);
-        assert_eq!(inner[0]["text"], "[Image: foo.png, 1x1]");
-        assert_eq!(inner[1]["type"], "text");
-        assert!(inner[1]["text"].as_str().unwrap().contains("image dropped"));
+        // Composed text: surviving caption + error message.
+        let composed = inner[0]["text"].as_str().unwrap();
+        assert!(
+            composed.contains("foo.png"),
+            "caption must survive: {}",
+            composed
+        );
+        assert!(
+            composed.contains("ERROR"),
+            "error must be present: {}",
+            composed
+        );
+    }
+
+    #[test]
+    fn degrade_value_tool_result_text_only_stays_intact() {
+        // A tool_result with only text content should NOT be flipped to
+        // is_error — only visual rejections trigger that.
+        let mut content = serde_json::json!([
+            {
+                "type": "tool_result",
+                "tool_use_id": "tu_2",
+                "content": [
+                    { "type": "text", "text": "row 1\nrow 2" }
+                ]
+            }
+        ]);
+        client::degrade_value(&mut content);
+        let tr = &content.as_array().unwrap()[0];
+        assert_eq!(tr["type"], "tool_result");
+        assert!(
+            tr.get("is_error").is_none() || tr["is_error"] == false,
+            "text-only tool_result must NOT be flagged is_error"
+        );
     }
 
     #[test]
@@ -1368,11 +1474,10 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_client_degrades_image_block_end_to_end() {
+    fn deepseek_client_rejects_image_block_end_to_end() {
         // End-to-end: build a CreateMessageRequest with an Image block,
         // run it through `degrade_blocks_if_needed`, assert the wire
-        // body no longer carries an `image` block. Pins the contract
-        // that DeepSeek's API never sees a block it can't read.
+        // body carries an EXPLICIT error text (no silent caption).
         let cfg = client::ClientConfig {
             api_key: "test-key-not-used".to_string(),
             ..Default::default()
@@ -1394,11 +1499,10 @@ mod tests {
         let blocks = body["messages"][0]["content"].as_array().unwrap();
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0]["type"], "text"); // original text intact
-        assert_eq!(blocks[1]["type"], "text"); // ex-image, now text
-        assert!(blocks[1]["text"]
-            .as_str()
-            .unwrap()
-            .contains("image dropped"));
+        assert_eq!(blocks[1]["type"], "text"); // ex-image, now text-ERROR
+        let err_text = blocks[1]["text"].as_str().unwrap();
+        assert!(err_text.contains("ERROR"));
+        assert!(err_text.contains("image"));
     }
 
     #[test]
@@ -1423,42 +1527,13 @@ mod tests {
         assert!(caption.contains("application/pdf"));
     }
 
-    #[test]
-    fn degrade_value_handles_deep_tool_result_nesting() {
-        // tool_result inside tool_result inside tool_result — the
-        // walker should recurse through arbitrarily deep nesting and
-        // degrade every Image block it encounters.
-        let mut content = serde_json::json!([
-            {
-                "type": "tool_result",
-                "tool_use_id": "tu_outer",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "tu_inner",
-                        "content": [
-                            {
-                                "type": "image",
-                                "source": {"type": "base64", "media_type": "image/png", "data": "x"}
-                            }
-                        ]
-                    }
-                ]
-            }
-        ]);
-        client::degrade_value(&mut content);
-        let outer = &content[0]["content"][0];
-        assert_eq!(outer["type"], "tool_result");
-        let inner_arr = outer["content"].as_array().unwrap();
-        assert_eq!(inner_arr[0]["type"], "text");
-        assert!(inner_arr[0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("image dropped"));
-    }
+    // (test deep-recursion removed: the Anthropic wire format does not
+    // nest tool_result inside tool_result; that case can't appear in
+    // real traffic, so the synthetic test became noise after the
+    // degrade→reject behavior change.)
 
     #[test]
-    fn degrade_value_url_source_includes_url_in_caption() {
+    fn degrade_value_url_source_includes_url_in_error() {
         let mut content = serde_json::json!([
             {
                 "type": "image",
@@ -1466,8 +1541,9 @@ mod tests {
             }
         ]);
         client::degrade_value(&mut content);
-        let caption = content[0]["text"].as_str().unwrap();
-        assert!(caption.contains("https://example.com/x.png"));
+        let err_text = content[0]["text"].as_str().unwrap();
+        assert!(err_text.contains("ERROR"));
+        assert!(err_text.contains("https://example.com/x.png"));
     }
 
     #[test]
@@ -1626,16 +1702,14 @@ mod tests {
     #[test]
     fn test_deepseek_toml_caps_match_static_anthropic_client_caps() {
         // The TOML at crates/api/presets/deepseek.toml declares
-        // supports_vision / supports_tool_result_blocks, BUT those
-        // values are not actually read at runtime — DeepSeek goes
-        // through AnthropicClient whose ProviderCapabilities is a
-        // hardcoded OnceLock. This is a documented (annotated in the
+        // `supports_vision`, BUT it is not actually read at runtime:
+        // DeepSeek goes through AnthropicClient whose ProviderCapabilities
+        // is a hardcoded OnceLock. This is a documented (annotated in the
         // TOML) trap: edit one side, the other silently lies.
         //
-        // The test asserts both stay in sync so a future commit
-        // touching the TOML alone fails CI loudly. Remove (or invert)
-        // when AnthropicClient is wired through the loader registry —
-        // see TODO(pr-c) in deepseek.toml.
+        // The test asserts the single remaining flag stays in sync.
+        // Remove (or invert) when AnthropicClient is wired through the
+        // loader registry — see TODO(pr-c) in deepseek.toml.
         let loaded = crate::providers::loader::registry()
             .find("deepseek")
             .expect("deepseek must be in the registry");
@@ -1645,13 +1719,6 @@ mod tests {
             "deepseek.toml supports_vision ({}) drifted from AnthropicClient static caps ({}). \
              Update both — see TODO(pr-c) in deepseek.toml.",
             loaded.capabilities.supports_vision, static_caps.supports_vision
-        );
-        assert_eq!(
-            loaded.capabilities.supports_tool_result_blocks,
-            static_caps.supports_tool_result_blocks,
-            "deepseek.toml supports_tool_result_blocks ({}) drifted from AnthropicClient static caps ({})",
-            loaded.capabilities.supports_tool_result_blocks,
-            static_caps.supports_tool_result_blocks,
         );
     }
 
