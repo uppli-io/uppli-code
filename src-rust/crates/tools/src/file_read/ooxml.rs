@@ -51,6 +51,35 @@ use super::output::HandlerOutput;
 /// already costly so we keep the output bounded.
 const MAX_OOXML_TEXT_BYTES: usize = 1_500_000;
 
+/// Cap on the DECOMPRESSED bytes read from a single ZIP entry inside
+/// an OOXML / ODF archive. Without this, a 20 MiB .xlsx whose
+/// xl/worksheets/sheet1.xml decompresses to 20 GiB (zip bomb) would
+/// OOM the agent: `ZipFile::read_to_string` decompresses through-
+/// fully and trusts the central-directory size. Bounded reads are
+/// the only mitigation.
+const MAX_ZIP_ENTRY_DECOMPRESSED: u64 = 32 * 1024 * 1024; // 32 MiB
+
+/// Read a ZIP entry into a String, capping at MAX_ZIP_ENTRY_DECOMPRESSED
+/// decompressed bytes. Returns the (possibly truncated) String and a
+/// flag indicating whether the cap fired. Lossy-decodes non-UTF-8
+/// bytes so a corrupted entry doesn't propagate an I/O error.
+fn read_entry_capped<R: Read>(entry: &mut R) -> (String, bool) {
+    let mut buf = Vec::with_capacity(64 * 1024);
+    let mut capped_reader = entry.take(MAX_ZIP_ENTRY_DECOMPRESSED + 1);
+    if capped_reader.read_to_end(&mut buf).is_err() {
+        return (String::new(), false);
+    }
+    let truncated = (buf.len() as u64) > MAX_ZIP_ENTRY_DECOMPRESSED;
+    if truncated {
+        buf.truncate(MAX_ZIP_ENTRY_DECOMPRESSED as usize);
+    }
+    let s = match std::str::from_utf8(&buf) {
+        Ok(s) => s.to_string(),
+        Err(_) => String::from_utf8_lossy(&buf).into_owned(),
+    };
+    (s, truncated)
+}
+
 /// Read an XLSX, DOCX or PPTX (or any OOXML kind passed by the
 /// dispatcher) and produce a text-only `HandlerOutput`. ODF formats
 /// route here too — the wrapper in `odf.rs` flips the entry filename
@@ -140,14 +169,14 @@ fn extract_xlsx<R: std::io::Read + std::io::Seek>(
     let mut total_rows = 0usize;
     let mut truncated = false;
 
+    let mut entry_capped = false;
     if let Ok(mut zf) = archive.by_name(worksheet_name) {
-        let mut xml = String::new();
-        if zf.read_to_string(&mut xml).is_ok() {
-            let result = walk_xlsx_rows(&xml, &shared_strings);
-            total_rows = result.total_rows;
-            truncated = result.truncated;
-            rows = result.rows;
-        }
+        let (xml, capped) = read_entry_capped(&mut zf);
+        entry_capped = capped;
+        let result = walk_xlsx_rows(&xml, &shared_strings);
+        total_rows = result.total_rows;
+        truncated = result.truncated;
+        rows = result.rows;
     }
 
     let mut out = caption::xlsx(path, &sheets, &active);
@@ -167,6 +196,12 @@ fn extract_xlsx<R: std::io::Read + std::io::Seek>(
                 MAX_OOXML_ROWS,
             ));
         }
+    }
+    if entry_capped {
+        out.push_str(&format!(
+            "\n[Note: worksheet XML capped at {} MiB decompressed — suspected zip bomb or oversized sheet.]\n",
+            MAX_ZIP_ENTRY_DECOMPRESSED / (1024 * 1024)
+        ));
     }
     cap_text_bytes(&mut out);
 
@@ -269,8 +304,8 @@ fn read_shared_strings<R: Read + std::io::Seek>(archive: &mut ZipArchive<R>) -> 
     let Ok(mut zf) = archive.by_name("xl/sharedStrings.xml") else {
         return out;
     };
-    let mut xml = String::new();
-    if zf.read_to_string(&mut xml).is_err() {
+    let (xml, _capped) = read_entry_capped(&mut zf);
+    if xml.is_empty() {
         return out;
     }
     let mut reader = Reader::from_str(&xml);
@@ -325,8 +360,10 @@ fn read_shared_strings<R: Read + std::io::Seek>(archive: &mut ZipArchive<R>) -> 
 
 fn read_sheet_list<R: Read + std::io::Seek>(archive: &mut ZipArchive<R>) -> Option<Vec<String>> {
     let mut zf = archive.by_name("xl/workbook.xml").ok()?;
-    let mut xml = String::new();
-    zf.read_to_string(&mut xml).ok()?;
+    let (xml, _capped) = read_entry_capped(&mut zf);
+    if xml.is_empty() {
+        return None;
+    }
     let mut reader = Reader::from_str(&xml);
     reader.config_mut().trim_text(true);
     reader.config_mut().expand_empty_elements = true;
@@ -376,16 +413,16 @@ fn extract_docx<R: Read + std::io::Seek>(
 ) -> HandlerOutput {
     let mut out = caption::docx(path, size);
     out.push_str("\n\n");
-    let xml = match archive.by_name("word/document.xml") {
+    let (xml, entry_capped) = match archive.by_name("word/document.xml") {
         Ok(mut zf) => {
-            let mut s = String::new();
-            if zf.read_to_string(&mut s).is_err() {
+            let (s, capped) = read_entry_capped(&mut zf);
+            if s.is_empty() {
                 return HandlerOutput::error_text(format!(
-                    "[DOCX: {} word/document.xml unreadable]",
+                    "[DOCX: {} word/document.xml unreadable or empty]",
                     path.display()
                 ));
             }
-            s
+            (s, capped)
         }
         Err(_) => {
             return HandlerOutput::error_text(format!(
@@ -399,6 +436,12 @@ fn extract_docx<R: Read + std::io::Seek>(
         out.push_str("[No text runs found in word/document.xml.]\n");
     } else {
         out.push_str(&body);
+    }
+    if entry_capped {
+        out.push_str(&format!(
+            "\n[Note: word/document.xml capped at {} MiB decompressed — suspected zip bomb or oversized document.]\n",
+            MAX_ZIP_ENTRY_DECOMPRESSED / (1024 * 1024)
+        ));
     }
     cap_text_bytes(&mut out);
     HandlerOutput::success_text(out)
@@ -436,10 +479,13 @@ fn extract_pptx<R: Read + std::io::Seek>(
     let mut out = caption::pptx(path, total_slides, size);
     out.push_str("\n\n");
 
+    let mut any_slide_capped = false;
     for (idx, name) in &slides {
         let mut xml = String::new();
         if let Ok(mut zf) = archive.by_name(name) {
-            let _ = zf.read_to_string(&mut xml);
+            let (s, capped) = read_entry_capped(&mut zf);
+            xml = s;
+            any_slide_capped |= capped;
         }
         out.push_str(&format!("## Slide {}\n", idx));
         let slide_text = walk_ooxml_text(&xml, b"t");
@@ -458,6 +504,12 @@ fn extract_pptx<R: Read + std::io::Seek>(
         out.push_str(&format!(
             "\n[Truncated: showed first {} of {} slides. Use Bash + libreoffice for the rest.]\n",
             MAX_SLIDES, total_slides
+        ));
+    }
+    if any_slide_capped {
+        out.push_str(&format!(
+            "\n[Note: one or more slide XML entries capped at {} MiB decompressed — suspected zip bomb.]\n",
+            MAX_ZIP_ENTRY_DECOMPRESSED / (1024 * 1024)
         ));
     }
     cap_text_bytes(&mut out);
@@ -604,6 +656,32 @@ mod tests {
         assert_eq!(result.rows.len(), 2);
         assert_eq!(result.rows[0], vec!["hello", "world"]);
         assert_eq!(result.rows[1], vec!["42"]);
+    }
+
+    #[test]
+    fn read_entry_capped_truncates_at_cap() {
+        // Build a Read that would yield 64 MiB of zeros — twice the cap.
+        // A real zip-bomb member would behave similarly: a 1 KiB
+        // compressed entry that decompresses to gigabytes via repeat()
+        // sees its decompressor stream produce arbitrarily many bytes.
+        let stream = std::io::repeat(0u8);
+        let mut bounded = stream.take(64 * 1024 * 1024);
+        let (s, capped) = read_entry_capped(&mut bounded);
+        assert!(capped, "zip-bomb stream must be flagged as capped");
+        assert!(
+            (s.len() as u64) <= MAX_ZIP_ENTRY_DECOMPRESSED,
+            "output must not exceed the per-entry cap, got {} bytes",
+            s.len()
+        );
+    }
+
+    #[test]
+    fn read_entry_capped_keeps_small_entries_intact() {
+        let small = b"normal content under the cap".to_vec();
+        let mut cursor = std::io::Cursor::new(small.clone());
+        let (s, capped) = read_entry_capped(&mut cursor);
+        assert!(!capped);
+        assert_eq!(s.as_bytes(), small.as_slice());
     }
 
     #[test]

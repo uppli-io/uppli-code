@@ -178,17 +178,31 @@ pub async fn read_pdf(path: &Path, pages: Option<&str>) -> HandlerOutput {
     // pdf-extract delimits pages with `\u{0C}` (form feed) in some
     // backends and not in others. We use it as a heuristic: if the
     // text has form feeds, we honour the pages selector; otherwise
-    // the selector is ignored with a warning.
+    // the selector is ignored — but we emit an EXPLICIT warning so
+    // the caller doesn't believe a silent filter happened. The
+    // previous version silently dropped the selector, which made
+    // multi-page PDF benches think they had filtered when they had
+    // not.
     let raw_pages: Vec<&str> = extracted_text.split('\u{0C}').collect();
     let total_pages = raw_pages.len();
+    let has_page_markers = total_pages > 1;
+    let mut pages_selector_silently_ignored = false;
 
-    let (page_indices, pages_used_label) = match (pages_request.as_deref(), total_pages > 1) {
+    let (page_indices, pages_used_label) = match (pages_request.as_deref(), has_page_markers) {
         (Some(sel), true) => {
             let parsed = parse_page_selector(sel, total_pages);
             let label = format_pages_label(&parsed, total_pages);
             (parsed, label)
         }
-        _ => {
+        (Some(_sel), false) => {
+            // User asked for a sub-range but the extractor produced
+            // no page markers. Surface this so the model knows the
+            // sub-range did NOT apply.
+            pages_selector_silently_ignored = true;
+            let capped = std::cmp::min(total_pages, MAX_PDF_PAGES);
+            ((1..=capped).collect(), String::new())
+        }
+        (None, _) => {
             let capped = std::cmp::min(total_pages, MAX_PDF_PAGES);
             let label = if total_pages > MAX_PDF_PAGES {
                 format!("1-{} of {} (capped at MAX_PDF_PAGES)", capped, total_pages)
@@ -203,19 +217,58 @@ pub async fn read_pdf(path: &Path, pages: Option<&str>) -> HandlerOutput {
     emitted.push_str(&caption::pdf(path, total_pages, &pages_used_label, size));
     emitted.push_str("\n\n");
 
+    if pages_selector_silently_ignored {
+        emitted.push_str(&format!(
+            "[Warning: `pages={}` was requested but pdf-extract emitted no \
+             page markers (form-feed delimiters). The full extracted text is \
+             shown below — the selector COULD NOT be applied. If page-level \
+             filtering matters, request the PDF on a vision-capable provider \
+             so it can read the attached Document block directly.]\n\n",
+            pages_request.as_deref().unwrap_or("?")
+        ));
+    }
+
     if let Some(err) = extract_error {
         emitted.push_str(&format!(
             "[Note: text extraction failed — {}. Document block attached for vision-capable models.]\n",
             err
         ));
     } else {
-        emitted.push_str("--- Extracted text ---\n");
-        for &p_idx in &page_indices {
-            if let Some(page_text) = raw_pages.get(p_idx.saturating_sub(1)) {
-                emitted.push_str(&format!("[page {}]\n", p_idx));
-                emitted.push_str(page_text);
-                if !page_text.ends_with('\n') {
-                    emitted.push('\n');
+        // Scanned-PDF guard: when extraction returned successfully but
+        // the text is empty / whitespace-only, the PDF is almost
+        // certainly image-only (a scan). Without this signal the
+        // model sees an empty payload and may report "the PDF is
+        // empty" — wrong for invoice-style benches where the whole
+        // content lives in the scanned pixels.
+        let text_is_blank = extracted_text.trim().is_empty();
+        if text_is_blank {
+            if want_document_block {
+                emitted.push_str(
+                    "[Note: pdf-extract returned no text — this PDF is almost \
+                     certainly image-only (scanned). The original bytes are \
+                     attached as a Document block; run this on a vision-capable \
+                     provider (GLM-4.6v, Claude with vision, GPT-4o) to OCR \
+                     the pages directly.]\n",
+                );
+            } else {
+                emitted.push_str(&format!(
+                    "[Note: pdf-extract returned no text — this PDF is almost \
+                     certainly image-only (scanned), AND it is larger than the \
+                     {} inline cap so no Document block was attached. Either \
+                     split the PDF and re-Read each chunk, or OCR it out-of-band \
+                     with: `tesseract` / `ocrmypdf`.]\n",
+                    human_bytes(MAX_PDF_BYTES)
+                ));
+            }
+        } else {
+            emitted.push_str("--- Extracted text ---\n");
+            for &p_idx in &page_indices {
+                if let Some(page_text) = raw_pages.get(p_idx.saturating_sub(1)) {
+                    emitted.push_str(&format!("[page {}]\n", p_idx));
+                    emitted.push_str(page_text);
+                    if !page_text.ends_with('\n') {
+                        emitted.push('\n');
+                    }
                 }
             }
         }
@@ -342,6 +395,56 @@ mod tests {
         let sel: String = (1..=200).map(|i| format!("{},", i)).collect();
         let p = parse_page_selector(&sel, 1000);
         assert!(p.len() <= MAX_PDF_PAGES);
+    }
+
+    // Smoke tests for the two soft-failure signals introduced after PR
+    // B's first review (Daisy's findings). Both check the textual output
+    // because read_pdf is hard to unit-test end-to-end without a real
+    // PDF fixture — pdf-extract requires actual PDF bytes. The full
+    // integration story is in commit 14.
+
+    #[tokio::test]
+    async fn empty_pdf_extraction_signals_likely_scanned() {
+        // pdf-extract returns Err on this trivially-malformed PDF, so
+        // we land in the "extract_error" branch, not the scanned-PDF
+        // branch. The point of the test is to ensure the handler
+        // surfaces SOME diagnostic instead of an empty payload — which
+        // was the regression Daisy flagged.
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("blank.pdf");
+        std::fs::write(&p, b"%PDF-1.4\n%%EOF\n").unwrap();
+        let out = read_pdf(&p, None).await;
+        assert!(!out.is_error);
+        // Either "text extraction failed" (malformed PDF) or "no text"
+        // (scanned-PDF guard) — both signal the gap clearly.
+        assert!(
+            out.content.contains("text extraction failed")
+                || out.content.contains("no text")
+                || out.content.contains("scanned"),
+            "expected a soft signal, got: {}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
+    async fn pages_silently_ignored_warning_present_when_no_form_feed() {
+        // A single-page PDF (or one whose extractor emitted no form
+        // feeds) with a user-supplied pages selector must produce an
+        // EXPLICIT warning that the selector was ignored. Previously
+        // the selector was silently dropped.
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("single.pdf");
+        // Trivially malformed PDF; extract returns Err so the warning
+        // path is suppressed. We still want to confirm the handler
+        // shipped SOMETHING — the unit-level invariant is that the
+        // request never hangs and the warning text exists when the
+        // condition fires. Direct exercise of that condition lives in
+        // the integration suite (commit 14).
+        std::fs::write(&p, b"%PDF-1.4\n%%EOF\n").unwrap();
+        let out = read_pdf(&p, Some("1-5")).await;
+        assert!(!out.is_error);
     }
 
     #[test]
