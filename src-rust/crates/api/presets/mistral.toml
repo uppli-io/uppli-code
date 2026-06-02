@@ -21,6 +21,13 @@ max_tokens = 32768
 request_timeout_sec = 600
 max_retries = 5
 
+# ── Models ─────────────────────────────────────────────────────────────────
+# Canonical model catalogue. INFORMATIONAL — the CLI does not gatekeep
+# `--model X` against this list. The operator's key/region/plan/tier
+# determines what is actually callable; the API itself returns 400 on
+# unknown IDs. Pricing is best-effort, verify against la mistral.ai
+# pricing page for refacturation.
+
 [[models]]
 id = "mistral-large-latest"
 display_name = "Mistral Large"

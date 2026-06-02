@@ -22,6 +22,13 @@ thinking_budget = 16000
 request_timeout_sec = 600
 max_retries = 5
 
+# ── Models ─────────────────────────────────────────────────────────────────
+# Canonical model catalogue. INFORMATIONAL — the CLI does not gatekeep
+# `--model X` against this list. The operator's key/region/plan/tier
+# determines what is actually callable; the API itself returns 400 on
+# unknown IDs. Pricing is best-effort, verify against the provider's
+# official price sheet for refacturation.
+
 [[models]]
 id = "qwen3.6-plus-2026-04-02"
 display_name = "Qwen 3.6 Plus"

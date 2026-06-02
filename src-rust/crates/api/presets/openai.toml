@@ -21,6 +21,13 @@ max_tokens = 16384
 request_timeout_sec = 600
 max_retries = 5
 
+# ── Models ─────────────────────────────────────────────────────────────────
+# Generic OpenAI-compatible endpoint — the entire point is that the user
+# brings their own model via `--model X` (vLLM, LiteLLM, llama.cpp server,
+# Together, Anyscale, ...). No catalogue can be authoritative here.
+# A placeholder "default" entry exists so the registry has something
+# to display; --model is the operative selection.
+
 [[models]]
 id = "default"
 display_name = "Default model"
