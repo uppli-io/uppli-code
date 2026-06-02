@@ -1552,6 +1552,11 @@ pub struct PromptInputState {
     pub vim_quit_requested: bool,
     /// Pending image attachments (from clipboard paste) to be sent with next message.
     pub pending_images: Vec<crate::image_paste::PastedImage>,
+    /// Cap on undo-stack history. Older snapshots are dropped past this.
+    /// Mirrors `Config.tui_undo_history_max` /
+    /// `DEFAULT_TUI_UNDO_HISTORY_MAX` (100). Owners may override after
+    /// construction once settings are loaded.
+    pub undo_history_max: usize,
 }
 
 impl PromptInputState {
@@ -1586,6 +1591,7 @@ impl PromptInputState {
             vim_search_last: None,
             vim_quit_requested: false,
             pending_images: Vec::new(),
+            undo_history_max: cc_core::constants::DEFAULT_TUI_UNDO_HISTORY_MAX,
         }
     }
 
@@ -2248,7 +2254,7 @@ impl PromptInputState {
         if modified {
             self.undo_stack
                 .push((snapshot_text.clone(), snapshot_cursor));
-            if self.undo_stack.len() > 100 {
+            if self.undo_stack.len() > self.undo_history_max {
                 self.undo_stack.remove(0);
             }
             // Update dot-repeat for simple modifying commands (normal mode only)
@@ -2299,7 +2305,7 @@ impl PromptInputState {
     /// Push the current (text, cursor) to the undo stack.
     pub fn push_undo(&mut self) {
         self.undo_stack.push((self.text.clone(), self.cursor));
-        if self.undo_stack.len() > 100 {
+        if self.undo_stack.len() > self.undo_history_max {
             self.undo_stack.remove(0);
         }
     }

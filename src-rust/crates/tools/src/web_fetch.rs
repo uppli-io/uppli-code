@@ -175,8 +175,12 @@ impl Tool for WebFetchTool {
         debug!(url = %params.url, "Fetching web page");
 
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::limited(10))
+            .timeout(std::time::Duration::from_secs(
+                ctx.config.effective_web_fetch_timeout_secs(),
+            ))
+            .redirect(reqwest::redirect::Policy::limited(
+                ctx.config.effective_web_fetch_max_redirects(),
+            ))
             .build();
 
         let client = match client {
@@ -218,12 +222,12 @@ impl Tool for WebFetchTool {
             body
         };
 
-        // Truncate very long content
-        const MAX_LEN: usize = 100_000;
-        let text = if text.len() > MAX_LEN {
+        // Truncate very long content — knob: --web-fetch-max-chars
+        let max_len = ctx.config.effective_web_fetch_max_chars();
+        let text = if text.len() > max_len {
             format!(
                 "{}\n\n... (truncated, {} total characters)",
-                &text[..MAX_LEN],
+                &text[..max_len],
                 text.len()
             )
         } else {

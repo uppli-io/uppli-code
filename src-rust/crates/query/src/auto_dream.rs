@@ -16,7 +16,12 @@ use tokio::fs;
 
 // Scan throttle: when time-gate passes but session-gate doesn't, the lock
 // mtime doesn't advance, so the time-gate keeps passing every turn.
-pub const SESSION_SCAN_INTERVAL_SECS: u64 = 10 * 60; // 10 minutes
+//
+// This constant is the fallback default. Runtime callers should prefer
+// [`cc_core::config::Config::effective_auto_dream_scan_interval_secs`] so a
+// user override on CLI / settings takes effect for unattended runs.
+pub const SESSION_SCAN_INTERVAL_SECS: u64 =
+    cc_core::constants::DEFAULT_AUTO_DREAM_SCAN_INTERVAL_SECS;
 
 /// GrowthBook-sourced scheduling config (with defaults)
 #[derive(Debug, Clone)]

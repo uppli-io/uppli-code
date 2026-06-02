@@ -116,6 +116,9 @@ pub fn parse_frontmatter(content: &str) -> (MemoryFrontmatter, &str) {
 // ---------------------------------------------------------------------------
 
 /// Maximum @include nesting depth.
+///
+/// Hardcoded: recursion guard preventing stack overflow on cyclic include
+/// graphs. Depth 10 is far beyond any sane memory hierarchy.
 const MAX_INCLUDE_DEPTH: usize = 10;
 
 /// Expand @include directives in content.
@@ -185,13 +188,33 @@ pub fn expand_includes(
 // Loading API
 // ---------------------------------------------------------------------------
 
-const MAX_FILE_SIZE: u64 = 40 * 1024; // 40 KB
+/// Default cap on UPPLI.md file bytes — kept as an alias for
+/// `cc_core::constants::DEFAULT_CLAUDEMD_MAX_BYTES` so historical readers
+/// of this module still find the constant. Runtime overrides come via
+/// `Config.claudemd_max_bytes` / `--claudemd-max-bytes` and are passed to
+/// `load_memory_file_with_limit`.
+const MAX_FILE_SIZE: u64 = crate::constants::DEFAULT_CLAUDEMD_MAX_BYTES;
 
 /// Load a single UPPLI.md file (respects MAX_FILE_SIZE, expands @includes).
 pub fn load_memory_file(path: &Path, scope: MemoryScope) -> Option<MemoryFileInfo> {
+    load_memory_file_with_limit(path, scope, MAX_FILE_SIZE)
+}
+
+/// Load a single UPPLI.md file, enforcing `max_bytes` instead of the
+/// default 40 KiB cap. Callers that have a `Config` should pass
+/// `config.effective_claudemd_max_bytes()`.
+pub fn load_memory_file_with_limit(
+    path: &Path,
+    scope: MemoryScope,
+    max_bytes: u64,
+) -> Option<MemoryFileInfo> {
     let meta = std::fs::metadata(path).ok()?;
-    if meta.len() > MAX_FILE_SIZE {
-        eprintln!("WARNING: {} exceeds 40KB limit, skipping", path.display());
+    if meta.len() > max_bytes {
+        eprintln!(
+            "WARNING: {} exceeds {} byte limit, skipping",
+            path.display(),
+            max_bytes
+        );
         return None;
     }
     let raw = std::fs::read_to_string(path).ok()?;
@@ -220,6 +243,16 @@ pub fn load_memory_file(path: &Path, scope: MemoryScope) -> Option<MemoryFileInf
 ///
 /// Returned list is ordered: Managed (highest) → User → Project → Local.
 pub fn load_all_memory_files(project_root: &Path) -> Vec<MemoryFileInfo> {
+    load_all_memory_files_with_limit(project_root, MAX_FILE_SIZE)
+}
+
+/// Load all UPPLI.md files for the given project root, enforcing
+/// `max_bytes` on each file instead of the default 40 KiB cap. Callers
+/// that hold a `Config` should pass `config.effective_claudemd_max_bytes()`.
+pub fn load_all_memory_files_with_limit(
+    project_root: &Path,
+    max_bytes: u64,
+) -> Vec<MemoryFileInfo> {
     let mut files = Vec::new();
 
     // 1. Managed: ~/.uppli/rules/*.md
@@ -239,7 +272,7 @@ pub fn load_all_memory_files(project_root: &Path) -> Vec<MemoryFileInfo> {
                 .collect();
             paths.sort();
             for p in paths {
-                if let Some(f) = load_memory_file(&p, MemoryScope::Managed) {
+                if let Some(f) = load_memory_file_with_limit(&p, MemoryScope::Managed, max_bytes) {
                     files.push(f);
                 }
             }
@@ -248,7 +281,8 @@ pub fn load_all_memory_files(project_root: &Path) -> Vec<MemoryFileInfo> {
         // 2. User: ~/.uppli/UPPLI.md
         let user_claude = home.join(".uppli/UPPLI.md");
         if user_claude.exists() {
-            if let Some(f) = load_memory_file(&user_claude, MemoryScope::User) {
+            if let Some(f) = load_memory_file_with_limit(&user_claude, MemoryScope::User, max_bytes)
+            {
                 files.push(f);
             }
         }
@@ -257,7 +291,9 @@ pub fn load_all_memory_files(project_root: &Path) -> Vec<MemoryFileInfo> {
     // 3. Project: {project_root}/UPPLI.md
     let project_claude = project_root.join("UPPLI.md");
     if project_claude.exists() {
-        if let Some(f) = load_memory_file(&project_claude, MemoryScope::Project) {
+        if let Some(f) =
+            load_memory_file_with_limit(&project_claude, MemoryScope::Project, max_bytes)
+        {
             files.push(f);
         }
     }
@@ -265,7 +301,7 @@ pub fn load_all_memory_files(project_root: &Path) -> Vec<MemoryFileInfo> {
     // 4. Local: {project_root}/.uppli/UPPLI.md
     let local_claude = project_root.join(".uppli/UPPLI.md");
     if local_claude.exists() {
-        if let Some(f) = load_memory_file(&local_claude, MemoryScope::Local) {
+        if let Some(f) = load_memory_file_with_limit(&local_claude, MemoryScope::Local, max_bytes) {
             files.push(f);
         }
     }

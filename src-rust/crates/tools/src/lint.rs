@@ -24,11 +24,24 @@ pub struct LintResult {
     pub errors: String,
 }
 
-/// Run a fast syntax-only check on the given file.
+/// Run a fast syntax-only check on the given file using the default
+/// `DEFAULT_LINT_SPAWN_TIMEOUT_SECS` (5s) timeout.
 ///
 /// Returns `LintResult { ok: true, .. }` for file types we don't know how
 /// to check, so this never blocks edits to unknown languages.
+///
+/// Prefer `check_syntax_with_timeout` from production call sites so the
+/// `Config.lint_spawn_timeout_secs` / `--lint-spawn-timeout-secs` override
+/// is honoured.
 pub async fn check_syntax(path: &Path) -> LintResult {
+    check_syntax_with_timeout(path, cc_core::constants::DEFAULT_LINT_SPAWN_TIMEOUT_SECS).await
+}
+
+/// Run a fast syntax-only check on the given file with a caller-supplied
+/// per-spawn timeout (seconds).  Production callers thread
+/// `Config::effective_lint_spawn_timeout_secs()` so large files don't
+/// silently pass when the linter is slow.
+pub async fn check_syntax_with_timeout(path: &Path, timeout_secs: u64) -> LintResult {
     let ext = match path.extension().and_then(|e| e.to_str()) {
         Some(e) => e,
         None => return pass(None),
@@ -50,7 +63,7 @@ pub async fn check_syntax(path: &Path) -> LintResult {
     // Spawn the checker with a timeout.  If the binary isn't installed
     // or the check times out, we pass silently — never block the agent.
     let output = match tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(timeout_secs),
         tokio::process::Command::new(program).args(&args).output(),
     )
     .await
@@ -63,7 +76,7 @@ pub async fn check_syntax(path: &Path) -> LintResult {
         }
         Err(_) => {
             // Timeout — pass silently.
-            debug!(program, "Lint timed out after 5s, skipping");
+            debug!(program, timeout_secs, "Lint timed out, skipping");
             return pass(Some(language));
         }
     };

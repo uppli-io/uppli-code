@@ -197,6 +197,37 @@ pub struct QueryConfig {
     /// Fallback model name. Used when the primary model returns overloaded /
     /// rate-limit errors (mirrors TS `--fallback-model`).
     pub fallback_model: Option<String>,
+    /// Yellow "warning" threshold (fraction of context window used) for the
+    /// auto-compact warning notice. Mirrors `Config::compact_warning_pct`.
+    pub compact_warning_pct: f64,
+    /// Red "critical" threshold (fraction of context window used) for the
+    /// auto-compact critical notice. Mirrors `Config::compact_critical_pct`.
+    pub compact_critical_pct: f64,
+    /// How many recent messages to keep verbatim after auto-compact runs.
+    /// Mirrors `Config::compact_keep_recent_messages`.
+    pub compact_keep_recent_messages: usize,
+    /// Max number of recently-modified files reactive-compact re-injects
+    /// after summarising. Mirrors `Config::compact_reinject_max_files`.
+    pub compact_reinject_max_files: usize,
+    /// Per-file byte cap for reactive-compact file re-injection.
+    /// Mirrors `Config::compact_reinject_max_file_bytes`.
+    pub compact_reinject_max_file_bytes: u64,
+    /// Fraction of the context window at which reactive-compact fires.
+    /// Mirrors `Config::reactive_compact_threshold`.
+    pub reactive_compact_threshold: f64,
+    /// Max output tokens used when summarising history for auto-compact.
+    /// Mirrors `Config::compact_summary_max_tokens`.
+    pub compact_summary_max_tokens: u32,
+    /// Max consecutive auto-compact failures before the circuit breaker
+    /// opens and disables auto-compact for the rest of the session.
+    /// Mirrors `Config::max_compact_retries`.
+    pub max_compact_retries: u32,
+    /// Fraction of context window at which proactive auto-compact fires.
+    /// Mirrors `Config::autocompact_trigger_fraction`.
+    pub autocompact_trigger_fraction: f64,
+    /// Buffer (tokens) below context window for "about to compact" warning.
+    /// Mirrors `Config::compact_warning_buffer_tokens`.
+    pub compact_warning_buffer_tokens: u64,
 }
 
 impl Default for QueryConfig {
@@ -234,6 +265,18 @@ impl Default for QueryConfig {
             max_total_tokens: None,
             max_budget_usd: None,
             fallback_model: fallback,
+            compact_warning_pct: cc_core::constants::DEFAULT_COMPACT_WARNING_PCT,
+            compact_critical_pct: cc_core::constants::DEFAULT_COMPACT_CRITICAL_PCT,
+            compact_keep_recent_messages: cc_core::constants::DEFAULT_COMPACT_KEEP_RECENT_MESSAGES,
+            compact_reinject_max_files: cc_core::constants::DEFAULT_COMPACT_REINJECT_MAX_FILES,
+            compact_reinject_max_file_bytes:
+                cc_core::constants::DEFAULT_COMPACT_REINJECT_MAX_FILE_BYTES,
+            reactive_compact_threshold: cc_core::constants::DEFAULT_REACTIVE_COMPACT_THRESHOLD,
+            compact_summary_max_tokens: cc_core::constants::DEFAULT_COMPACT_SUMMARY_MAX_TOKENS,
+            max_compact_retries: cc_core::constants::MAX_COMPACT_RETRIES,
+            autocompact_trigger_fraction: cc_core::constants::DEFAULT_AUTOCOMPACT_TRIGGER_FRACTION,
+            compact_warning_buffer_tokens:
+                cc_core::constants::DEFAULT_COMPACT_WARNING_BUFFER_TOKENS,
         }
     }
 }
@@ -246,6 +289,17 @@ impl QueryConfig {
             output_style: cfg.effective_output_style(),
             output_style_prompt: cfg.resolve_output_style_prompt(),
             working_directory: cfg.project_dir.as_ref().map(|p| p.display().to_string()),
+            compact_warning_pct: cfg.effective_compact_warning_pct(),
+            compact_critical_pct: cfg.effective_compact_critical_pct(),
+            compact_keep_recent_messages: cfg.effective_compact_keep_recent_messages(),
+            compact_reinject_max_files: cfg.effective_compact_reinject_max_files(),
+            compact_reinject_max_file_bytes: cfg.effective_compact_reinject_max_file_bytes(),
+            reactive_compact_threshold: cfg.effective_reactive_compact_threshold(),
+            compact_summary_max_tokens: cfg.effective_compact_summary_max_tokens(),
+            tool_result_budget: cfg.effective_tool_result_budget(),
+            max_compact_retries: cfg.effective_max_compact_retries(),
+            autocompact_trigger_fraction: cfg.effective_autocompact_trigger_fraction(),
+            compact_warning_buffer_tokens: cfg.effective_compact_warning_buffer_tokens(),
             ..Default::default()
         }
     }
@@ -273,6 +327,17 @@ impl QueryConfig {
             output_style: cfg.effective_output_style(),
             output_style_prompt: cfg.resolve_output_style_prompt(),
             working_directory: cfg.project_dir.as_ref().map(|p| p.display().to_string()),
+            compact_warning_pct: cfg.effective_compact_warning_pct(),
+            compact_critical_pct: cfg.effective_compact_critical_pct(),
+            compact_keep_recent_messages: cfg.effective_compact_keep_recent_messages(),
+            compact_reinject_max_files: cfg.effective_compact_reinject_max_files(),
+            compact_reinject_max_file_bytes: cfg.effective_compact_reinject_max_file_bytes(),
+            reactive_compact_threshold: cfg.effective_reactive_compact_threshold(),
+            compact_summary_max_tokens: cfg.effective_compact_summary_max_tokens(),
+            tool_result_budget: cfg.effective_tool_result_budget(),
+            max_compact_retries: cfg.effective_max_compact_retries(),
+            autocompact_trigger_fraction: cfg.effective_autocompact_trigger_fraction(),
+            compact_warning_buffer_tokens: cfg.effective_compact_warning_buffer_tokens(),
             ..Default::default()
         }
     }
@@ -546,10 +611,16 @@ fn apply_tool_result_budget(messages: Vec<Message>, budget: usize) -> (Vec<Messa
 
 /// Maximum number of max_tokens continuation attempts before surfacing the
 /// partial response.  Mirrors `MAX_OUTPUT_TOKENS_RECOVERY_LIMIT` in query.ts.
-const MAX_TOKENS_RECOVERY_LIMIT: u32 = 3;
+/// Kept as the legacy compile-time default — actual runtime value comes from
+/// `Config::effective_max_tokens_recovery_retries()`.
+#[allow(dead_code)]
+const MAX_TOKENS_RECOVERY_LIMIT: u32 = cc_core::constants::DEFAULT_MAX_TOKENS_RECOVERY_LIMIT;
 
 /// Maximum number of overload retry attempts before giving up.
-const MAX_OVERLOAD_RETRIES: u32 = 5;
+/// Kept as the legacy compile-time default — actual runtime value comes from
+/// `Config::effective_max_overload_retries()`.
+#[allow(dead_code)]
+const MAX_OVERLOAD_RETRIES: u32 = cc_core::constants::DEFAULT_MAX_OVERLOAD_RETRIES;
 
 /// Message injected when the model hits its output-token limit.
 /// Mirrors the TS recovery message in query.ts lines 1224-1228.
@@ -621,11 +692,22 @@ pub async fn run_query_loop(
     // Empty-response retry: when the model returns end_turn with no tools
     // and no text (likely rate-limit or API glitch), retry with backoff.
     let mut empty_response_retries: u32 = 0;
-    const MAX_EMPTY_RETRIES: u32 = 5;
+    // Tunable retry budgets pulled from Config (constant defaults preserved).
+    let max_empty_retries: u32 = tool_ctx.config.effective_max_empty_retries();
+    let max_overload_retries_cfg: u32 = tool_ctx.config.effective_max_overload_retries();
+    let max_tokens_recovery_limit_cfg: u32 =
+        tool_ctx.config.effective_max_tokens_recovery_retries();
     // Active model — user can switch via /model command.
     let effective_model = config.model.clone();
     // Context window resolved from provider metadata (not substring matching).
-    let ctx_window = client.context_window(&effective_model);
+    // If the model is unknown, apply the configurable floor (Batch 9).
+    let ctx_window = {
+        let raw = client.context_window(&effective_model);
+        let floor = tool_ctx
+            .config
+            .effective_unknown_model_context_window_floor();
+        raw.max(floor)
+    };
 
     loop {
         turn += 1;
@@ -814,16 +896,16 @@ pub async fn run_query_loop(
                     || err_str.contains("rate_limit")
                 {
                     overload_retries += 1;
-                    if overload_retries > MAX_OVERLOAD_RETRIES {
+                    if overload_retries > max_overload_retries_cfg {
                         error!(
                             "API overloaded — max retries ({}) exhausted",
-                            MAX_OVERLOAD_RETRIES
+                            max_overload_retries_cfg
                         );
                         if let Some(ref tx) = event_tx {
                             let fb_hint = config.fallback_model.as_deref().unwrap_or("unknown");
                             let _ = tx.send(QueryEvent::Status(format!(
                                 "⚠ {} still overloaded after {} retries. Use /model {} to switch.",
-                                effective_model, MAX_OVERLOAD_RETRIES, fb_hint
+                                effective_model, max_overload_retries_cfg, fb_hint
                             )));
                         }
                         return QueryOutcome::Error(e);
@@ -833,11 +915,14 @@ pub async fn run_query_loop(
                         let fb_hint = config.fallback_model.as_deref().unwrap_or("unknown");
                         let _ = tx.send(QueryEvent::Status(format!(
                             "⚠ {} overloaded — retry {}/{} (use /model {} to switch)",
-                            effective_model, overload_retries, MAX_OVERLOAD_RETRIES, fb_hint
+                            effective_model, overload_retries, max_overload_retries_cfg, fb_hint
                         )));
                     }
-                    let wait =
-                        std::time::Duration::from_secs((2u64.pow(overload_retries.min(4))).min(30));
+                    let overload_max_backoff =
+                        tool_ctx.config.effective_overload_retry_max_backoff_secs();
+                    let wait = std::time::Duration::from_secs(
+                        (2u64.pow(overload_retries.min(4))).min(overload_max_backoff),
+                    );
                     tokio::time::sleep(wait).await;
                     turn -= 1;
                     continue;
@@ -867,7 +952,9 @@ pub async fn run_query_loop(
                                 && matches!(&evt, StreamEvent::ContentBlockDelta { .. }) {
                                     first_token_received = true;
                                     let ttft = request_start.elapsed();
-                                    if ttft.as_secs() > 30 {
+                                    let slow_ttft_threshold =
+                                        tool_ctx.config.effective_slow_ttft_warning_secs();
+                                    if ttft.as_secs() > slow_ttft_threshold {
                                         warn!(
                                             ttft_secs = ttft.as_secs(),
                                             model = %effective_model,
@@ -1026,10 +1113,17 @@ pub async fn run_query_loop(
         }
 
         // Emit token warning events when approaching context limits.
-        // Thresholds mirror TypeScript autoCompact.ts: 80% → Warning, 95% → Critical.
+        // Thresholds come from `config.compact_warning_pct` /
+        // `config.compact_critical_pct` (CLI: --compact-warning-pct /
+        // --compact-critical-pct).
         {
-            let warning_state =
-                compact::calculate_token_warning_state(usage.input_tokens, ctx_window);
+            let warning_state = compact::calculate_token_warning_state_full(
+                usage.input_tokens,
+                ctx_window,
+                config.compact_warning_pct,
+                config.compact_critical_pct,
+                config.compact_warning_buffer_tokens,
+            );
             if warning_state != compact::TokenWarningState::Ok {
                 if let Some(ref tx) = event_tx {
                     let pct_used = usage.input_tokens as f64 / ctx_window as f64;
@@ -1056,7 +1150,11 @@ pub async fn run_query_loop(
         if reactive_compact_enabled {
             // Reactive path: emergency collapse takes priority over normal compact.
             let context_limit = ctx_window;
-            if compact::should_context_collapse(usage.input_tokens, context_limit) {
+            if compact::should_context_collapse(
+                usage.input_tokens,
+                context_limit,
+                Some(tool_ctx.config.effective_context_collapse_threshold()),
+            ) {
                 if let Some(ref tx) = event_tx {
                     let _ = tx.send(QueryEvent::Status(
                         "Compacting context... (emergency collapse)".to_string(),
@@ -1076,7 +1174,11 @@ pub async fn run_query_loop(
                         // We can't recover them here — re-run auto-compact as fallback.
                     }
                 }
-            } else if compact::should_compact(usage.input_tokens, context_limit) {
+            } else if compact::should_compact_with(
+                usage.input_tokens,
+                context_limit,
+                config.reactive_compact_threshold,
+            ) {
                 if let Some(ref tx) = event_tx {
                     let _ = tx.send(QueryEvent::Status("Compacting context...".to_string()));
                 }
@@ -1106,13 +1208,20 @@ pub async fn run_query_loop(
             }
         } else if stop == "end_turn" || stop == "tool_use" {
             // Proactive auto-compact (original path, used when reactive compact is off).
-            if let Some(new_msgs) = compact::auto_compact_if_needed(
+            // `compact_keep_recent_messages` mirrors
+            // `Config::compact_keep_recent_messages` (CLI:
+            // --compact-keep-recent-messages).
+            if let Some(new_msgs) = compact::auto_compact_if_needed_full(
                 client,
                 messages,
                 usage.input_tokens,
                 &config.model,
                 &mut compact_state,
                 ctx_window,
+                config.compact_keep_recent_messages,
+                config.compact_summary_max_tokens,
+                config.max_compact_retries,
+                config.autocompact_trigger_fraction,
             )
             .await
             {
@@ -1165,7 +1274,7 @@ pub async fn run_query_loop(
                         |b| matches!(b, ContentBlock::Text { text } if !text.trim().is_empty()),
                     ),
                 };
-                if !has_tools && !has_text && empty_response_retries < MAX_EMPTY_RETRIES {
+                if !has_tools && !has_text && empty_response_retries < max_empty_retries {
                     empty_response_retries += 1;
                     let wait = std::time::Duration::from_secs(1 << empty_response_retries);
                     warn!(
@@ -1178,7 +1287,7 @@ pub async fn run_query_loop(
                             "Empty API response, retrying in {}s ({}/{})",
                             wait.as_secs(),
                             empty_response_retries,
-                            MAX_EMPTY_RETRIES
+                            max_empty_retries
                         )));
                     }
                     // Remove the empty assistant message before retrying.
@@ -1199,7 +1308,10 @@ pub async fn run_query_loop(
 
                 // Asynchronously extract and persist session memories if warranted.
                 // Runs in a detached Tokio task so it doesn't block the query loop.
-                if session_memory::SessionMemoryExtractor::should_extract(messages) {
+                if session_memory::SessionMemoryExtractor::should_extract_with_threshold(
+                    messages,
+                    tool_ctx.config.effective_session_memory_min_messages(),
+                ) {
                     let model_clone = config.model.clone();
                     let messages_clone = messages.clone();
                     let working_dir_clone = tool_ctx.working_dir.clone();
@@ -1273,21 +1385,21 @@ pub async fn run_query_loop(
             }
             "max_tokens" | "length" => {
                 // Mirror the TS recovery loop: inject a continuation nudge and
-                // retry up to MAX_TOKENS_RECOVERY_LIMIT times before surfacing
-                // the partial response as QueryOutcome::MaxTokens.
-                if max_tokens_recovery_count < MAX_TOKENS_RECOVERY_LIMIT {
+                // retry up to max_tokens_recovery_limit_cfg times before
+                // surfacing the partial response as QueryOutcome::MaxTokens.
+                if max_tokens_recovery_count < max_tokens_recovery_limit_cfg {
                     max_tokens_recovery_count += 1;
                     warn!(
                         attempt = max_tokens_recovery_count,
-                        limit = MAX_TOKENS_RECOVERY_LIMIT,
+                        limit = max_tokens_recovery_limit_cfg,
                         "max_tokens hit — injecting continuation message (attempt {}/{})",
                         max_tokens_recovery_count,
-                        MAX_TOKENS_RECOVERY_LIMIT,
+                        max_tokens_recovery_limit_cfg,
                     );
                     if let Some(ref tx) = event_tx {
                         let _ = tx.send(QueryEvent::Status(format!(
                             "Output token limit hit — continuing (attempt {}/{})",
-                            max_tokens_recovery_count, MAX_TOKENS_RECOVERY_LIMIT
+                            max_tokens_recovery_count, max_tokens_recovery_limit_cfg
                         )));
                     }
                     // The partial assistant message must be in the history so
@@ -1298,7 +1410,7 @@ pub async fn run_query_loop(
                 // Recovery exhausted — surface the partial response.
                 warn!(
                     "max_tokens recovery exhausted after {} attempts",
-                    MAX_TOKENS_RECOVERY_LIMIT
+                    max_tokens_recovery_limit_cfg
                 );
                 return QueryOutcome::MaxTokens {
                     partial_message: assistant_msg,
@@ -1813,6 +1925,18 @@ mod tests {
             max_total_tokens: None,
             max_budget_usd: None,
             fallback_model: None,
+            compact_warning_pct: cc_core::constants::DEFAULT_COMPACT_WARNING_PCT,
+            compact_critical_pct: cc_core::constants::DEFAULT_COMPACT_CRITICAL_PCT,
+            compact_keep_recent_messages: cc_core::constants::DEFAULT_COMPACT_KEEP_RECENT_MESSAGES,
+            compact_reinject_max_files: cc_core::constants::DEFAULT_COMPACT_REINJECT_MAX_FILES,
+            compact_reinject_max_file_bytes:
+                cc_core::constants::DEFAULT_COMPACT_REINJECT_MAX_FILE_BYTES,
+            reactive_compact_threshold: cc_core::constants::DEFAULT_REACTIVE_COMPACT_THRESHOLD,
+            compact_summary_max_tokens: cc_core::constants::DEFAULT_COMPACT_SUMMARY_MAX_TOKENS,
+            max_compact_retries: cc_core::constants::MAX_COMPACT_RETRIES,
+            autocompact_trigger_fraction: cc_core::constants::DEFAULT_AUTOCOMPACT_TRIGGER_FRACTION,
+            compact_warning_buffer_tokens:
+                cc_core::constants::DEFAULT_COMPACT_WARNING_BUFFER_TOKENS,
         }
     }
 

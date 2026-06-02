@@ -376,7 +376,17 @@ pub mod client {
         pub api_version: String,
         pub beta_features: String,
         pub max_retries: u32,
+        /// Initial backoff for Anthropic retries.
+        ///
+        /// Hardcoded default (2 s): standard provider-policy backoff,
+        /// not user policy. Already on `ClientConfig` if the value
+        /// needs to be threaded through in code.
         pub initial_retry_delay: Duration,
+        /// Backoff ceiling — caps retry sleep at the configured value.
+        ///
+        /// Hardcoded default (30 s): standard backoff hygiene. Exposing
+        /// this to users invites footguns (e.g. 1 h delays masking real
+        /// failures); kept fixed here.
         pub max_retry_delay: Duration,
         pub request_timeout: Duration,
         /// When true, send `Authorization: Bearer <api_key>` instead of `x-api-key`.
@@ -391,10 +401,15 @@ pub mod client {
                 api_base: cc_core::constants::ANTHROPIC_API_BASE.to_string(),
                 api_version: ANTHROPIC_API_VERSION.to_string(),
                 beta_features: ANTHROPIC_BETA_HEADER.to_string(),
-                max_retries: 8,
+                // Batch 8: defaults sourced from core constants so the
+                // legacy Anthropic-format client and the canonical defaults
+                // table cannot drift.
+                max_retries: cc_core::constants::DEFAULT_ANTHROPIC_LEGACY_MAX_RETRIES,
                 initial_retry_delay: Duration::from_secs(2),
                 max_retry_delay: Duration::from_secs(30),
-                request_timeout: Duration::from_secs(600),
+                request_timeout: Duration::from_secs(
+                    cc_core::constants::DEFAULT_ANTHROPIC_REQUEST_TIMEOUT_SECS,
+                ),
                 use_bearer_auth: false,
             }
         }

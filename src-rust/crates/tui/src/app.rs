@@ -753,6 +753,11 @@ impl App {
     pub fn new(config: Config, cost_tracker: Arc<CostTracker>) -> Self {
         let model_name = String::from("loading...");
         let user_keybindings = UserKeybindings::load(&Settings::config_dir());
+        let prompt_input = {
+            let mut s = PromptInputState::new();
+            s.undo_history_max = config.effective_tui_undo_history_max();
+            s
+        };
         Self {
             config,
             cost_tracker,
@@ -760,7 +765,7 @@ impl App {
             display_messages: Vec::new(),
             system_annotations: Vec::new(),
             input: String::new(),
-            prompt_input: PromptInputState::new(),
+            prompt_input,
             input_history: Vec::new(),
             history_index: None,
             scroll_offset: 0,

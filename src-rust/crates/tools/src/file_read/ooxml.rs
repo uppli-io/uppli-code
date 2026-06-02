@@ -43,13 +43,14 @@ use zip::ZipArchive;
 
 use super::caption;
 use super::detect::Kind;
-use super::limits::{MAX_OOXML_BYTES, MAX_OOXML_ROWS, MAX_XML_DEPTH};
+use super::limits::{MAX_OOXML_BYTES, MAX_XML_DEPTH};
 use super::output::HandlerOutput;
 
-/// Cap on the bytes of inline text extracted from a single OOXML
-/// document. Independent of MAX_TEXT_BYTES — OOXML extraction is
-/// already costly so we keep the output bounded.
-const MAX_OOXML_TEXT_BYTES: usize = 1_500_000;
+// Runtime cap on the bytes of inline text extracted from a single
+// OOXML document flows through `Config::effective_max_ooxml_text_bytes`
+// (knob: --max-ooxml-text-bytes); the fallback constant lives in
+// `cc_core::constants::DEFAULT_MAX_OOXML_TEXT_BYTES` and is imported
+// inside `mod tests` where it is exercised directly.
 
 /// Cap on the DECOMPRESSED bytes read from a single ZIP entry inside
 /// an OOXML / ODF archive. Without this, a 20 MiB .xlsx whose
@@ -57,6 +58,9 @@ const MAX_OOXML_TEXT_BYTES: usize = 1_500_000;
 /// OOM the agent: `ZipFile::read_to_string` decompresses through-
 /// fully and trusts the central-directory size. Bounded reads are
 /// the only mitigation.
+///
+/// Hardcoded: per-entry zip-bomb guard inside OOXML — bounds the
+/// memory of a single malicious sheet/part.
 const MAX_ZIP_ENTRY_DECOMPRESSED: u64 = 32 * 1024 * 1024; // 32 MiB
 
 /// Read a ZIP entry into a String, capping at MAX_ZIP_ENTRY_DECOMPRESSED
@@ -84,7 +88,11 @@ fn read_entry_capped<R: Read>(entry: &mut R) -> (String, bool) {
 /// dispatcher) and produce a text-only `HandlerOutput`. ODF formats
 /// route here too — the wrapper in `odf.rs` flips the entry filename
 /// map (content.xml vs word/document.xml) and forwards.
-pub async fn read_ooxml(path: &Path, kind: Kind) -> HandlerOutput {
+///
+/// `cfg` carries the user-configurable knobs (currently
+/// `max_ooxml_rows`).
+pub async fn read_ooxml(path: &Path, kind: Kind, cfg: &cc_core::config::Config) -> HandlerOutput {
+    let max_ooxml_rows = cfg.effective_max_ooxml_rows();
     let display = path.display().to_string();
     let meta = match fs::symlink_metadata(path).await {
         Ok(m) => m,
@@ -133,10 +141,18 @@ pub async fn read_ooxml(path: &Path, kind: Kind) -> HandlerOutput {
         }
     };
 
+    let max_ooxml_text_bytes = cfg.effective_max_ooxml_text_bytes();
+    let max_pptx_slides = cfg.effective_max_pptx_slides();
     match kind {
-        Kind::Xlsx => extract_xlsx(path, &mut archive),
-        Kind::Docx => extract_docx(path, &mut archive, size),
-        Kind::Pptx => extract_pptx(path, &mut archive, size),
+        Kind::Xlsx => extract_xlsx(path, &mut archive, max_ooxml_text_bytes, max_ooxml_rows),
+        Kind::Docx => extract_docx(path, &mut archive, size, max_ooxml_text_bytes),
+        Kind::Pptx => extract_pptx(
+            path,
+            &mut archive,
+            size,
+            max_ooxml_text_bytes,
+            max_pptx_slides,
+        ),
         // ODF formats are handled in odf.rs which calls helpers here.
         other => HandlerOutput::error_text(format!(
             "[OOXML handler called for non-OOXML kind: {:?}]",
@@ -150,6 +166,8 @@ pub async fn read_ooxml(path: &Path, kind: Kind) -> HandlerOutput {
 fn extract_xlsx<R: std::io::Read + std::io::Seek>(
     path: &Path,
     archive: &mut ZipArchive<R>,
+    max_ooxml_text_bytes: usize,
+    max_ooxml_rows: usize,
 ) -> HandlerOutput {
     let shared_strings = read_shared_strings(archive);
 
@@ -173,7 +191,7 @@ fn extract_xlsx<R: std::io::Read + std::io::Seek>(
     if let Ok(mut zf) = archive.by_name(worksheet_name) {
         let (xml, capped) = read_entry_capped(&mut zf);
         entry_capped = capped;
-        let result = walk_xlsx_rows(&xml, &shared_strings);
+        let result = walk_xlsx_rows(&xml, &shared_strings, max_ooxml_rows);
         total_rows = result.total_rows;
         truncated = result.truncated;
         rows = result.rows;
@@ -193,7 +211,7 @@ fn extract_xlsx<R: std::io::Read + std::io::Seek>(
                 "\n[Truncated: showing {} rows of {} in active sheet (cap {}). Use Bash + xlsx2csv for the full sheet.]\n",
                 rows.len(),
                 total_rows,
-                MAX_OOXML_ROWS,
+                max_ooxml_rows,
             ));
         }
     }
@@ -203,7 +221,7 @@ fn extract_xlsx<R: std::io::Read + std::io::Seek>(
             MAX_ZIP_ENTRY_DECOMPRESSED / (1024 * 1024)
         ));
     }
-    cap_text_bytes(&mut out);
+    cap_text_bytes(&mut out, max_ooxml_text_bytes);
 
     HandlerOutput::success_text(out)
 }
@@ -214,7 +232,7 @@ struct XlsxRows {
     truncated: bool,
 }
 
-fn walk_xlsx_rows(xml: &str, shared_strings: &[String]) -> XlsxRows {
+fn walk_xlsx_rows(xml: &str, shared_strings: &[String], max_rows: usize) -> XlsxRows {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     reader.config_mut().expand_empty_elements = true;
@@ -259,7 +277,7 @@ fn walk_xlsx_rows(xml: &str, shared_strings: &[String]) -> XlsxRows {
                 let name_bytes = e.name().as_ref().to_vec();
                 if name_bytes == b"row" {
                     total_rows += 1;
-                    if rows.len() < MAX_OOXML_ROWS {
+                    if rows.len() < max_rows {
                         rows.push(std::mem::take(&mut current_row));
                     } else {
                         truncated = true;
@@ -410,6 +428,7 @@ fn extract_docx<R: Read + std::io::Seek>(
     path: &Path,
     archive: &mut ZipArchive<R>,
     size: u64,
+    max_ooxml_text_bytes: usize,
 ) -> HandlerOutput {
     let mut out = caption::docx(path, size);
     out.push_str("\n\n");
@@ -431,7 +450,7 @@ fn extract_docx<R: Read + std::io::Seek>(
             ))
         }
     };
-    let body = walk_ooxml_text(&xml, b"t");
+    let body = walk_ooxml_text(&xml, b"t", max_ooxml_text_bytes);
     if body.is_empty() {
         out.push_str("[No text runs found in word/document.xml.]\n");
     } else {
@@ -443,7 +462,7 @@ fn extract_docx<R: Read + std::io::Seek>(
             MAX_ZIP_ENTRY_DECOMPRESSED / (1024 * 1024)
         ));
     }
-    cap_text_bytes(&mut out);
+    cap_text_bytes(&mut out, max_ooxml_text_bytes);
     HandlerOutput::success_text(out)
 }
 
@@ -453,6 +472,8 @@ fn extract_pptx<R: Read + std::io::Seek>(
     path: &Path,
     archive: &mut ZipArchive<R>,
     size: u64,
+    max_ooxml_text_bytes: usize,
+    max_pptx_slides: usize,
 ) -> HandlerOutput {
     // Collect slide entries, sort by numeric index (NOT lexicographically
     // — slide10.xml < slide2.xml lexicographically, but we want 1, 2, ...
@@ -472,9 +493,8 @@ fn extract_pptx<R: Read + std::io::Seek>(
         .collect();
     slides.sort_by_key(|(idx, _)| *idx);
     let total_slides = slides.len();
-    const MAX_SLIDES: usize = 20;
-    let truncated = total_slides > MAX_SLIDES;
-    slides.truncate(MAX_SLIDES);
+    let truncated = total_slides > max_pptx_slides;
+    slides.truncate(max_pptx_slides);
 
     let mut out = caption::pptx(path, total_slides, size);
     out.push_str("\n\n");
@@ -488,7 +508,7 @@ fn extract_pptx<R: Read + std::io::Seek>(
             any_slide_capped |= capped;
         }
         out.push_str(&format!("## Slide {}\n", idx));
-        let slide_text = walk_ooxml_text(&xml, b"t");
+        let slide_text = walk_ooxml_text(&xml, b"t", max_ooxml_text_bytes);
         if slide_text.is_empty() {
             out.push_str("[no text runs]\n");
         } else {
@@ -503,7 +523,7 @@ fn extract_pptx<R: Read + std::io::Seek>(
     if truncated {
         out.push_str(&format!(
             "\n[Truncated: showed first {} of {} slides. Use Bash + libreoffice for the rest.]\n",
-            MAX_SLIDES, total_slides
+            max_pptx_slides, total_slides
         ));
     }
     if any_slide_capped {
@@ -512,7 +532,7 @@ fn extract_pptx<R: Read + std::io::Seek>(
             MAX_ZIP_ENTRY_DECOMPRESSED / (1024 * 1024)
         ));
     }
-    cap_text_bytes(&mut out);
+    cap_text_bytes(&mut out, max_ooxml_text_bytes);
     HandlerOutput::success_text(out)
 }
 
@@ -523,7 +543,7 @@ fn extract_pptx<R: Read + std::io::Seek>(
 // unknown elements. Returns concatenated text with paragraph-level
 // newlines (PPTX `<a:p>` and DOCX `<w:p>` both end with a newline).
 
-pub(super) fn walk_ooxml_text(xml: &str, tag: &[u8]) -> String {
+pub(super) fn walk_ooxml_text(xml: &str, tag: &[u8], max_bytes: usize) -> String {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     reader.config_mut().expand_empty_elements = true;
@@ -533,8 +553,8 @@ pub(super) fn walk_ooxml_text(xml: &str, tag: &[u8]) -> String {
     let mut in_t = false;
     let mut in_para = false;
     loop {
-        if out.len() > MAX_OOXML_TEXT_BYTES {
-            cap_text_bytes(&mut out);
+        if out.len() > max_bytes {
+            cap_text_bytes(&mut out, max_bytes);
             break;
         }
         match reader.read_event_into(&mut buf) {
@@ -589,25 +609,26 @@ fn local_name(name: &[u8]) -> &[u8] {
     }
 }
 
-/// UTF-8-safe truncation of `s` at MAX_OOXML_TEXT_BYTES. Walks back to
+/// UTF-8-safe truncation of `s` at DEFAULT_MAX_OOXML_TEXT_BYTES. Walks back to
 /// the nearest char boundary so we never panic mid-codepoint.
-fn cap_text_bytes(s: &mut String) {
-    if s.len() <= MAX_OOXML_TEXT_BYTES {
+fn cap_text_bytes(s: &mut String, max_bytes: usize) {
+    if s.len() <= max_bytes {
         return;
     }
-    let mut cut = MAX_OOXML_TEXT_BYTES;
+    let mut cut = max_bytes;
     while cut > 0 && !s.is_char_boundary(cut) {
         cut -= 1;
     }
     s.truncate(cut);
     s.push_str(
-        "\n[Truncated at MAX_OOXML_TEXT_BYTES — use Bash + libreoffice / unzip for the rest.]\n",
+        "\n[Truncated at max_ooxml_text_bytes — use Bash + libreoffice / unzip for the rest.]\n",
     );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cc_core::constants::DEFAULT_MAX_OOXML_TEXT_BYTES;
 
     #[test]
     fn local_name_strips_namespace() {
@@ -619,7 +640,7 @@ mod tests {
     #[test]
     fn walk_ooxml_text_collects_t_runs() {
         let xml = r#"<doc xmlns:w="urn:x"><w:p><w:r><w:t>hello </w:t></w:r><w:r><w:t>world</w:t></w:r></w:p></doc>"#;
-        let text = walk_ooxml_text(xml, b"t");
+        let text = walk_ooxml_text(xml, b"t", DEFAULT_MAX_OOXML_TEXT_BYTES);
         assert!(text.contains("hello"));
         assert!(text.contains("world"));
         assert!(text.contains("\n"), "paragraph end should emit a newline");
@@ -628,30 +649,31 @@ mod tests {
     #[test]
     fn walk_ooxml_text_stops_on_doctype() {
         let xml = r#"<!DOCTYPE poison><doc><w:t>nope</w:t></doc>"#;
-        let text = walk_ooxml_text(xml, b"t");
+        let text = walk_ooxml_text(xml, b"t", DEFAULT_MAX_OOXML_TEXT_BYTES);
         assert!(text.is_empty(), "DOCTYPE must short-circuit");
     }
 
     #[test]
     fn cap_text_bytes_is_char_safe() {
         // Build a string with a multi-byte char right at the cap boundary.
-        let mut s = "a".repeat(MAX_OOXML_TEXT_BYTES - 1);
+        let mut s = "a".repeat(DEFAULT_MAX_OOXML_TEXT_BYTES - 1);
         s.push('é'); // 2 bytes — straddles the boundary
         s.push_str(&"b".repeat(100));
-        cap_text_bytes(&mut s);
-        assert!(s.len() <= MAX_OOXML_TEXT_BYTES + 200); // truncation footer
-                                                        // Must not panic — implicit by reaching here.
+        cap_text_bytes(&mut s, DEFAULT_MAX_OOXML_TEXT_BYTES);
+        assert!(s.len() <= DEFAULT_MAX_OOXML_TEXT_BYTES + 200); // truncation footer
+                                                                // Must not panic — implicit by reaching here.
         assert!(s.contains("Truncated"));
     }
 
     #[test]
     fn xlsx_walk_resolves_shared_strings() {
+        use cc_core::constants::DEFAULT_MAX_OOXML_ROWS;
         let xml = r#"<worksheet xmlns="urn:x"><sheetData>
             <row><c t="s"><v>0</v></c><c t="s"><v>1</v></c></row>
             <row><c><v>42</v></c></row>
         </sheetData></worksheet>"#;
         let shared = vec!["hello".to_string(), "world".to_string()];
-        let result = walk_xlsx_rows(xml, &shared);
+        let result = walk_xlsx_rows(xml, &shared, DEFAULT_MAX_OOXML_ROWS);
         assert_eq!(result.total_rows, 2);
         assert_eq!(result.rows.len(), 2);
         assert_eq!(result.rows[0], vec!["hello", "world"]);
@@ -686,14 +708,15 @@ mod tests {
 
     #[test]
     fn xlsx_walk_caps_at_max_rows() {
+        use cc_core::constants::DEFAULT_MAX_OOXML_ROWS;
         let mut xml = String::from(r#"<worksheet><sheetData>"#);
-        for _ in 0..(MAX_OOXML_ROWS + 5) {
+        for _ in 0..(DEFAULT_MAX_OOXML_ROWS + 5) {
             xml.push_str(r#"<row><c><v>1</v></c></row>"#);
         }
         xml.push_str("</sheetData></worksheet>");
-        let result = walk_xlsx_rows(&xml, &[]);
+        let result = walk_xlsx_rows(&xml, &[], DEFAULT_MAX_OOXML_ROWS);
         assert!(result.truncated);
-        assert_eq!(result.rows.len(), MAX_OOXML_ROWS);
-        assert_eq!(result.total_rows, MAX_OOXML_ROWS + 5);
+        assert_eq!(result.rows.len(), DEFAULT_MAX_OOXML_ROWS);
+        assert_eq!(result.total_rows, DEFAULT_MAX_OOXML_ROWS + 5);
     }
 }

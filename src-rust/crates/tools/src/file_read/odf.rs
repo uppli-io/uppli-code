@@ -16,6 +16,9 @@ use zip::ZipArchive;
 
 /// Decompressed-bytes cap per ODF ZIP entry. Mirrors the OOXML guard
 /// so a malicious .odt whose content.xml claims 1 GiB doesn't OOM.
+///
+/// Hardcoded: per-entry zip-bomb guard for ODF — protocol-level
+/// safety, matches the OOXML invariant.
 const MAX_ODF_ENTRY_DECOMPRESSED: u64 = 32 * 1024 * 1024;
 
 fn read_entry_capped<R: Read>(entry: &mut R) -> (String, bool) {
@@ -107,11 +110,15 @@ pub async fn read_odf(path: &Path, kind: Kind) -> HandlerOutput {
     // is inside `<text:span>` and other containers. As a pragmatic
     // first pass we treat every text-node inside the content.xml as
     // body text, with newlines on paragraph boundaries.
-    let text = super::ooxml::walk_ooxml_text(&xml, b"span");
+    // ODF does not yet thread Config through; use the default cap. When
+    // ODF gets its own --max-odf-text-bytes knob this can switch to the
+    // effective value.
+    let max_text = cc_core::constants::DEFAULT_MAX_OOXML_TEXT_BYTES;
+    let text = super::ooxml::walk_ooxml_text(&xml, b"span", max_text);
     let combined = if text.is_empty() {
         // Fallback: pull every text node by reusing the walker but
         // matching the `p` tag (paragraph text directly inside <text:p>).
-        super::ooxml::walk_ooxml_text(&xml, b"p")
+        super::ooxml::walk_ooxml_text(&xml, b"p", max_text)
     } else {
         text
     };

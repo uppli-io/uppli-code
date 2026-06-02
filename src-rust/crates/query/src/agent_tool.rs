@@ -186,13 +186,15 @@ impl Tool for AgentTool {
             // Budget derives from effort_level — keep this None to avoid two sources of truth.
             thinking_budget: None,
             temperature: None,
-            tool_result_budget: cc_core::constants::DEFAULT_TOOL_RESULT_BUDGET,
+            tool_result_budget: ctx.config.effective_tool_result_budget(),
             effort_level: Some(cc_core::effort::EffortLevel::High),
             command_queue: None,
             skill_index: None,
             max_total_tokens: None,
             max_budget_usd: None,
             fallback_model: caps.fast_model.clone(),
+            compact_summary_max_tokens: ctx.config.effective_compact_summary_max_tokens(),
+            ..Default::default()
         };
 
         // Run the sub-agent loop.

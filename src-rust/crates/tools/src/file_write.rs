@@ -96,7 +96,11 @@ impl Tool for FileWriteTool {
         }
 
         // Syntax check — warn but don't revert.
-        let lint = crate::lint::check_syntax(&path).await;
+        let lint = crate::lint::check_syntax_with_timeout(
+            &path,
+            ctx.config.effective_lint_spawn_timeout_secs(),
+        )
+        .await;
 
         ctx.record_file_change(
             path.clone(),

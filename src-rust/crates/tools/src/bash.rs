@@ -306,7 +306,9 @@ impl Tool for BashTool {
             );
         }
 
-        let timeout_ms = params.timeout.min(600_000);
+        let timeout_ms = params
+            .timeout
+            .min(ctx.config.effective_bash_timeout_max_ms());
 
         // Retrieve the persistent shell state for this session.
         let shell_state_arc = session_shell_state(&ctx.session_id);
@@ -439,16 +441,16 @@ impl Tool for BashTool {
                     output = "(no output)".to_string();
                 }
 
-                // Truncate very long output
-                const MAX_OUTPUT_LEN: usize = 100_000;
-                if output.len() > MAX_OUTPUT_LEN {
-                    let half = MAX_OUTPUT_LEN / 2;
+                // Truncate very long output — knob: --bash-output-max-chars
+                let max_output_len = ctx.config.effective_bash_output_max_chars();
+                if output.len() > max_output_len {
+                    let half = max_output_len / 2;
                     let start = &output[..half];
                     let end = &output[output.len() - half..];
                     output = format!(
                         "{}\n\n... ({} characters truncated) ...\n\n{}",
                         start,
-                        output.len() - MAX_OUTPUT_LEN,
+                        output.len() - max_output_len,
                         end
                     );
                 }
@@ -551,15 +553,16 @@ impl BashTool {
                 if output.is_empty() {
                     output = "(no output)".to_string();
                 }
-                const MAX_OUTPUT_LEN: usize = 100_000;
-                if output.len() > MAX_OUTPUT_LEN {
-                    let half = MAX_OUTPUT_LEN / 2;
+                // Shared knob with the Unix path so they cannot drift.
+                let max_output_len = ctx.config.effective_bash_output_max_chars();
+                if output.len() > max_output_len {
+                    let half = max_output_len / 2;
                     let start = &output[..half];
                     let end = &output[output.len() - half..];
                     output = format!(
                         "{}\n\n... ({} characters truncated) ...\n\n{}",
                         start,
-                        output.len() - MAX_OUTPUT_LEN,
+                        output.len() - max_output_len,
                         end
                     );
                 }

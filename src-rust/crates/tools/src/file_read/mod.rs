@@ -181,24 +181,39 @@ impl Tool for FileReadTool {
             None
         };
 
+        // Resolve runtime caps from Config (Batch 1: --max-text-bytes,
+        // --max-line-chars, --default-read-line-limit, --max-image-bytes).
+        let text_limits = text::TextLimits {
+            max_text_bytes: ctx.config.effective_max_text_bytes(),
+            max_line_chars: ctx.config.effective_max_line_chars(),
+            default_line_limit: ctx.config.effective_default_read_line_limit(),
+        };
+        let max_image_bytes = ctx.config.effective_max_image_bytes();
+
         // ── Dispatch ───────────────────────────────────────────────────
         let mut out = match kind {
-            Kind::Text => text::read_text(&path, params.offset, params.limit).await,
+            Kind::Text => {
+                text::read_text_with_limits(&path, params.offset, params.limit, text_limits).await
+            }
             Kind::Csv | Kind::Tsv => {
                 tabular::read_tabular(&path, kind, params.offset, params.limit).await
             }
             Kind::Json | Kind::Jsonl | Kind::Xml | Kind::Html | Kind::Markdown | Kind::Notebook => {
                 structured::read_structured(&path, kind, params.offset, params.limit).await
             }
-            Kind::Svg => text::read_text(&path, params.offset, params.limit).await,
+            Kind::Svg => {
+                text::read_text_with_limits(&path, params.offset, params.limit, text_limits).await
+            }
             Kind::ImagePng
             | Kind::ImageJpeg
             | Kind::ImageGif
             | Kind::ImageWebp
             | Kind::ImageBmp
-            | Kind::ImageIco => image::read_image(&path, kind).await,
-            Kind::Pdf => pdf::read_pdf(&path, params.pages.as_deref()).await,
-            Kind::Xlsx | Kind::Docx | Kind::Pptx => ooxml::read_ooxml(&path, kind).await,
+            | Kind::ImageIco => image::read_image_with_limit(&path, kind, max_image_bytes).await,
+            Kind::Pdf => pdf::read_pdf(&path, params.pages.as_deref(), &ctx.config).await,
+            Kind::Xlsx | Kind::Docx | Kind::Pptx => {
+                ooxml::read_ooxml(&path, kind, &ctx.config).await
+            }
             Kind::Ods | Kind::Odt | Kind::Odp => odf::read_odf(&path, kind).await,
             Kind::LegacyXls | Kind::LegacyDoc | Kind::LegacyPpt => {
                 legacy_office::read_legacy_office(&path, kind).await
@@ -210,7 +225,7 @@ impl Tool for FileReadTool {
             | Kind::TarXz
             | Kind::TarZst
             | Kind::SevenZ
-            | Kind::Rar => archive::read_archive(&path, kind).await,
+            | Kind::Rar => archive::read_archive(&path, kind, &ctx.config).await,
             Kind::Unknown => text::read_text(&path, params.offset, params.limit).await,
         };
 
@@ -218,7 +233,7 @@ impl Tool for FileReadTool {
             out.content = format!("{}{}", note, out.content);
         }
 
-        out.finalize(&path)
+        out.finalize(&path, ctx.config.effective_max_blocks_per_result())
     }
 }
 

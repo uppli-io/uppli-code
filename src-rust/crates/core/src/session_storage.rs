@@ -26,6 +26,11 @@ use crate::types::Message;
 
 /// Maximum transcript file size for read operations (load / tombstone rewrite).
 /// Files larger than this are not read to avoid OOM on huge sessions.
+///
+/// Hardcoded: safety guard against a corrupted/runaway log file. Refuses
+/// to load 50 MB+ JSONL transcripts (multi-GB RAM, render lockup) and
+/// fails loudly so the user knows the resume failed rather than silently
+/// truncating history.
 pub const MAX_TRANSCRIPT_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
 
 // ---------------------------------------------------------------------------
@@ -352,6 +357,20 @@ pub async fn load_transcript(path: &Path) -> crate::Result<Vec<TranscriptEntry>>
 /// For each file, a cheap tail-read extracts the `last-prompt` and
 /// `custom-title` metadata without loading the full transcript.
 pub async fn list_sessions(project_root: &Path) -> crate::Result<Vec<SessionSummary>> {
+    list_sessions_with_tail(
+        project_root,
+        crate::constants::DEFAULT_SESSION_TAIL_SCAN_BYTES,
+    )
+    .await
+}
+
+/// Same as [`list_sessions`] but with a caller-provided byte budget for the
+/// tail-metadata scan. Callers that hold a `Config` should pass
+/// `config.effective_session_tail_scan_bytes()`.
+pub async fn list_sessions_with_tail(
+    project_root: &Path,
+    tail_bytes: u64,
+) -> crate::Result<Vec<SessionSummary>> {
     let dir = transcript_dir(project_root);
 
     let mut dir_entries = match tokio::fs::read_dir(&dir).await {
@@ -382,8 +401,8 @@ pub async fn list_sessions(project_root: &Path) -> crate::Result<Vec<SessionSumm
         };
         let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
-        // Read the tail of the file (up to 64 KB) to extract metadata.
-        let (last_prompt, title) = read_session_tail_metadata(&path).await;
+        // Read the tail of the file (up to `tail_bytes`) to extract metadata.
+        let (last_prompt, title) = read_session_tail_metadata(&path, tail_bytes).await;
 
         sessions.push(SessionSummary {
             session_id,
@@ -417,14 +436,15 @@ pub async fn tombstone_entry(path: &Path, uuid: &str) -> crate::Result<()> {
 // Internal helper: read tail metadata without a full parse
 // ---------------------------------------------------------------------------
 
-/// Reads up to 64 KB from the end of `path` and extracts `last-prompt` and
-/// `custom-title` values by scanning JSONL lines.
+/// Reads up to `tail_bytes` from the end of `path` and extracts
+/// `last-prompt` and `custom-title` values by scanning JSONL lines.
 ///
 /// Returns `(last_prompt, custom_title)`.  Both are `None` if the relevant
 /// entries are absent or the file cannot be read.
-async fn read_session_tail_metadata(path: &Path) -> (Option<String>, Option<String>) {
-    const TAIL_BUF: u64 = 65_536; // 64 KB
-
+async fn read_session_tail_metadata(
+    path: &Path,
+    tail_bytes: u64,
+) -> (Option<String>, Option<String>) {
     let file = match tokio::fs::File::open(path).await {
         Ok(f) => f,
         Err(_) => return (None, None),
@@ -439,7 +459,7 @@ async fn read_session_tail_metadata(path: &Path) -> (Option<String>, Option<Stri
     }
 
     // Seek to the start of the tail window.
-    let offset = file_size.saturating_sub(TAIL_BUF);
+    let offset = file_size.saturating_sub(tail_bytes);
     let mut buf = vec![0u8; (file_size - offset) as usize];
 
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -629,8 +649,12 @@ mod tests {
             let uuid_val = uuid::Uuid::new_v4().to_string();
             let entry = make_user_entry(msg, &uuid_val, None, id, "/proj");
             write_transcript_entry(&p, &entry).await.unwrap();
-            // Small sleep to ensure different mtimes.
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            // Small sleep to ensure different mtimes — tracks the session-storage
+            // write-retry-sleep tunable so slow-disk tuning stays consistent.
+            tokio::time::sleep(std::time::Duration::from_millis(
+                crate::constants::DEFAULT_SESSION_WRITE_RETRY_SLEEP_MS,
+            ))
+            .await;
         }
 
         let sessions = list_sessions(&project_root).await.unwrap();

@@ -38,20 +38,30 @@ use cc_core::types::{ContentBlock, DocumentSource};
 use tokio::fs;
 
 use super::caption;
-use super::limits::{
-    human_bytes, MAX_FILE_BYTES, MAX_PDF_BYTES, MAX_PDF_PAGES, PDF_EXTRACT_TIMEOUT_SECS,
-};
+use super::limits::{human_bytes, MAX_FILE_BYTES};
 use super::output::HandlerOutput;
 
 /// Read a PDF: attempt text extraction inside the triple shield,
 /// emit a ContentBlock::Document for vision-capable providers when
-/// the file fits inside MAX_PDF_BYTES, and ALWAYS return a textual
-/// caption so providers without vision still get useful content.
+/// the file fits inside the effective `max_pdf_bytes`, and ALWAYS
+/// return a textual caption so providers without vision still get
+/// useful content.
 ///
 /// `pages` is an optional 1-based page-range selector like `"1-5,7"`.
-/// `None` means "first MAX_PDF_PAGES pages". Out-of-range ranges
-/// clamp; unparseable input falls through to all pages with a note.
-pub async fn read_pdf(path: &Path, pages: Option<&str>) -> HandlerOutput {
+/// `None` means "first `effective_max_pdf_pages()` pages". Out-of-range
+/// ranges clamp; unparseable input falls through to all pages with a
+/// note.
+///
+/// `cfg` carries the user-configurable knobs (`max_pdf_bytes`,
+/// `max_pdf_pages`, `pdf_extract_timeout_secs`).
+pub async fn read_pdf(
+    path: &Path,
+    pages: Option<&str>,
+    cfg: &cc_core::config::Config,
+) -> HandlerOutput {
+    let max_pdf_bytes = cfg.effective_max_pdf_bytes();
+    let max_pdf_pages = cfg.effective_max_pdf_pages();
+    let pdf_extract_timeout_secs = cfg.effective_pdf_extract_timeout_secs();
     let display = path.display().to_string();
 
     // ── 1. size + metadata ────────────────────────────────────────────
@@ -109,11 +119,11 @@ pub async fn read_pdf(path: &Path, pages: Option<&str>) -> HandlerOutput {
             return HandlerOutput::error_text(format!("[PDF read failed for {}: {}]", display, e));
         }
     };
-    let want_document_block = (bytes.len() as u64) <= MAX_PDF_BYTES;
+    let want_document_block = (bytes.len() as u64) <= max_pdf_bytes;
 
     // ── 4. extract text via triple shield ────────────────────────────
     let path_for_extract: PathBuf = path.to_path_buf();
-    let timeout = Duration::from_secs(PDF_EXTRACT_TIMEOUT_SECS);
+    let timeout = Duration::from_secs(pdf_extract_timeout_secs);
 
     let extract_join = tokio::task::spawn_blocking(move || -> Result<String, String> {
         // catch_unwind: pdf-extract panics on some hostile PDFs. The
@@ -145,7 +155,7 @@ pub async fn read_pdf(path: &Path, pages: Option<&str>) -> HandlerOutput {
         Ok(Err(join_err)) => Err(format!("spawn_blocking join error: {}", join_err)),
         Err(_elapsed) => Err(format!(
             "text extraction timed out after {} seconds",
-            PDF_EXTRACT_TIMEOUT_SECS
+            pdf_extract_timeout_secs
         )),
     };
 
@@ -190,7 +200,7 @@ pub async fn read_pdf(path: &Path, pages: Option<&str>) -> HandlerOutput {
 
     let (page_indices, pages_used_label) = match (pages_request.as_deref(), has_page_markers) {
         (Some(sel), true) => {
-            let parsed = parse_page_selector(sel, total_pages);
+            let parsed = parse_page_selector(sel, total_pages, max_pdf_pages);
             let label = format_pages_label(&parsed, total_pages);
             (parsed, label)
         }
@@ -199,13 +209,13 @@ pub async fn read_pdf(path: &Path, pages: Option<&str>) -> HandlerOutput {
             // no page markers. Surface this so the model knows the
             // sub-range did NOT apply.
             pages_selector_silently_ignored = true;
-            let capped = std::cmp::min(total_pages, MAX_PDF_PAGES);
+            let capped = std::cmp::min(total_pages, max_pdf_pages);
             ((1..=capped).collect(), String::new())
         }
         (None, _) => {
-            let capped = std::cmp::min(total_pages, MAX_PDF_PAGES);
-            let label = if total_pages > MAX_PDF_PAGES {
-                format!("1-{} of {} (capped at MAX_PDF_PAGES)", capped, total_pages)
+            let capped = std::cmp::min(total_pages, max_pdf_pages);
+            let label = if total_pages > max_pdf_pages {
+                format!("1-{} of {} (capped at max_pdf_pages)", capped, total_pages)
             } else {
                 String::new()
             };
@@ -257,7 +267,7 @@ pub async fn read_pdf(path: &Path, pages: Option<&str>) -> HandlerOutput {
                      {} inline cap so no Document block was attached. Either \
                      split the PDF and re-Read each chunk, or OCR it out-of-band \
                      with: `tesseract` / `ocrmypdf`.]\n",
-                    human_bytes(MAX_PDF_BYTES)
+                    human_bytes(max_pdf_bytes)
                 ));
             }
         } else {
@@ -287,8 +297,8 @@ pub async fn read_pdf(path: &Path, pages: Option<&str>) -> HandlerOutput {
 /// `[1, total]`.
 ///
 /// Malformed entries are skipped. Empty / all-malformed selector →
-/// the full range up to MAX_PDF_PAGES.
-fn parse_page_selector(sel: &str, total: usize) -> Vec<usize> {
+/// the full range up to `max_pages`.
+fn parse_page_selector(sel: &str, total: usize, max_pages: usize) -> Vec<usize> {
     let mut acc: Vec<usize> = Vec::new();
     for part in sel.split(',') {
         let part = part.trim();
@@ -315,11 +325,11 @@ fn parse_page_selector(sel: &str, total: usize) -> Vec<usize> {
     acc.sort_unstable();
     acc.dedup();
     if acc.is_empty() {
-        let upper = std::cmp::min(total, MAX_PDF_PAGES);
+        let upper = std::cmp::min(total, max_pages);
         (1..=upper).collect()
     } else {
-        if acc.len() > MAX_PDF_PAGES {
-            acc.truncate(MAX_PDF_PAGES);
+        if acc.len() > max_pages {
+            acc.truncate(max_pages);
         }
         acc
     }
@@ -359,42 +369,43 @@ fn format_pages_label(pages: &[usize], total: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cc_core::constants::DEFAULT_MAX_PDF_PAGES;
 
     #[test]
     fn page_selector_simple_range() {
-        let p = parse_page_selector("1-3", 10);
+        let p = parse_page_selector("1-3", 10, DEFAULT_MAX_PDF_PAGES);
         assert_eq!(p, vec![1, 2, 3]);
     }
 
     #[test]
     fn page_selector_mixed() {
-        let p = parse_page_selector("1-3,5,7-8", 10);
+        let p = parse_page_selector("1-3,5,7-8", 10, DEFAULT_MAX_PDF_PAGES);
         assert_eq!(p, vec![1, 2, 3, 5, 7, 8]);
     }
 
     #[test]
     fn page_selector_clamps_to_total() {
-        let p = parse_page_selector("1-100", 5);
+        let p = parse_page_selector("1-100", 5, DEFAULT_MAX_PDF_PAGES);
         assert_eq!(p, vec![1, 2, 3, 4, 5]);
     }
 
     #[test]
     fn page_selector_dedupes() {
-        let p = parse_page_selector("1,1,2,2,3", 10);
+        let p = parse_page_selector("1,1,2,2,3", 10, DEFAULT_MAX_PDF_PAGES);
         assert_eq!(p, vec![1, 2, 3]);
     }
 
     #[test]
     fn page_selector_malformed_falls_back_to_all() {
-        let p = parse_page_selector("abc", 5);
+        let p = parse_page_selector("abc", 5, DEFAULT_MAX_PDF_PAGES);
         assert_eq!(p, vec![1, 2, 3, 4, 5]);
     }
 
     #[test]
     fn page_selector_caps_at_max_pdf_pages() {
         let sel: String = (1..=200).map(|i| format!("{},", i)).collect();
-        let p = parse_page_selector(&sel, 1000);
-        assert!(p.len() <= MAX_PDF_PAGES);
+        let p = parse_page_selector(&sel, 1000, DEFAULT_MAX_PDF_PAGES);
+        assert!(p.len() <= DEFAULT_MAX_PDF_PAGES);
     }
 
     // Smoke tests for the two soft-failure signals introduced after PR
@@ -414,7 +425,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let p = dir.path().join("blank.pdf");
         std::fs::write(&p, b"%PDF-1.4\n%%EOF\n").unwrap();
-        let out = read_pdf(&p, None).await;
+        let cfg = cc_core::config::Config::default();
+        let out = read_pdf(&p, None, &cfg).await;
         assert!(!out.is_error);
         // Either "text extraction failed" (malformed PDF) or "no text"
         // (scanned-PDF guard) — both signal the gap clearly.
@@ -443,7 +455,8 @@ mod tests {
         // condition fires. Direct exercise of that condition lives in
         // the integration suite (commit 14).
         std::fs::write(&p, b"%PDF-1.4\n%%EOF\n").unwrap();
-        let out = read_pdf(&p, Some("1-5")).await;
+        let cfg = cc_core::config::Config::default();
+        let out = read_pdf(&p, Some("1-5"), &cfg).await;
         assert!(!out.is_error);
     }
 

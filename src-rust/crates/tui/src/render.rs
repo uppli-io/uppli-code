@@ -833,6 +833,11 @@ fn render_message_items(app: &App, width: u16) -> Vec<RenderedLineItem> {
                     width as usize,
                     &tool_names,
                     &app.thinking_expanded,
+                    Some(app.config.effective_tui_user_prompt_head_chars()),
+                    Some(app.config.effective_tui_user_prompt_tail_chars()),
+                    Some(app.config.effective_tui_max_lines_per_msg()),
+                    Some(app.config.effective_tui_user_prompt_display_max_chars()),
+                    Some(app.config.effective_tui_tool_result_max_lines()),
                 );
                 if raw.len() > msg_start {
                     header_indices.insert(msg_start);
@@ -1105,12 +1110,18 @@ fn build_tool_names(
     map
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_message_lines(
     lines: &mut Vec<Line<'static>>,
     msg: &cc_core::types::Message,
     width: usize,
     tool_names: &std::collections::HashMap<String, String>,
     expanded_thinking: &std::collections::HashSet<u64>,
+    user_prompt_head_chars: Option<usize>,
+    user_prompt_tail_chars: Option<usize>,
+    max_lines_per_msg: Option<usize>,
+    user_prompt_display_max_chars: Option<usize>,
+    tool_result_max_lines: Option<usize>,
 ) {
     let rendered = render_message(
         msg,
@@ -1120,17 +1131,22 @@ fn render_message_lines(
             show_thinking: false,
             tool_names: tool_names.clone(),
             expanded_thinking: expanded_thinking.clone(),
+            user_prompt_head_chars,
+            user_prompt_tail_chars,
+            user_prompt_display_max_chars,
+            tool_result_max_lines,
         },
     );
 
     // Truncate very long outputs with a "â€¦ N more lines" notice
-    const MAX_LINES_PER_MSG: usize = 200;
-    if rendered.len() > MAX_LINES_PER_MSG {
-        lines.extend(rendered[..MAX_LINES_PER_MSG].iter().cloned());
+    let max_lines_per_msg =
+        max_lines_per_msg.unwrap_or(cc_core::constants::DEFAULT_TUI_MAX_LINES_PER_MSG);
+    if rendered.len() > max_lines_per_msg {
+        lines.extend(rendered[..max_lines_per_msg].iter().cloned());
         lines.push(Line::from(vec![Span::styled(
             format!(
                 "  \u{2026} {} more lines (scroll up to read all)",
-                rendered.len() - MAX_LINES_PER_MSG
+                rendered.len() - max_lines_per_msg
             ),
             Style::default()
                 .fg(Color::DarkGray)

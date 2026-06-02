@@ -128,6 +128,7 @@ async fn run_in_session(
     session: &Arc<Mutex<ReplSession>>,
     language: &str,
     code: &str,
+    read_timeout_secs: u64,
 ) -> Result<String, String> {
     let wrapped = wrap_code(language, code);
 
@@ -143,9 +144,9 @@ async fn run_in_session(
         .await
         .map_err(|e| format!("Flush interpreter stdin failed: {}", e))?;
 
-    // Read lines until we see the sentinel, with a timeout
+    // Read lines until we see the sentinel, with a per-line timeout
     let mut output_lines: Vec<String> = Vec::new();
-    let read_timeout = Duration::from_secs(30);
+    let read_timeout = Duration::from_secs(read_timeout_secs);
 
     loop {
         let mut line = String::new();
@@ -245,7 +246,14 @@ impl Tool for ReplTool {
             Err(e) => return ToolResult::error(format!("Failed to start REPL session: {}", e)),
         };
 
-        match run_in_session(&session, &language, &params.code).await {
+        match run_in_session(
+            &session,
+            &language,
+            &params.code,
+            ctx.config.effective_repl_line_read_timeout_secs(),
+        )
+        .await
+        {
             Ok(output) => ToolResult::success(output),
             Err(e) => {
                 // Remove the dead session so next call spawns a fresh one

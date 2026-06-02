@@ -19,6 +19,10 @@
 /// Checked at the top of `execute` via `fs::metadata().len()` before any
 /// branch reads bytes. A multi-GB log file MUST fail fast here instead of
 /// being slurped whole into memory (the legacy behaviour).
+///
+/// Hardcoded: runaway-OOM safety guard. Fails loudly with a clear error
+/// rather than silently truncating, so the user is never misled. 100 MiB
+/// is a sane ceiling against accidentally mmap'ing a multi-GiB blob.
 pub const MAX_FILE_BYTES: u64 = 100 * 1024 * 1024; // 100 MiB
 
 // ── Text ────────────────────────────────────────────────────────────────────
@@ -26,25 +30,37 @@ pub const MAX_FILE_BYTES: u64 = 100 * 1024 * 1024; // 100 MiB
 /// Cap on the bytes a text-path read will materialise as String.
 /// Streamed via `BufReader.take(MAX_TEXT_BYTES)` — never load more than
 /// this even for files that pass the pre-flight cap.
-pub const MAX_TEXT_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
+///
+/// Re-exported from `cc_core::constants` so the value is a single source of
+/// truth and stays configurable via `Config::max_text_bytes` / the
+/// `--max-text-bytes` CLI flag.
+pub use cc_core::constants::MAX_TEXT_BYTES;
 
 /// Per-line truncation. A 1 MiB minified JS line would otherwise blow the
-/// budget on a single line.
-pub const MAX_LINE_CHARS: usize = 16_384;
+/// budget on a single line. Re-exported from `cc_core::constants` so the
+/// runtime helper `Config::effective_max_line_chars()` shares the same
+/// default.
+pub use cc_core::constants::MAX_LINE_CHARS;
 
 /// Default line count when the caller omits `limit` — preserves legacy
-/// behaviour from the pre-PR-B implementation.
-pub const DEFAULT_LINE_LIMIT: usize = 2000;
+/// behaviour from the pre-PR-B implementation. Re-exported from
+/// `cc_core::constants` so the runtime helper
+/// `Config::effective_default_read_line_limit()` shares the same default.
+pub use cc_core::constants::DEFAULT_LINE_LIMIT;
 
 // ── Image ───────────────────────────────────────────────────────────────────
 
 /// Hard cap on the raw image bytes the handler will inline as base64.
-/// Beyond this → caption-only fallback.
-pub const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB
+/// Beyond this → caption-only fallback. Re-exported from
+/// `cc_core::constants`.
+pub use cc_core::constants::MAX_IMAGE_BYTES;
 
 /// Pixel-count cap probed BEFORE pixel decode (via `image::ImageReader::
 /// with_guessed_format`). Defeats decompression bombs (a 10 KiB PNG that
 /// decodes to 100k×100k pixels).
+///
+/// Hardcoded: decompression-bomb guard. A 100 KB malicious PNG can expand
+/// to gigabytes in RAM — must remain a hard ceiling, not user-tunable.
 pub const MAX_IMAGE_PIXELS: u64 = 8_000_000; // 8 MP
 
 /// When an image exceeds MAX_IMAGE_PIXELS, downscale to this long-edge
@@ -70,6 +86,10 @@ pub const PDF_EXTRACT_TIMEOUT_SECS: u64 = 30;
 
 /// Cap on the compressed archive size we will open as XLSX / DOCX / PPTX
 /// or their ODF cousins. The XML inside is bounded by its own depth cap.
+///
+/// Hardcoded: pre-flight safety guard on Office docs that fails loudly.
+/// 20 MiB rejects truly unreasonable docs while allowing all realistic
+/// ones; user gets a clear error rather than silent loss.
 pub const MAX_OOXML_BYTES: u64 = 20 * 1024 * 1024; // 20 MiB
 
 /// Cap on the number of XLSX rows emitted in the textual fallback.
@@ -77,20 +97,32 @@ pub const MAX_OOXML_ROWS: usize = 500;
 
 /// Maximum nesting depth for XML elements inside OOXML / ODF parts.
 /// Defeats billion-laughs / XXE / deeply-nested entities.
+///
+/// Hardcoded: protocol-level safety invariant. Uncapped recursion is a
+/// stack-smash and DoS vector — this is not user policy.
 pub const MAX_XML_DEPTH: u32 = 128;
 
 // ── Archive ─────────────────────────────────────────────────────────────────
 
 /// Cap on the archive file size on disk (the compressed view).
+///
+/// Hardcoded: zip-bomb pre-flight guard. Refuses to open archives that
+/// could decompress to TB; rejection is loud (error), not silent.
 pub const MAX_ARCHIVE_COMPRESSED: u64 = 50 * 1024 * 1024; // 50 MiB
 
 /// Cap on the sum of all decompressed member sizes — global guard so a
 /// 1 MiB zip with one 250 MiB entry can't push us into OOM territory.
+///
+/// Hardcoded: second-line zip-bomb guard once unpacking starts. Caps
+/// RAM/disk blast radius regardless of declared per-entry sizes.
 pub const MAX_ARCHIVE_DECOMPRESSED: u64 = 250 * 1024 * 1024; // 250 MiB
 
 /// Cap on the per-member and global compression ratio. A 1 KiB archive
 /// entry that claims to decompress to 200 KiB is rejected as a likely
 /// zip bomb.
+///
+/// Hardcoded: classic zip-bomb heuristic — pure safety, no legitimate
+/// workflow needs >100x ratio.
 pub const MAX_COMPRESSION_RATIO: u64 = 100;
 
 /// Cap on the number of archive entries listed in the manifest.
@@ -98,6 +130,9 @@ pub const MAX_ARCHIVE_MEMBERS: usize = 1024;
 
 /// Maximum recursion depth for nested archives. PR B does NOT recurse
 /// (depth = 1), but the constant is here for PR C to honour.
+///
+/// Hardcoded: nested-archive recursion guard against zip-quine attacks.
+/// Depth 2 is plenty for any real archive.
 pub const MAX_ARCHIVE_DEPTH: u32 = 2;
 
 // ── Output ──────────────────────────────────────────────────────────────────

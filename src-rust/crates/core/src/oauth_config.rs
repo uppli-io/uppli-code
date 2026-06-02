@@ -212,9 +212,16 @@ pub struct OAuthProfile {
 ///
 /// Returns a default (all-`None`) profile on any non-success response so
 /// callers can treat a profile fetch failure as non-fatal.
+///
+/// `timeout_secs` controls the HTTP request timeout. Callers with a
+/// resolved [`Config`](crate::config::Config) should pass
+/// `cfg.effective_oauth_profile_fetch_timeout_secs()`; callers without
+/// configuration access can pass
+/// `crate::constants::DEFAULT_OAUTH_PROFILE_FETCH_TIMEOUT_SECS` (10s).
 pub async fn fetch_oauth_profile(
     access_token: &str,
     api_base: &str,
+    timeout_secs: u64,
 ) -> anyhow::Result<OAuthProfile> {
     let client = reqwest::Client::new();
     let url = format!("{}/api/auth/oauth/profile", api_base.trim_end_matches('/'));
@@ -222,7 +229,7 @@ pub async fn fetch_oauth_profile(
     let resp = client
         .get(&url)
         .bearer_auth(access_token)
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(timeout_secs))
         .send()
         .await?;
 

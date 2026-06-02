@@ -34,15 +34,18 @@ use zip::ZipArchive;
 use super::caption;
 use super::detect::Kind;
 use super::limits::{
-    human_bytes, MAX_ARCHIVE_COMPRESSED, MAX_ARCHIVE_DECOMPRESSED, MAX_ARCHIVE_MEMBERS,
-    MAX_COMPRESSION_RATIO,
+    human_bytes, MAX_ARCHIVE_COMPRESSED, MAX_ARCHIVE_DECOMPRESSED, MAX_COMPRESSION_RATIO,
 };
 use super::output::HandlerOutput;
 
 /// Bytes used for the format-sniff column.
+///
+/// Hardcoded: 4 KiB is sufficient for all known magic-byte signatures;
+/// raising it costs RAM per entry with zero detection upside.
 const SNIFF_BYTES: usize = 4 * 1024;
 
-pub async fn read_archive(path: &Path, kind: Kind) -> HandlerOutput {
+pub async fn read_archive(path: &Path, kind: Kind, cfg: &cc_core::config::Config) -> HandlerOutput {
+    let max_archive_members = cfg.effective_max_archive_members();
     let display = path.display().to_string();
 
     let meta = match fs::symlink_metadata(path).await {
@@ -77,9 +80,9 @@ pub async fn read_archive(path: &Path, kind: Kind) -> HandlerOutput {
     }
 
     match kind {
-        Kind::Zip => render_zip(path, size).await,
-        Kind::TarPlain => render_tar(path, size, false).await,
-        Kind::TarGz => render_tar(path, size, true).await,
+        Kind::Zip => render_zip(path, size, max_archive_members).await,
+        Kind::TarPlain => render_tar(path, size, false, max_archive_members).await,
+        Kind::TarGz => render_tar(path, size, true, max_archive_members).await,
         Kind::TarBz2 => stub(path, "TAR.BZ2", "tar -xjf"),
         Kind::TarXz => stub(path, "TAR.XZ", "tar -xJf"),
         Kind::TarZst => stub(path, "TAR.ZST", "tar --zstd -xf"),
@@ -100,7 +103,7 @@ fn stub(path: &Path, kind_label: &str, recipe_cmd: &str) -> HandlerOutput {
 
 // ── ZIP ──────────────────────────────────────────────────────────────────
 
-async fn render_zip(path: &Path, size: u64) -> HandlerOutput {
+async fn render_zip(path: &Path, size: u64, max_archive_members: usize) -> HandlerOutput {
     let display = path.display().to_string();
     let bytes = match fs::read(path).await {
         Ok(b) => b,
@@ -128,7 +131,7 @@ async fn render_zip(path: &Path, size: u64) -> HandlerOutput {
     let mut bomb_aborted = false;
 
     for i in 0..total {
-        if listed >= MAX_ARCHIVE_MEMBERS {
+        if listed >= max_archive_members {
             break;
         }
         let mut entry = match archive.by_index(i) {
@@ -217,7 +220,7 @@ async fn render_zip(path: &Path, size: u64) -> HandlerOutput {
 
 // ── TAR + TAR.GZ ─────────────────────────────────────────────────────────
 
-async fn render_tar(path: &Path, size: u64, gz: bool) -> HandlerOutput {
+async fn render_tar(path: &Path, size: u64, gz: bool, max_archive_members: usize) -> HandlerOutput {
     let display = path.display().to_string();
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
@@ -254,7 +257,7 @@ async fn render_tar(path: &Path, size: u64, gz: bool) -> HandlerOutput {
     };
 
     for entry in entries {
-        if listed >= MAX_ARCHIVE_MEMBERS {
+        if listed >= max_archive_members {
             break;
         }
         let mut entry = match entry {
@@ -386,7 +389,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.zip");
         std::fs::write(&path, &bytes).unwrap();
-        let out = read_archive(&path, Kind::Zip).await;
+        let cfg = cc_core::config::Config::default();
+        let out = read_archive(&path, Kind::Zip, &cfg).await;
         assert!(!out.is_error, "expected success, got: {}", out.content);
         assert!(out.content.contains("a.txt"));
         assert!(out.content.contains("dir/b.bin"));
@@ -399,7 +403,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.tar.bz2");
         std::fs::write(&path, b"BZh placeholder").unwrap();
-        let out = read_archive(&path, Kind::TarBz2).await;
+        let cfg = cc_core::config::Config::default();
+        let out = read_archive(&path, Kind::TarBz2, &cfg).await;
         assert!(!out.is_error);
         assert!(out.content.contains("tar -xjf"));
     }
