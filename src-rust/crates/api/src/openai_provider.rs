@@ -55,9 +55,6 @@ pub struct OpenAiProviderConfig {
     pub default_thinking_budget: Option<u32>,
     /// Whether the default model accepts image / document blocks.
     pub supports_vision: bool,
-    /// Whether the wire format accepts structured `tool_result.content`
-    /// blocks instead of a flat string.
-    pub supports_tool_result_blocks: bool,
     /// Authentication configuration.
     pub auth: AuthConfig,
 }
@@ -97,7 +94,6 @@ impl OpenAiProviderConfig {
             default_max_tokens: caps.default_max_tokens,
             default_thinking_budget: caps.default_thinking_budget,
             supports_vision: caps.supports_vision,
-            supports_tool_result_blocks: caps.supports_tool_result_blocks,
             auth: caps.auth,
         }
     }
@@ -289,7 +285,6 @@ impl OpenAiProvider {
             api_format: config.api_format,
             default_api_base: config.api_base.clone(),
             supports_vision: config.supports_vision,
-            supports_tool_result_blocks: config.supports_tool_result_blocks,
             auth: config.auth,
         };
 

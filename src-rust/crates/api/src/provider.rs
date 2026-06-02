@@ -145,13 +145,6 @@ pub struct ProviderCapabilities {
     /// `ToolResultContent::Blocks` vs `Text`) and the OpenAI tool-message
     /// translation in `openai_provider`.
     pub supports_vision: bool,
-    /// Whether the provider's wire format accepts `tool_result.content`
-    /// as an array of structured blocks (text + image/document) rather
-    /// than a plain string. Anthropic format does; pre-vision OpenAI
-    /// chat completions does not. Independent from `supports_vision`
-    /// because some providers accept vision blocks in user messages
-    /// but not in tool_result blocks.
-    pub supports_tool_result_blocks: bool,
 
     // ── Auth ─────────────────────────────────────────────────
     pub auth: AuthConfig,
@@ -313,7 +306,6 @@ mod tests {
                 api_format: ApiFormat::OpenAI,
                 default_api_base: String::new(),
                 supports_vision: false,
-                supports_tool_result_blocks: false,
                 auth: AuthConfig {
                     env_vars: &[],
                     keychain_key: "test",

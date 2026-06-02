@@ -20,7 +20,6 @@ api_base = "https://api.deepseek.com/anthropic"
 # TODO(pr-c): unify by routing AnthropicClient through the loader registry
 # so editing the TOML alone is enough.
 supports_vision = false
-supports_tool_result_blocks = true
 
 [auth]
 env_vars = ["DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY"]

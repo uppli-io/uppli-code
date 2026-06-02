@@ -47,11 +47,6 @@ pub struct ProviderToml {
     /// can't accidentally claim vision support.
     #[serde(default)]
     pub supports_vision: bool,
-    /// Whether the provider's wire format accepts `tool_result.content`
-    /// as a structured-blocks array. Anthropic does, OpenAI does only
-    /// for vision-capable models. Defaults to false.
-    #[serde(default)]
-    pub supports_tool_result_blocks: bool,
 }
 
 /// Wire protocol family. Mirrors `provider::ApiFormat` but is a separate

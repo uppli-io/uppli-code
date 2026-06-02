@@ -11,9 +11,6 @@ api_format = "openai"
 api_base = "https://open.bigmodel.cn/api/paas/v4"
 # GLM 4.6v is the default model and accepts image + PDF inputs.
 supports_vision = true
-# OpenAI vision wire format: tool_result.content as a list of image_url /
-# text parts. GLM follows the same multi-part shape.
-supports_tool_result_blocks = true
 
 [auth]
 env_vars = ["ZHIPU_API_KEY", "GLM_API_KEY"]
