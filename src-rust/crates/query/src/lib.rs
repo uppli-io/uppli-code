@@ -223,10 +223,11 @@ impl Default for QueryConfig {
             output_style: cc_core::system_prompt::OutputStyle::Default,
             output_style_prompt: None,
             working_directory: None,
-            thinking_budget: Some(cc_core::constants::DEFAULT_THINKING_BUDGET),
+            // Both None means no thinking on the wire. --effort or an
+            // explicit thinking_budget override opts in.
+            thinking_budget: None,
             temperature: None,
             tool_result_budget: cc_core::constants::DEFAULT_TOOL_RESULT_BUDGET,
-            // effort_level=None means no thinking on wire; --effort sets it explicitly.
             effort_level: None,
             command_queue: None,
             skill_index: None,
