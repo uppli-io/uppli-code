@@ -22,6 +22,14 @@ thinking_budget = 16000
 request_timeout_sec = 600
 max_retries = 5
 
+# ── Models ─────────────────────────────────────────────────────────────────
+# OpenRouter proxies dozens of upstream providers — the catalogue here is
+# a sensible default. INFORMATIONAL only: the CLI does not gatekeep
+# `--model X`, so any model available on the user's OpenRouter plan is
+# usable via `--model <vendor>/<id>`. The API returns 400 on unknown
+# IDs. Pricing varies live with the OpenRouter marketplace and is
+# best-effort here — verify on openrouter.ai/models for refacturation.
+
 [[models]]
 id = "qwen/qwen3.6-plus"
 display_name = "Qwen 3.6 Plus"

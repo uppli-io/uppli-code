@@ -325,25 +325,34 @@ mod tests {
     fn glm_loaded() {
         let registry = load_all_bundled().unwrap();
         let glm = registry.find("glm").expect("glm present");
-        // Default model is the vision variant (PR C live fix: z.ai
-        // returns 400 for glm-4.6v; the actual API model is glm-4.5v).
-        assert_eq!(glm.capabilities.default_model, "glm-4.5v");
+        // Default model is glm-4.6v (flagship vision on z.ai). The CLI
+        // does not gatekeep against this list — the operator can
+        // --model X to anything their key/region exposes; this is
+        // just the sensible default for a vision-capable session.
+        assert_eq!(glm.capabilities.default_model, "glm-4.6v");
         assert!(glm.matches("zhipu"));
         assert!(glm.matches("bigmodel"));
         assert!(glm.matches("z.ai"));
-        // Verify glm-4.5 is still present as a non-default text-only option
-        // (NOT marked fast_model — hybrid mode would route image
-        // tool-result turns to it and 400 on z.ai).
-        assert!(glm
+        // Verify the canonical catalogue is wide enough that any
+        // common pick is documented (model availability per
+        // key/region is still the operator's concern).
+        let known: Vec<&str> = glm
             .capabilities
             .known_models
             .iter()
-            .any(|m| m.id == "glm-4.5"));
+            .map(|m| m.id.as_str())
+            .collect();
+        for id in ["glm-4.6v", "glm-5", "glm-4.6", "glm-4.5v", "glm-4.5"] {
+            assert!(known.contains(&id), "model {} missing from glm.toml", id);
+        }
+        // No fast_model — hybrid mode would route image-bearing
+        // tool_result turns to a potentially non-vision model. On
+        // GLM we stay on a single vision-capable model end-to-end.
         assert!(
             glm.capabilities.fast_model.is_none(),
             "glm must NOT declare a fast_model — switching mid-session \
              to a non-vision model would fail any tool-result containing \
-             an image with API 400 on z.ai"
+             an image"
         );
     }
 

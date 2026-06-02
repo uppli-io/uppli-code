@@ -27,6 +27,13 @@ thinking_budget = 32000
 request_timeout_sec = 600
 max_retries = 8
 
+# ── Models ─────────────────────────────────────────────────────────────────
+# Canonical model catalogue. INFORMATIONAL — the CLI does not gatekeep
+# `--model X` against this list. The operator's key/region/plan/tier
+# determines what is actually callable; the API itself returns 400 on
+# unknown IDs. Pricing is best-effort, verify against the provider's
+# official price sheet for refacturation.
+
 [[models]]
 id = "deepseek-v4-pro"
 display_name = "DeepSeek V4 Pro"

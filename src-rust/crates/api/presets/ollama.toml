@@ -22,9 +22,12 @@ thinking_budget = 16000
 request_timeout_sec = 600
 max_retries = 3
 
-# Ollama models are user-provided. The CLI's --model flag picks any local
-# model. The default below is a placeholder; the user's --model value
-# overrides at construction time.
+# ── Models ─────────────────────────────────────────────────────────────────
+# Ollama models are user-installed. The CLI's --model flag picks any local
+# model the operator has pulled via `ollama pull <name>`. The placeholder
+# below exists so the registry has something to display; --model is the
+# operative selection. Ollama returns its own error if the local model
+# isn't installed.
 
 [[models]]
 id = "default"
