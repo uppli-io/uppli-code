@@ -4,6 +4,12 @@ All notable changes to uppli-code are documented in this file.
 
 ## Unreleased
 
+### Architecture: OpenAI provider iso the AnthropicClient rejection (PR C, symmetry)
+
+- **OpenAI-compat translation layer now mirrors AnthropicClient's loud rejection.** Before this commit, the OpenAI path silently dropped images when the model was non-vision: tool_result blocks emitted only the surviving text, top-level user messages forwarded image_url parts which would 400 at the endpoint. After: an explicit `[ERROR: N visual block(s) (image/document) cannot be read — Restart uppli-code with a vision-capable provider...]` is appended to the textual content. The model receives the same loud refusal whatever wire format it speaks.
+- Shared helper `unsupported_blocks_error_text(n_blocks)` keeps the wording in sync with `AnthropicClient::unsupported_block_message`. Iso UX across all 7 providers.
+- 2 new tests pin the new behaviour: `tool_result_image_on_text_only_provider_rejects_with_explicit_error` (replaces the previous "silent caption fallback" test) and `top_level_image_on_text_only_provider_rejects_with_explicit_error` (covers the previously-silent top-level path).
+
 ### Architecture: AnthropicClient reads caps from deepseek.toml (PR C, full DRY)
 
 - **AnthropicClient no longer hardcodes DeepSeek's capabilities.** Previously the same `ProviderCapabilities` (model list, pricing, supports_vision, default_model, etc.) lived in BOTH `crates/api/presets/deepseek.toml` AND a `OnceLock` inside `AnthropicClient::capabilities()`. Editing one without the other silently lied to the runtime — guarded only by a workspace consistency test.
