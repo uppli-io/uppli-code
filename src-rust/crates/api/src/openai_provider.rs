@@ -587,11 +587,21 @@ impl OpenAiProvider {
                         }
                         parts.extend(image_parts);
                         Value::Array(parts)
+                    } else if !image_parts.is_empty() {
+                        // Non-vision provider but the tool produced image
+                        // parts. Iso the AnthropicClient rejection: append
+                        // an explicit error and tell the user to restart
+                        // uppli-code with a vision-capable provider, instead
+                        // of silently dropping the images.
+                        let mut composed = text;
+                        if !composed.is_empty() && !composed.ends_with('\n') {
+                            composed.push('\n');
+                        }
+                        composed.push_str(&unsupported_blocks_error_text(image_parts.len()));
+                        Value::String(composed)
                     } else {
-                        // Text-only providers (or text-only payload) — keep
-                        // the legacy flat-string shape so non-vision endpoints
-                        // don't fail with "tool message content must be a
-                        // string".
+                        // Text-only payload — flat string is OK on every
+                        // OpenAI-compat endpoint.
                         Value::String(text)
                     };
                     result.push(OpenAiMessage {
@@ -609,12 +619,11 @@ impl OpenAiProvider {
             } else {
                 // Regular user message with text and/or image blocks.
                 // OpenAI vision format requires content to be a list of parts
-                // (text + image_url) when images are present. With text only,
-                // we stick with the simple string form for compatibility with
-                // non-vision endpoints.
+                // (text + image_url) when images are present.
                 let text = text_parts.join("");
                 let has_images = !image_parts.is_empty();
-                if has_images {
+                let provider_supports_vision = self.capabilities.supports_vision;
+                if has_images && provider_supports_vision {
                     let mut parts: Vec<Value> = Vec::new();
                     if !text.is_empty() {
                         parts.push(serde_json::json!({ "type": "text", "text": text }));
@@ -623,6 +632,22 @@ impl OpenAiProvider {
                     result.push(OpenAiMessage {
                         role: role.clone(),
                         content: Some(Value::Array(parts)),
+                        tool_calls: None,
+                        tool_call_id: None,
+                        name: None,
+                    });
+                } else if has_images {
+                    // Non-vision provider receiving image blocks at the
+                    // top level. Reject loudly with an explicit error,
+                    // iso the AnthropicClient rejection.
+                    let mut composed = text;
+                    if !composed.is_empty() && !composed.ends_with('\n') {
+                        composed.push('\n');
+                    }
+                    composed.push_str(&unsupported_blocks_error_text(image_parts.len()));
+                    result.push(OpenAiMessage {
+                        role: role.clone(),
+                        content: Some(Value::String(composed)),
                         tool_calls: None,
                         tool_call_id: None,
                         name: None,
@@ -1507,6 +1532,23 @@ fn image_url_from_source(block_type: &str, block: &Value) -> Option<String> {
     }
 }
 
+/// Build the same explicit-error text that AnthropicClient injects when
+/// a provider's model can't read visual blocks. Used by the OpenAI-compat
+/// translation layer to mirror the rejection behaviour across both
+/// wire families — iso UX: "the file can't be read; restart uppli-code
+/// with a vision-capable provider", never silent drop.
+fn unsupported_blocks_error_text(n_blocks: usize) -> String {
+    let plural = if n_blocks > 1 { "blocks" } else { "block" };
+    format!(
+        "[ERROR: {} visual {} (image/document) cannot be read — the current \
+         provider's model does not support vision. Restart uppli-code with a \
+         vision-capable provider (e.g. `uppli-code --provider glm`) to process \
+         this file. The current session cannot be salvaged; ask the user to \
+         relaunch.]",
+        n_blocks, plural
+    )
+}
+
 fn uuid_v4() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ts = SystemTime::now()
@@ -1870,7 +1912,12 @@ mod tests {
     }
 
     #[test]
-    fn tool_result_image_on_text_only_provider_falls_back_to_caption_string() {
+    fn tool_result_image_on_text_only_provider_rejects_with_explicit_error() {
+        // Iso UX with AnthropicClient: a tool_result containing an image
+        // on a non-vision provider must surface an EXPLICIT error in the
+        // tool message content, not silently drop the image. The caption
+        // (chart.png) is preserved so the model has context; the error
+        // line tells the user to relaunch with a vision-capable provider.
         let provider = ollama_provider_for_test();
         let translated = provider.translate_message(&make_tool_result_with_image_blocks());
         assert_eq!(translated.len(), 1);
@@ -1878,11 +1925,54 @@ mod tests {
         let content = translated[0].content.as_ref().expect("content set");
         let s = content
             .as_str()
-            .expect("text-only provider must emit a flat string");
+            .expect("text-only provider must emit a flat string (no multi-part Array)");
         assert!(
             s.contains("chart.png"),
-            "caption must survive as the textual fallback, got: {s}"
+            "caption must survive as the textual context, got: {s}"
         );
+        assert!(
+            s.contains("ERROR"),
+            "must emit an EXPLICIT error so the model knows the image was not read, got: {s}"
+        );
+        assert!(
+            s.contains("Restart") || s.contains("--provider"),
+            "must instruct the user to relaunch with a vision-capable provider, got: {s}"
+        );
+    }
+
+    #[test]
+    fn top_level_image_on_text_only_provider_rejects_with_explicit_error() {
+        // Top-level user message (NOT inside a tool_result) carrying an
+        // Image on a non-vision OpenAI-compat provider must also reject
+        // loudly. Pre-PR this would have silently forwarded the
+        // image_url to the endpoint, which would 400 with a low-level
+        // error far from the model's awareness.
+        let provider = ollama_provider_for_test();
+        let msg = crate::types::ApiMessage {
+            role: "user".to_string(),
+            content: serde_json::json!([
+                { "type": "text", "text": "Describe this image." },
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "iVBORw0KGgo="
+                    }
+                }
+            ]),
+        };
+        let translated = provider.translate_message(&msg);
+        assert_eq!(translated.len(), 1);
+        let content = translated[0]
+            .content
+            .as_ref()
+            .expect("content set")
+            .as_str()
+            .expect("must be a flat string when vision is unsupported");
+        assert!(content.contains("Describe this image."));
+        assert!(content.contains("ERROR"));
+        assert!(content.contains("Restart") || content.contains("--provider"));
     }
 
     #[test]

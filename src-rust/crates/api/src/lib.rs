@@ -467,14 +467,15 @@ pub mod client {
         //
         // The CLI is provider-agnostic — it always emits the richest
         // representation (Image, Document, ...). It is the PROVIDER's job
-        // to translate or degrade those blocks for the model behind it.
+        // to translate or reject those blocks for the model behind it.
         // For AnthropicClient, the wire format IS Anthropic native, so:
         //   - When the model supports vision → forward blocks verbatim.
         //   - When it doesn't (DeepSeek today) → replace Image and
-        //     Document blocks with a Text block carrying a caption,
-        //     across both user messages and nested tool_result.Blocks.
-        // The model never sees a block it can't read, but the textual
-        // signal is preserved so it can still reason about the payload.
+        //     Document blocks with an EXPLICIT error text and flip the
+        //     surrounding tool_result.is_error=true. The model sees a
+        //     loud refusal instead of a fallback it might mistake for
+        //     real content; the user is told to restart uppli-code with
+        //     a vision-capable provider.
         pub(crate) fn degrade_blocks_if_needed(&self, request: &mut CreateMessageRequest) {
             // Direct field access — the trait method has the same name
             // so calling `self.capabilities()` here would recurse.
