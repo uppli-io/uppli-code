@@ -907,9 +907,10 @@ pub mod client {
             (None, None) => String::new(),
         };
         format!(
-            "[ERROR: {}{}{} cannot be read — the current provider does not support vision. \
-             Switch to a vision-capable provider (e.g. --provider glm) or convert the \
-             file to text out-of-band.]",
+            "[ERROR: {}{}{} cannot be read — the current provider's model does not \
+             support vision. Restart uppli-code with a vision-capable provider \
+             (e.g. `uppli-code --provider glm`) to process this file. The current \
+             session cannot be salvaged; ask the user to relaunch.]",
             kind, title_hint, detail
         )
     }
@@ -1353,8 +1354,8 @@ mod tests {
         assert!(text.contains("image"));
         assert!(text.contains("image/png"));
         assert!(
-            text.contains("Switch") || text.contains("switch"),
-            "must instruct user to switch provider, got: {}",
+            text.contains("Restart") || text.contains("relaunch") || text.contains("--provider"),
+            "must instruct user to relaunch with a different provider, got: {}",
             text
         );
     }
