@@ -4,6 +4,20 @@ All notable changes to uppli-code are documented in this file.
 
 ## Unreleased
 
+### Multimodal file ingestion (PR B)
+
+- **`Read` tool now handles every file kind a user can paste at the agent.** Previous behaviour: only text via `read_to_string` (hard-errored on non-UTF-8), with placeholder strings for images and PDFs. New behaviour: per-format dispatch through magic-byte sniffing.
+  - **Text / source code**: streaming cap at 10 MiB, lossy Windows-1252 fallback for non-UTF-8 input (previously hard-errored "appears to be binary"), per-line truncation at 16 384 chars. The legacy `<num>\t<line>\n` format is preserved byte-for-byte.
+  - **Images (PNG / JPEG / GIF / WebP / BMP)**: emitted as `ContentBlock::Image` (base64) on vision-capable providers, with a textual caption for the rest. Decompression-bomb resistant via a header-only dimension probe before any pixel decode. ICO returns a stub; SVG routes to the text path.
+  - **PDF**: text extraction via `pdf-extract` triple-shielded (`spawn_blocking` + `tokio::time::timeout(30s)` + `catch_unwind`). PDFs ≤ 5 MiB also get a `ContentBlock::Document` payload for vision providers. New `pages: Option<String>` parameter supports range selection like `"1-5,7,9-10"` — closes the dead-advice bug where the legacy description promoted this parameter without declaring it in the schema.
+  - **OOXML (XLSX / DOCX / PPTX)**: zip + quick-xml extraction. XLSX returns the first sheet's rows (cap 500) with `\t`-joined values; DOCX returns paragraph text; PPTX returns per-slide text (cap 20 slides). XML hardening: `<!DOCTYPE>` rejected, depth cap 128, path-traversal guards on slide enumeration.
+  - **ODF (ODT / ODS / ODP)**: same code path as OOXML via the `content.xml` payload.
+  - **Legacy XLS / DOC / PPT**: graceful stub with a `libreoffice --headless --convert-to xlsx ...` recipe. `is_error = false` so the model can route around the gap.
+  - **Archives**: ZIP / JAR / WAR / EAR / APK / IPA / EPUB and TAR / TAR.GZ produce a textual manifest (`<path>\t<size>\t<sha256_first8>\t<inferred_format>`). NEVER extracted to disk. Compression-ratio + cumulative-decompressed-bytes guards against bombs. Encrypted ZIPs and TAR symlinks / `..` traversal entries are refused.
+  - **`tar.bz2 / tar.xz / tar.zst / 7z / rar`**: graceful stubs with Bash recipes. The bz2 / xz / zstd / 7z C-toolchain deps are deferred to a follow-up PR.
+  - **Pre-flight cap**: every read goes through a `fs::metadata().len() > MAX_FILE_BYTES (100 MiB)` guard before any byte is read — closes the OOM exposure on multi-GB files.
+  - **Sniff-vs-extension disagreement note**: when magic bytes pick a binary kind the filename didn't predict (e.g. a `.txt` that is actually a PDF), the tool prepends `[detected as <KIND> via magic bytes; extension said <KIND>]` to the output.
+
 ### Breaking changes
 
 - **`QueryOutcome::BudgetExceeded` shape changed.** Was `{ tokens, limit_tokens }`, now `{ spent_tokens, spent_cost_usd, limit_tokens, limit_cost_usd, trigger }`. The JSON event for `--output-format json` / `stream-json` carries the same keys + a `trigger: "tokens" | "usd"` field that says which cap fired.
