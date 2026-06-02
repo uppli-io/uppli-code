@@ -1419,6 +1419,78 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_client_happy_path_text_only_unchanged() {
+        // Regression guard: happy-path text-only requests must pass
+        // through degrade_blocks_if_needed without ANY change. If this
+        // breaks, every DeepSeek text turn would be corrupted.
+        let client = deepseek_test_client();
+        let mut req = CreateMessageRequest::builder("deepseek-v4-pro", 4096).build();
+        req.messages.push(ApiMessage {
+            role: "user".to_string(),
+            content: serde_json::json!([
+                { "type": "text", "text": "What is 2+2?" }
+            ]),
+        });
+        let before = serde_json::to_value(&req).unwrap();
+        client.degrade_blocks_if_needed(&mut req);
+        let after = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            before, after,
+            "text-only request must be untouched by degrade_blocks_if_needed"
+        );
+    }
+
+    #[test]
+    fn deepseek_client_happy_path_string_content_unchanged() {
+        // Same guard for plain-string content shape (simpler turns).
+        let client = deepseek_test_client();
+        let mut req = CreateMessageRequest::builder("deepseek-v4-pro", 4096).build();
+        req.messages.push(ApiMessage {
+            role: "user".to_string(),
+            content: serde_json::json!("plain message"),
+        });
+        let before = serde_json::to_value(&req).unwrap();
+        client.degrade_blocks_if_needed(&mut req);
+        let after = serde_json::to_value(&req).unwrap();
+        assert_eq!(before, after, "string-content must be untouched");
+    }
+
+    #[test]
+    fn deepseek_client_tool_result_wire_carries_is_error_true() {
+        // End-to-end including the wire format: a tool_result with an
+        // Image inside must, after degrade_blocks_if_needed, carry
+        // `"is_error": true` in the serialized JSON. This is the
+        // contract the LLM relies on to know the tool failed.
+        let client = deepseek_test_client();
+        let mut req = CreateMessageRequest::builder("deepseek-v4-pro", 4096).build();
+        req.messages.push(ApiMessage {
+            role: "user".to_string(),
+            content: serde_json::json!([
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu_42",
+                    "content": [
+                        { "type": "text", "text": "[Image: foo.png, 1x1]" },
+                        {
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": "image/png", "data": "x"}
+                        }
+                    ]
+                }
+            ]),
+        });
+        client.degrade_blocks_if_needed(&mut req);
+        let body = serde_json::to_value(&req).unwrap();
+        let tr = &body["messages"][0]["content"][0];
+        assert_eq!(tr["type"], "tool_result");
+        assert_eq!(
+            tr["is_error"], true,
+            "tool_result carrying an Image must serialise with is_error=true"
+        );
+        assert_eq!(tr["tool_use_id"], "tu_42");
+    }
+
+    #[test]
     fn deepseek_client_rejects_image_block_end_to_end() {
         // End-to-end: build a CreateMessageRequest with an Image block,
         // run it through `degrade_blocks_if_needed`, assert the wire
