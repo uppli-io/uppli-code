@@ -99,23 +99,24 @@ pub use worktree::{EnterWorktreeTool, ExitWorktreeTool};
 
 /// The result of executing a tool.
 ///
-/// `content` is the textual fallback — ALWAYS populated. Providers that
-/// don't understand structured tool_result payloads receive this string
-/// as-is, so it must be self-sufficient (caption an image, summarise a
-/// PDF, etc.).
+/// `content` is the textual fallback — ALWAYS populated. The CLI is
+/// provider-agnostic and always forwards both fields to the active
+/// provider; if that provider's model can't read Image / Document
+/// blocks, its translation layer (`AnthropicClient::
+/// degrade_blocks_if_needed`, `OpenAiProvider::translate_message`)
+/// strips them and the model sees only this string. So content must
+/// be self-sufficient (caption an image, summarise a PDF, etc.).
 ///
-/// `blocks` is the optional structured payload (image, document, mixed
-/// text + image). The query loop only forwards it when the active
-/// provider advertises `supports_tool_result_blocks = true`.
+/// `blocks` is the optional structured payload (image, document). When
+/// `Some(_)`, the query loop emits `ToolResultContent::Blocks(...)`
+/// unconditionally — the decision to honour or degrade the blocks
+/// lives inside the provider, not the CLI.
 #[derive(Debug, Clone)]
 pub struct ToolResult {
-    /// Textual fallback content. Always populated, even when `blocks` is
-    /// `Some` — providers without structured tool_result support read
-    /// this and the user-facing TUI renders it too.
+    /// Textual fallback content. Always populated.
     pub content: String,
-    /// Optional structured payload. When `Some`, the query loop emits
-    /// `ToolResultContent::Blocks(...)` for capable providers; otherwise
-    /// the textual fallback is sent.
+    /// Optional structured payload. Forwarded verbatim by the query
+    /// loop; the provider decides whether to honour or degrade it.
     pub blocks: Option<Vec<ContentBlock>>,
     /// Whether this invocation was an error.
     pub is_error: bool,
@@ -143,8 +144,8 @@ impl ToolResult {
     }
 
     /// Construct a successful result that carries both a textual fallback
-    /// and a structured payload. The query loop chooses which one to
-    /// forward based on the active provider's capabilities.
+    /// and a structured payload. The query loop forwards both verbatim;
+    /// the provider decides whether to honour or degrade `blocks`.
     pub fn success_with_blocks(content: impl Into<String>, blocks: Vec<ContentBlock>) -> Self {
         Self {
             content: content.into(),

@@ -443,24 +443,6 @@ pub fn stop_hooks_with_full_behavior(
 }
 
 // ---------------------------------------------------------------------------
-// Multimodal dispatch helper
-// ---------------------------------------------------------------------------
-
-/// Whether any block in `blocks` carries a payload that requires vision-capable
-/// inference (image or document). Used to gate `ToolResultContent::Blocks`
-/// emission: providers that accept structured blocks but not vision (e.g. a
-/// future text-only multi-part dialect) should still receive `Text` for
-/// payloads they can't read, instead of a silent drop.
-pub fn blocks_carry_visual_payload(blocks: &[ContentBlock]) -> bool {
-    blocks.iter().any(|b| {
-        matches!(
-            b,
-            ContentBlock::Image { .. } | ContentBlock::Document { .. }
-        )
-    })
-}
-
-// ---------------------------------------------------------------------------
 // Tool-result budgeting
 // ---------------------------------------------------------------------------
 
@@ -1624,31 +1606,24 @@ pub async fn run_query_loop(
                             }
                         }
 
-                        // Multimodal dispatch — only forward structured
-                        // blocks when the active provider actually accepts
-                        // them. Otherwise fall back to the text channel; the
-                        // tool's `content` string is the caption / summary
-                        // every provider sees.
-                        let caps = client.capabilities();
-                        let tool_result_content = match &result.blocks {
-                            Some(blocks)
-                                if caps.supports_tool_result_blocks
-                                    && (caps.supports_vision
-                                        || !blocks_carry_visual_payload(blocks)) =>
-                            {
-                                // Prepend the textual fallback so the model
-                                // gets both a caption and the structured
-                                // payload — vision-capable models read the
-                                // image; the text helps planning steps that
-                                // run before pixels are inspected.
+                        // CLI is provider-agnostic — always emit the
+                        // richest representation available. If the tool
+                        // produced structured blocks (image, document,
+                        // ...), forward them verbatim with the textual
+                        // caption prepended. The active provider's
+                        // translation layer is responsible for degrading
+                        // visual blocks to text when its model can't
+                        // see — the CLI never consults provider caps.
+                        let tool_result_content = match result.blocks {
+                            Some(blocks) if !blocks.is_empty() => {
                                 let mut combined: Vec<ContentBlock> =
                                     Vec::with_capacity(blocks.len() + 1);
                                 if !enriched_content.is_empty() {
                                     combined.push(ContentBlock::Text {
-                                        text: enriched_content.clone(),
+                                        text: enriched_content,
                                     });
                                 }
-                                combined.extend(blocks.iter().cloned());
+                                combined.extend(blocks);
                                 ToolResultContent::Blocks(combined)
                             }
                             _ => ToolResultContent::Text(enriched_content),
@@ -2202,74 +2177,9 @@ mod tests {
         }
     }
 
-    // ---- blocks_carry_visual_payload tests ---------------------------------
-    //
-    // Pin the dispatch invariant: only Image and Document trigger the
-    // visual-payload guard. Text-only structured blocks (a future
-    // multi-part dialect for tables, citations, etc.) ride the channel
-    // freely on providers that advertise supports_tool_result_blocks
-    // but not supports_vision.
-
-    #[test]
-    fn visual_payload_false_for_text_only() {
-        let blocks = vec![ContentBlock::Text {
-            text: "hello".to_string(),
-        }];
-        assert!(!blocks_carry_visual_payload(&blocks));
-    }
-
-    #[test]
-    fn visual_payload_true_for_image() {
-        let blocks = vec![ContentBlock::Image {
-            source: cc_core::types::ImageSource {
-                source_type: "base64".to_string(),
-                media_type: Some("image/png".to_string()),
-                data: Some("iVBORw0KGgo=".to_string()),
-                url: None,
-            },
-        }];
-        assert!(blocks_carry_visual_payload(&blocks));
-    }
-
-    #[test]
-    fn visual_payload_true_for_document() {
-        let blocks = vec![ContentBlock::Document {
-            source: cc_core::types::DocumentSource {
-                source_type: "base64".to_string(),
-                media_type: Some("application/pdf".to_string()),
-                data: Some("JVBERi0=".to_string()),
-                url: None,
-            },
-            title: None,
-            context: None,
-            citations: None,
-        }];
-        assert!(blocks_carry_visual_payload(&blocks));
-    }
-
-    #[test]
-    fn visual_payload_true_when_any_block_is_visual() {
-        let blocks = vec![
-            ContentBlock::Text {
-                text: "caption".to_string(),
-            },
-            ContentBlock::Image {
-                source: cc_core::types::ImageSource {
-                    source_type: "base64".to_string(),
-                    media_type: Some("image/png".to_string()),
-                    data: Some("iVBORw0KGgo=".to_string()),
-                    url: None,
-                },
-            },
-        ];
-        assert!(
-            blocks_carry_visual_payload(&blocks),
-            "a mixed text+image payload must still be flagged as visual"
-        );
-    }
-
-    #[test]
-    fn visual_payload_false_for_empty() {
-        assert!(!blocks_carry_visual_payload(&[]));
-    }
+    // Note: the previous `blocks_carry_visual_payload` helper + its
+    // dispatch tests were removed when the CLI became fully provider-
+    // agnostic. The CLI always emits ToolResultContent::Blocks when the
+    // tool returned blocks; each provider's translation layer now owns
+    // the degrade-for-non-vision-models decision.
 }
