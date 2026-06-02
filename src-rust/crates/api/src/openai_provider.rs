@@ -432,19 +432,30 @@ impl OpenAiProvider {
                             text_parts.push(t.to_string());
                         }
                     }
-                    "image" | "document" => {
-                        // Anthropic image/document source → OpenAI vision part.
-                        // Both block types funnel through the same helper because
-                        // vision-capable providers (GLM-4.6v, Qwen-VL) accept
-                        // PDF data via the same `image_url` mechanism — only
-                        // the data: URI media_type differs (image/png vs
-                        // application/pdf).
+                    "image" => {
+                        // Anthropic image block → OpenAI vision `image_url` part.
+                        // Vision-capable providers (GLM-4.5v, Qwen-VL, GPT-4o)
+                        // accept the data: URI / remote URL via this shape.
                         if let Some(url) = image_url_from_source(block_type, block) {
                             image_parts.push(serde_json::json!({
                                 "type": "image_url",
                                 "image_url": { "url": url }
                             }));
                         }
+                    }
+                    "document" => {
+                        // PDF / Document blocks. Verified live on z.ai
+                        // (glm-4.5v): forwarding a `data:application/pdf;
+                        // base64,...` via `image_url` returns
+                        // `API error 400: 图片输入格式/解析错误`
+                        // (image input format/parsing error). The OpenAI-compat
+                        // vision channel only accepts true images. We rely
+                        // entirely on the textual extract that `pdf::read_pdf`
+                        // already places in `content.text` of the tool_result
+                        // — providers using this wire never need the raw PDF.
+                        //
+                        // The Document block is consumed and discarded here;
+                        // a sibling `text` block carries the extracted content.
                     }
                     "thinking" => {
                         // Thinking blocks from Anthropic format have no equivalent in
@@ -514,7 +525,7 @@ impl OpenAiProvider {
                                                 inner_text_parts.push(t.to_string());
                                             }
                                         }
-                                        "image" | "document" => {
+                                        "image" => {
                                             if let Some(url) =
                                                 image_url_from_source(inner_type, inner)
                                             {
@@ -523,6 +534,13 @@ impl OpenAiProvider {
                                                     "image_url": { "url": url }
                                                 }));
                                             }
+                                        }
+                                        "document" => {
+                                            // PDF blocks not forwarded on the
+                                            // OpenAI-compat wire (z.ai 400 on
+                                            // application/pdf in image_url).
+                                            // Textual extract is already in
+                                            // a sibling text part.
                                         }
                                         _ => {
                                             // Unknown nested block — fall back
@@ -1729,18 +1747,22 @@ mod tests {
 
     #[test]
     fn test_translate_user_message_with_pdf_document_block() {
-        // PR S follow-up #2: `document` blocks (Anthropic format, used for
-        // PDFs) must also be serialised. They share the image_url emission
-        // path with `image` blocks — only the media_type changes.
+        // Document blocks are intentionally DROPPED on the OpenAI-compat
+        // wire. Live test on z.ai (glm-4.5v) returned API error 400
+        // "图片输入格式/解析错误" when we sent a PDF via image_url. The
+        // OpenAI vision channel only accepts true images; PDF text is
+        // expected to come through as a sibling text block (filled by
+        // pdf::read_pdf on the tool side). Sending the raw PDF would
+        // 400 even if the wire-shape is "valid".
         let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
             crate::providers::loader::registry().find("glm").unwrap(),
             "test-key-long-enough".to_string(),
-            Some("glm-4.6v".to_string()),
+            Some("glm-4.5v".to_string()),
         ))
         .unwrap();
 
         let req = CreateMessageRequest {
-            model: "glm-4.6v".to_string(),
+            model: "glm-4.5v".to_string(),
             max_tokens: 4096,
             messages: vec![crate::types::ApiMessage {
                 role: "user".to_string(),
@@ -1773,25 +1795,49 @@ mod tests {
             .iter()
             .find(|m| m.role == "user")
             .expect("user message present");
-        let parts = user_msg
-            .content
-            .as_ref()
-            .expect("content set")
-            .as_array()
-            .expect("multi-part content (PDF present)");
-        let image_part = parts
-            .iter()
-            .find(|p| p.get("type").and_then(|v| v.as_str()) == Some("image_url"))
-            .expect("image_url part present (PDF was silently dropped before)");
-        let url = image_part
-            .get("image_url")
-            .and_then(|v| v.get("url"))
-            .and_then(|v| v.as_str())
-            .unwrap();
+        let content = user_msg.content.as_ref().expect("content set");
+        // Document block dropped → no image_url part remains. Whether
+        // the content is a plain string or a single-element Array
+        // depends on whether the surviving text triggered the
+        // multi-part path; either way there must be NO image_url
+        // referencing application/pdf.
+        let has_pdf_image_url = match content {
+            Value::Array(parts) => parts.iter().any(|p| {
+                p.get("type").and_then(|v| v.as_str()) == Some("image_url")
+                    && p.get("image_url")
+                        .and_then(|v| v.get("url"))
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|u| u.contains("application/pdf"))
+            }),
+            _ => false,
+        };
         assert!(
-            url.starts_with("data:application/pdf;base64,"),
-            "PDF data URI must carry application/pdf media type, got: {}",
-            url
+            !has_pdf_image_url,
+            "Document blocks MUST NOT be forwarded as image_url on the OpenAI-compat wire (z.ai rejects with 400)"
+        );
+        // The accompanying text must survive — that is where the
+        // model sees the PDF content.
+        let surviving_text = match content {
+            Value::String(s) => s.clone(),
+            Value::Array(parts) => parts
+                .iter()
+                .filter_map(|p| {
+                    if p.get("type").and_then(|v| v.as_str()) == Some("text") {
+                        p.get("text")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(""),
+            _ => String::new(),
+        };
+        assert!(
+            surviving_text.contains("Read this invoice"),
+            "text block must survive: {}",
+            surviving_text
         );
     }
 
