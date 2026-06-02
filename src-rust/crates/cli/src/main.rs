@@ -955,12 +955,23 @@ async fn main() -> anyhow::Result<()> {
             "adaptive" => { /* use default from effort level */ }
             other => {
                 if let Ok(tokens) = other.parse::<u32>() {
+                    if tokens < 1024 {
+                        anyhow::bail!(
+                            "--thinking budget must be >= 1024 (Anthropic API minimum); got {tokens}"
+                        );
+                    }
                     query_config.thinking_budget = Some(tokens);
                 }
             }
         }
     }
     if let Some(tokens) = cli.max_thinking_tokens {
+        // Anthropic API minimum is 1024.
+        if tokens < 1024 {
+            anyhow::bail!(
+                "--max-thinking-tokens must be >= 1024 (Anthropic API minimum); got {tokens}"
+            );
+        }
         query_config.thinking_budget = Some(tokens);
     }
     if let Some(ref level_str) = cli.effort {
@@ -1682,7 +1693,7 @@ async fn run_sdk_headless(
                         caps.api_format,
                         caps.default_model,
                         caps.fast_model.as_deref().unwrap_or("none"),
-                        if caps.default_thinking_budget.is_some() { "supported" } else { "not supported" },
+                        if caps.thinking_format.is_some() { "supported" } else { "not supported" },
                     ))
                 }
                 "status" => {

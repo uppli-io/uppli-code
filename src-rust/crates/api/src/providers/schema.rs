@@ -47,6 +47,10 @@ pub struct ProviderToml {
     /// can't accidentally claim vision support.
     #[serde(default)]
     pub supports_vision: bool,
+    /// Wire dialect for `--effort`: `anthropic_nested`, `qwen3`, `ollama_think`, or omitted.
+    /// Default inferred from api_format (anthropic→nested, ollama→ollama_think, openai→none).
+    #[serde(default)]
+    pub thinking_format: Option<ThinkingFormatToml>,
 }
 
 /// Wire protocol family. Mirrors `provider::ApiFormat` but is a separate
@@ -57,6 +61,15 @@ pub enum ApiFormatToml {
     Anthropic,
     Openai,
     Ollama,
+}
+
+/// Wire dialect declared in the TOML.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingFormatToml {
+    AnthropicNested,
+    Qwen3,
+    OllamaThink,
 }
 
 /// The `[auth]` table.
@@ -80,8 +93,6 @@ fn default_required() -> bool {
 #[serde(deny_unknown_fields)]
 pub struct ProviderDefaultsToml {
     pub max_tokens: u32,
-    #[serde(default)]
-    pub thinking_budget: Option<u32>,
     #[serde(default = "default_timeout_sec")]
     pub request_timeout_sec: u64,
     #[serde(default = "default_max_retries")]

@@ -94,10 +94,11 @@ pub mod types {
     }
 
     impl ThinkingConfig {
+        /// Forward budget_tokens verbatim; callers enforce the 1024 minimum.
         pub fn enabled(budget: u32) -> Self {
             Self {
                 thinking_type: "enabled".to_string(),
-                budget_tokens: if budget < 4000 { 16000 } else { budget },
+                budget_tokens: budget,
             }
         }
     }

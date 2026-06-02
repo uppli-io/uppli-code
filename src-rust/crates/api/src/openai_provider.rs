@@ -40,7 +40,6 @@ pub struct OpenAiProviderConfig {
     pub api_key: String,
     pub default_model: String,
     pub fast_model: Option<String>,
-    pub supports_thinking: bool,
     pub api_format: ApiFormat,
     pub max_retries: u32,
     pub request_timeout: Duration,
@@ -51,10 +50,12 @@ pub struct OpenAiProviderConfig {
     pub known_models: Vec<ModelMetadata>,
     /// Default max output tokens for this provider.
     pub default_max_tokens: u32,
-    /// Default thinking budget (None = thinking disabled by default).
-    pub default_thinking_budget: Option<u32>,
     /// Whether the default model accepts image / document blocks.
     pub supports_vision: bool,
+    /// Wire-level thinking dialect, mirrored from the TOML preset.
+    /// `None` means no thinking on the wire — the provider's model
+    /// decides on its own.
+    pub thinking_format: Option<crate::provider::ThinkingFormat>,
     /// Authentication configuration.
     pub auth: AuthConfig,
 }
@@ -80,20 +81,14 @@ impl OpenAiProviderConfig {
             api_key,
             default_model,
             fast_model: caps.fast_model.clone(),
-            // PR S: `supports_thinking` at the provider level was redundant
-            // with per-model supports_thinking. We keep the field for
-            // back-compat with existing callers but populate it from
-            // default_thinking_budget.is_some() — a provider that has a
-            // thinking budget supports thinking at the provider level.
-            supports_thinking: caps.default_thinking_budget.is_some(),
             api_format: caps.api_format,
             max_retries: loaded.max_retries,
             request_timeout: Duration::from_secs(loaded.request_timeout_sec),
             attribution: caps.attribution.clone(),
             known_models: caps.known_models.clone(),
             default_max_tokens: caps.default_max_tokens,
-            default_thinking_budget: caps.default_thinking_budget,
             supports_vision: caps.supports_vision,
+            thinking_format: caps.thinking_format,
             auth: caps.auth,
         }
     }
@@ -118,15 +113,14 @@ struct OpenAiRequest {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OpenAiTool>>,
-    /// Qwen3-specific: enable thinking/reasoning mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     enable_thinking: Option<bool>,
-    /// Qwen3-specific: max tokens for thinking.
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking_budget: Option<u32>,
-    /// Ollama-specific: disable thinking for Qwen3 local models.
     #[serde(skip_serializing_if = "Option::is_none")]
     think: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<crate::types::ThinkingConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -281,10 +275,10 @@ impl OpenAiProvider {
             fast_model: config.fast_model.clone(),
             known_models: config.known_models.clone(),
             default_max_tokens: config.default_max_tokens,
-            default_thinking_budget: config.default_thinking_budget,
             api_format: config.api_format,
             default_api_base: config.api_base.clone(),
             supports_vision: config.supports_vision,
+            thinking_format: config.thinking_format,
             auth: config.auth,
         };
 
@@ -339,27 +333,27 @@ impl OpenAiProvider {
                 .collect()
         });
 
-        // Thinking support (Qwen3)
-        let (enable_thinking, thinking_budget) = if self.config.supports_thinking {
-            if let Some(ref thinking) = req.thinking {
-                (Some(true), Some(thinking.budget_tokens))
-            } else {
-                (Some(false), None)
-            }
-        } else {
-            (None, None)
-        };
+        // Mirror each provider's upstream thinking dialect verbatim.
+        use crate::provider::ThinkingFormat;
+        let user_wants_thinking = req.thinking.is_some();
+        let budget = req.thinking.as_ref().map(|t| t.budget_tokens);
 
-        // Ollama: `think` is a Boolean toggle (no budget). Only send it when
-        // the provider supports thinking AND the user actually requested it.
-        // Sending `think: false` to models that don't know the field is harmless
-        // but unnecessary; omitting it entirely (None) is cleaner.
-        let think = if self.config.api_format == ApiFormat::Ollama && self.config.supports_thinking
-        {
-            Some(req.thinking.is_some())
-        } else {
-            None
-        };
+        let (enable_thinking, thinking_budget, think, thinking_nested) =
+            match (self.config.thinking_format, user_wants_thinking) {
+                (Some(ThinkingFormat::Qwen3), _) => (
+                    Some(user_wants_thinking),
+                    if user_wants_thinking { budget } else { None },
+                    None,
+                    None,
+                ),
+                (Some(ThinkingFormat::OllamaThink), _) => {
+                    (None, None, Some(user_wants_thinking), None)
+                }
+                (Some(ThinkingFormat::AnthropicNested), true) => {
+                    (None, None, None, req.thinking.clone())
+                }
+                _ => (None, None, None, None),
+            };
 
         // Clamp max_tokens to the model's output limit (from known_models metadata).
         let model_max = self
@@ -383,6 +377,7 @@ impl OpenAiProvider {
             enable_thinking,
             thinking_budget,
             think,
+            thinking: thinking_nested,
         }
     }
 
@@ -1949,19 +1944,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_translate_with_thinking() {
-        let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
-            crate::providers::loader::registry()
-                .find("alibaba")
-                .unwrap(),
-            "test-key-long-enough".to_string(),
-            Some("qwen3-235b".to_string()),
-        ))
-        .unwrap();
-
-        let req = CreateMessageRequest {
-            model: "qwen3-235b".to_string(),
+    fn make_thinking_req(model: &str) -> CreateMessageRequest {
+        CreateMessageRequest {
+            model: model.to_string(),
             max_tokens: 4096,
             messages: vec![crate::types::ApiMessage {
                 role: "user".to_string(),
@@ -1976,11 +1961,110 @@ mod tests {
             stream: true,
             thinking: Some(crate::types::ThinkingConfig::enabled(16000)),
             output_config: None,
-        };
+        }
+    }
 
-        let openai_req = provider.translate_request(&req);
+    #[test]
+    fn thinking_qwen3_dialect_emitted_on_alibaba() {
+        // Alibaba's thinking_format = Qwen3 → enable_thinking + thinking_budget.
+        let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry()
+                .find("alibaba")
+                .unwrap(),
+            "test-key-long-enough".to_string(),
+            Some("qwen3-235b".to_string()),
+        ))
+        .unwrap();
+        let openai_req = provider.translate_request(&make_thinking_req("qwen3-235b"));
         assert_eq!(openai_req.enable_thinking, Some(true));
         assert_eq!(openai_req.thinking_budget, Some(16000));
+        assert!(
+            openai_req.thinking.is_none(),
+            "Qwen3 must NOT emit nested thinking"
+        );
+        assert!(openai_req.think.is_none(), "Qwen3 must NOT emit `think`");
+    }
+
+    #[test]
+    fn thinking_anthropic_nested_dialect_emitted_on_glm() {
+        // z.ai's thinking_format = AnthropicNested → thinking: {type, budget_tokens}.
+        // Verified live with curl: GLM-5 on z.ai expects this shape.
+        let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry().find("glm").unwrap(),
+            "test-key-long-enough".to_string(),
+            Some("glm-5".to_string()),
+        ))
+        .unwrap();
+        let openai_req = provider.translate_request(&make_thinking_req("glm-5"));
+        let nested = openai_req
+            .thinking
+            .as_ref()
+            .expect("GLM must emit nested thinking config");
+        assert_eq!(nested.thinking_type, "enabled");
+        assert_eq!(nested.budget_tokens, 16000);
+        assert!(
+            openai_req.enable_thinking.is_none(),
+            "Anthropic-nested dialect must NOT emit Qwen3 enable_thinking"
+        );
+        assert!(openai_req.thinking_budget.is_none());
+        assert!(openai_req.think.is_none());
+    }
+
+    #[test]
+    fn thinking_ollama_dialect_emitted_on_ollama() {
+        // Ollama's thinking_format defaults to OllamaThink via api_format.
+        let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry().find("ollama").unwrap(),
+            String::new(),
+            Some("qwen3:14b".to_string()),
+        ))
+        .unwrap();
+        let openai_req = provider.translate_request(&make_thinking_req("qwen3:14b"));
+        assert_eq!(openai_req.think, Some(true));
+        assert!(openai_req.thinking.is_none());
+        assert!(openai_req.enable_thinking.is_none());
+    }
+
+    #[test]
+    fn thinking_no_dialect_emits_nothing_on_mistral() {
+        // Mistral has no thinking_format declared (and api_format=openai
+        // doesn't auto-infer). Even when --effort is set, NO thinking
+        // field should hit the wire: Mistral's API would reject it.
+        let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry()
+                .find("mistral")
+                .unwrap(),
+            "test-key-long-enough".to_string(),
+            Some("mistral-large-latest".to_string()),
+        ))
+        .unwrap();
+        let openai_req = provider.translate_request(&make_thinking_req("mistral-large-latest"));
+        assert!(openai_req.thinking.is_none());
+        assert!(openai_req.enable_thinking.is_none());
+        assert!(openai_req.thinking_budget.is_none());
+        assert!(openai_req.think.is_none());
+    }
+
+    #[test]
+    fn thinking_anthropic_nested_emits_nothing_when_user_disabled() {
+        // Pins the (AnthropicNested, user_wants_thinking=false) branch:
+        // even though the provider has a thinking dialect declared, if
+        // the user did NOT set --effort (req.thinking is None), nothing
+        // hits the wire. A future refactor of the match can't silently
+        // change this without flipping this test.
+        let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry().find("glm").unwrap(),
+            "test-key-long-enough".to_string(),
+            Some("glm-5".to_string()),
+        ))
+        .unwrap();
+        let mut req = make_thinking_req("glm-5");
+        req.thinking = None;
+        let openai_req = provider.translate_request(&req);
+        assert!(openai_req.thinking.is_none());
+        assert!(openai_req.enable_thinking.is_none());
+        assert!(openai_req.thinking_budget.is_none());
+        assert!(openai_req.think.is_none());
     }
 
     #[test]
@@ -2405,5 +2489,246 @@ data: [DONE]\n\n";
         let (msg, _, stop) = acc.finish();
         assert_eq!(msg.get_text(), Some("The answer is 42."));
         assert_eq!(stop.as_deref(), Some("end_turn"));
+    }
+
+    // Wire-payload snapshot tests: pin the JSON shape of translate_request
+    // across the four thinking-dialect branches. Effort→budget mapping is the
+    // canonical table in crates/core/src/effort.rs.
+
+    /// Translate a thinking request through the given preset and return the serialized wire payload.
+    fn snapshot_wire_payload(
+        provider_preset: &str,
+        model: &str,
+        budget: Option<u32>,
+    ) -> serde_json::Value {
+        let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
+            crate::providers::loader::registry()
+                .find(provider_preset)
+                .unwrap_or_else(|| panic!("unknown provider preset '{}'", provider_preset)),
+            "test-key-long-enough".to_string(),
+            Some(model.to_string()),
+        ))
+        .unwrap();
+
+        let req = CreateMessageRequest {
+            model: model.to_string(),
+            max_tokens: 4096,
+            messages: vec![crate::types::ApiMessage {
+                role: "user".to_string(),
+                content: Value::String("Think about this".to_string()),
+            }],
+            system: None,
+            tools: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: true,
+            thinking: budget.map(crate::types::ThinkingConfig::enabled),
+            output_config: None,
+        };
+
+        let openai_req = provider.translate_request(&req);
+        serde_json::to_value(&openai_req).expect("OpenAiRequest must serialize")
+    }
+
+    /// None = field absent; Some = field present with the given value.
+    fn assert_thinking_fields(
+        payload: &serde_json::Value,
+        enable_thinking: Option<bool>,
+        thinking_budget: Option<u64>,
+        think: Option<bool>,
+        thinking_nested: Option<u64>,
+    ) {
+        let obj = payload.as_object().expect("payload must be a JSON object");
+
+        match enable_thinking {
+            Some(b) => assert_eq!(
+                obj.get("enable_thinking"),
+                Some(&serde_json::Value::Bool(b)),
+                "enable_thinking expected {} in payload {:?}",
+                b,
+                obj
+            ),
+            None => assert!(
+                !obj.contains_key("enable_thinking"),
+                "enable_thinking must be ABSENT but found {:?} in {:?}",
+                obj.get("enable_thinking"),
+                obj
+            ),
+        }
+
+        match thinking_budget {
+            Some(n) => assert_eq!(
+                obj.get("thinking_budget").and_then(|v| v.as_u64()),
+                Some(n),
+                "thinking_budget expected {} in payload {:?}",
+                n,
+                obj
+            ),
+            None => assert!(
+                !obj.contains_key("thinking_budget"),
+                "thinking_budget must be ABSENT but found {:?} in {:?}",
+                obj.get("thinking_budget"),
+                obj
+            ),
+        }
+
+        match think {
+            Some(b) => assert_eq!(
+                obj.get("think"),
+                Some(&serde_json::Value::Bool(b)),
+                "think expected {} in payload {:?}",
+                b,
+                obj
+            ),
+            None => assert!(
+                !obj.contains_key("think"),
+                "think must be ABSENT but found {:?} in {:?}",
+                obj.get("think"),
+                obj
+            ),
+        }
+
+        match thinking_nested {
+            Some(n) => {
+                let nested = obj
+                    .get("thinking")
+                    .expect("thinking nested object expected to be present");
+                let nested_obj = nested
+                    .as_object()
+                    .expect("thinking field must be a JSON object");
+                assert_eq!(
+                    nested_obj.get("type").and_then(|v| v.as_str()),
+                    Some("enabled"),
+                    "thinking.type must equal 'enabled' (Anthropic spec)"
+                );
+                assert_eq!(
+                    nested_obj.get("budget_tokens").and_then(|v| v.as_u64()),
+                    Some(n),
+                    "thinking.budget_tokens expected {} got {:?}",
+                    n,
+                    nested_obj.get("budget_tokens")
+                );
+            }
+            None => assert!(
+                !obj.contains_key("thinking"),
+                "thinking nested object must be ABSENT but found {:?} in {:?}",
+                obj.get("thinking"),
+                obj
+            ),
+        }
+    }
+
+    // ── alibaba (Qwen3 dialect) ────────────────────────────────────────
+
+    #[test]
+    fn snapshot_alibaba_none_emits_enable_thinking_false_no_budget() {
+        let payload = snapshot_wire_payload("alibaba", "qwen3-235b-a22b", None);
+        assert_thinking_fields(&payload, Some(false), None, None, None);
+    }
+
+    #[test]
+    fn snapshot_alibaba_low_emits_enable_thinking_true_budget_8000() {
+        let payload = snapshot_wire_payload("alibaba", "qwen3-235b-a22b", Some(8_000));
+        assert_thinking_fields(&payload, Some(true), Some(8_000), None, None);
+    }
+
+    #[test]
+    fn snapshot_alibaba_medium_emits_enable_thinking_true_budget_16000() {
+        let payload = snapshot_wire_payload("alibaba", "qwen3-235b-a22b", Some(16_000));
+        assert_thinking_fields(&payload, Some(true), Some(16_000), None, None);
+    }
+
+    #[test]
+    fn snapshot_alibaba_high_emits_enable_thinking_true_budget_32000() {
+        let payload = snapshot_wire_payload("alibaba", "qwen3-235b-a22b", Some(32_000));
+        assert_thinking_fields(&payload, Some(true), Some(32_000), None, None);
+    }
+
+    #[test]
+    fn snapshot_alibaba_max_emits_enable_thinking_true_budget_64000() {
+        let payload = snapshot_wire_payload("alibaba", "qwen3-235b-a22b", Some(64_000));
+        assert_thinking_fields(&payload, Some(true), Some(64_000), None, None);
+    }
+
+    // ── glm (AnthropicNested dialect) ──────────────────────────────────
+
+    #[test]
+    fn snapshot_glm_none_emits_nothing() {
+        let payload = snapshot_wire_payload("glm", "glm-5", None);
+        assert_thinking_fields(&payload, None, None, None, None);
+    }
+
+    #[test]
+    fn snapshot_glm_low_emits_anthropic_nested_budget_8000() {
+        let payload = snapshot_wire_payload("glm", "glm-5", Some(8_000));
+        assert_thinking_fields(&payload, None, None, None, Some(8_000));
+    }
+
+    #[test]
+    fn snapshot_glm_medium_emits_anthropic_nested_budget_16000() {
+        let payload = snapshot_wire_payload("glm", "glm-5", Some(16_000));
+        assert_thinking_fields(&payload, None, None, None, Some(16_000));
+    }
+
+    #[test]
+    fn snapshot_glm_high_emits_anthropic_nested_budget_32000() {
+        let payload = snapshot_wire_payload("glm", "glm-5", Some(32_000));
+        assert_thinking_fields(&payload, None, None, None, Some(32_000));
+    }
+
+    #[test]
+    fn snapshot_glm_max_emits_anthropic_nested_budget_64000() {
+        let payload = snapshot_wire_payload("glm", "glm-5", Some(64_000));
+        assert_thinking_fields(&payload, None, None, None, Some(64_000));
+    }
+
+    // ── ollama (OllamaThink dialect) ───────────────────────────────────
+
+    #[test]
+    fn snapshot_ollama_none_emits_think_false() {
+        // Ollama's `think` is a bool — no budget channel exists. Even with
+        // no --effort, the flag is sent to explicitly disable.
+        let payload = snapshot_wire_payload("ollama", "qwen3:14b", None);
+        assert_thinking_fields(&payload, None, None, Some(false), None);
+    }
+
+    #[test]
+    fn snapshot_ollama_low_emits_think_true_budget_ignored() {
+        let payload = snapshot_wire_payload("ollama", "qwen3:14b", Some(8_000));
+        assert_thinking_fields(&payload, None, None, Some(true), None);
+    }
+
+    #[test]
+    fn snapshot_ollama_max_emits_think_true_budget_ignored() {
+        let payload = snapshot_wire_payload("ollama", "qwen3:14b", Some(64_000));
+        assert_thinking_fields(&payload, None, None, Some(true), None);
+    }
+
+    #[test]
+    fn snapshot_mistral_none_emits_nothing() {
+        let payload = snapshot_wire_payload("mistral", "mistral-large-latest", None);
+        assert_thinking_fields(&payload, None, None, None, None);
+    }
+
+    #[test]
+    fn snapshot_mistral_max_emits_nothing_even_with_effort() {
+        let payload = snapshot_wire_payload("mistral", "mistral-large-latest", Some(64_000));
+        assert_thinking_fields(&payload, None, None, None, None);
+    }
+
+    #[test]
+    fn snapshot_openai_max_emits_nothing_even_with_effort() {
+        let payload = snapshot_wire_payload("openai", "default", Some(64_000));
+        assert_thinking_fields(&payload, None, None, None, None);
+    }
+
+    #[test]
+    fn snapshot_openrouter_max_emits_nothing_even_with_effort() {
+        // OpenRouter declares no thinking_format — --effort must drop
+        // silently rather than leak a foreign dialect on the wire.
+        let payload = snapshot_wire_payload("openrouter", "qwen/qwen3.6-plus", Some(64_000));
+        assert_thinking_fields(&payload, None, None, None, None);
     }
 }

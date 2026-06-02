@@ -223,10 +223,12 @@ impl Default for QueryConfig {
             output_style: cc_core::system_prompt::OutputStyle::Default,
             output_style_prompt: None,
             working_directory: None,
-            thinking_budget: Some(cc_core::constants::DEFAULT_THINKING_BUDGET),
+            // Both None means no thinking on the wire. --effort or an
+            // explicit thinking_budget override opts in.
+            thinking_budget: None,
             temperature: None,
             tool_result_budget: cc_core::constants::DEFAULT_TOOL_RESULT_BUDGET,
-            effort_level: Some(cc_core::effort::EffortLevel::High),
+            effort_level: None,
             command_queue: None,
             skill_index: None,
             max_total_tokens: None,
@@ -266,7 +268,7 @@ impl QueryConfig {
         Self {
             model: default_model,
             max_tokens,
-            thinking_budget: caps.default_thinking_budget,
+            thinking_budget: None,
             fallback_model: caps.fast_model.clone(),
             output_style: cfg.effective_output_style(),
             output_style_prompt: cfg.resolve_output_style_prompt(),

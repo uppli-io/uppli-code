@@ -18,7 +18,6 @@ required = false
 
 [defaults]
 max_tokens = 8192
-thinking_budget = 16000
 request_timeout_sec = 600
 max_retries = 3
 

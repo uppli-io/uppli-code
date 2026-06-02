@@ -459,12 +459,8 @@ async fn tool_query(conn: &Conn, args: &Value) -> Result<Value, JsonRpcError> {
         output_style: cc_core::system_prompt::OutputStyle::Default,
         output_style_prompt: None,
         working_directory: Some(tool_ctx.working_dir.display().to_string()),
-        thinking_budget: state
-            .provider
-            .capabilities()
-            .default_thinking_budget
-            .is_some()
-            .then_some(64_000),
+        // Budget derives from effort_level — keep this None to avoid two sources of truth.
+        thinking_budget: None,
         temperature: None,
         tool_result_budget: 0,
         effort_level: Some(cc_core::effort::EffortLevel::Max),

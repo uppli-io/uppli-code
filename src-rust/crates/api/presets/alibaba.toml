@@ -9,6 +9,9 @@ attribution = "powered by Qwen (Alibaba Cloud)"
 provider_type = "alibaba"
 api_format = "openai"
 api_base = "https://dashscope-intl.aliyuncs.com/compatible-mode"
+# Qwen3 dialect — Alibaba DashScope expects `enable_thinking: true` +
+# `thinking_budget: N` on the OpenAI-compat wire (per Qwen3 docs).
+thinking_format = "qwen3"
 
 [auth]
 env_vars = ["DASHSCOPE_API_KEY"]
@@ -18,7 +21,6 @@ required = true
 
 [defaults]
 max_tokens = 16384
-thinking_budget = 16000
 request_timeout_sec = 600
 max_retries = 5
 

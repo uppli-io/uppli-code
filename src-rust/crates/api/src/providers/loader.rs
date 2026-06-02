@@ -55,6 +55,18 @@ pub enum LoadError {
     DuplicateModelId { provider: String, id: String },
     #[error("filename '{filename}' does not match provider.name '{declared}' in TOML")]
     NameMismatch { filename: String, declared: String },
+    #[error(
+        "provider '{provider}' has models with supports_thinking = true \
+         (e.g. '{example_model}') but no thinking_format declared and no \
+         default inferable from api_format = openai. Declare \
+         thinking_format explicitly in the TOML or drop \
+         supports_thinking on the affected models — a transparent adapter \
+         can't silently drop --effort."
+    )]
+    ThinkingFormatMissing {
+        provider: String,
+        example_model: String,
+    },
 }
 
 // ── Loaded registry ───────────────────────────────────────────────────────
@@ -180,6 +192,21 @@ fn parse_and_validate(filename: &str, src: &str) -> Result<LoadedProvider, LoadE
         }
     }
 
+    // Refuse configs that promise thinking without a declared or inferable dialect.
+    let any_thinking = cfg.models.iter().find(|m| m.supports_thinking);
+    let dialect_inferable = matches!(
+        cfg.provider.api_format,
+        ApiFormatToml::Anthropic | ApiFormatToml::Ollama
+    );
+    if let Some(m) = any_thinking {
+        if cfg.provider.thinking_format.is_none() && !dialect_inferable {
+            return Err(LoadError::ThinkingFormatMissing {
+                provider: filename.to_string(),
+                example_model: m.id.clone(),
+            });
+        }
+    }
+
     Ok(into_loaded(cfg, provider_type))
 }
 
@@ -244,6 +271,31 @@ fn into_loaded(cfg: ProviderConfigFile, provider_type: ProviderType) -> LoadedPr
     let keychain_key: &'static str = Box::leak(cfg.auth.keychain_key.clone().into_boxed_str());
     let display_label: &'static str = Box::leak(cfg.auth.display_label.clone().into_boxed_str());
 
+    // TOML override beats api_format inference.
+    let thinking_format: Option<crate::provider::ThinkingFormat> = cfg
+        .provider
+        .thinking_format
+        .map(|tf| match tf {
+            crate::providers::schema::ThinkingFormatToml::AnthropicNested => {
+                crate::provider::ThinkingFormat::AnthropicNested
+            }
+            crate::providers::schema::ThinkingFormatToml::Qwen3 => {
+                crate::provider::ThinkingFormat::Qwen3
+            }
+            crate::providers::schema::ThinkingFormatToml::OllamaThink => {
+                crate::provider::ThinkingFormat::OllamaThink
+            }
+        })
+        .or(match api_format {
+            crate::provider::ApiFormat::Anthropic => {
+                Some(crate::provider::ThinkingFormat::AnthropicNested)
+            }
+            crate::provider::ApiFormat::Ollama => {
+                Some(crate::provider::ThinkingFormat::OllamaThink)
+            }
+            crate::provider::ApiFormat::OpenAI => None,
+        });
+
     let capabilities = ProviderCapabilities {
         name: cfg.provider.name.clone(),
         display_name: cfg.provider.display_name.clone(),
@@ -252,10 +304,10 @@ fn into_loaded(cfg: ProviderConfigFile, provider_type: ProviderType) -> LoadedPr
         fast_model,
         known_models,
         default_max_tokens: cfg.defaults.max_tokens,
-        default_thinking_budget: cfg.defaults.thinking_budget,
         api_format,
         default_api_base: cfg.provider.api_base.clone(),
         supports_vision: cfg.provider.supports_vision,
+        thinking_format,
         auth: AuthConfig {
             env_vars,
             keychain_key,
@@ -399,6 +451,122 @@ max_output_tokens = 100
 "#;
         let res = parse_and_validate("broken", src);
         assert!(matches!(res, Err(LoadError::NoDefaultModel { .. })));
+    }
+
+    #[test]
+    fn thinking_without_dialect_on_openai_format_is_rejected() {
+        // A provider with api_format=openai that has models claiming
+        // supports_thinking but no thinking_format declared would
+        // silently drop --effort at runtime. Loader must refuse the
+        // config at startup.
+        let src = r#"
+schema_version = 1
+
+[provider]
+name = "broken_thinking"
+display_name = "Broken Thinking"
+description = "Promises thinking but declares no wire dialect"
+attribution = "test"
+provider_type = "openai_compat"
+api_format = "openai"
+api_base = "https://example.com"
+
+[auth]
+keychain_key = "x"
+display_label = "X"
+
+[defaults]
+max_tokens = 1000
+
+[[models]]
+id = "claims-thinking"
+display_name = "Claims Thinking"
+context_window = 1000
+max_output_tokens = 100
+supports_thinking = true
+default = true
+"#;
+        let res = parse_and_validate("broken_thinking", src);
+        assert!(
+            matches!(res, Err(LoadError::ThinkingFormatMissing { .. })),
+            "expected ThinkingFormatMissing, got: {res:?}"
+        );
+    }
+
+    #[test]
+    fn thinking_without_explicit_dialect_on_anthropic_format_is_accepted() {
+        // Counter-case: api_format=anthropic auto-infers AnthropicNested,
+        // so the same supports_thinking=true model loads cleanly.
+        let src = r#"
+schema_version = 1
+
+[provider]
+name = "fine_thinking"
+display_name = "Fine Thinking"
+description = "Inherits thinking dialect from api_format=anthropic"
+attribution = "test"
+provider_type = "deepseek"
+api_format = "anthropic"
+api_base = "https://example.com"
+
+[auth]
+keychain_key = "x"
+display_label = "X"
+
+[defaults]
+max_tokens = 1000
+
+[[models]]
+id = "claims-thinking"
+display_name = "Claims Thinking"
+context_window = 1000
+max_output_tokens = 100
+supports_thinking = true
+default = true
+"#;
+        let res = parse_and_validate("fine_thinking", src);
+        assert!(
+            res.is_ok(),
+            "anthropic format must infer the dialect; got: {res:?}"
+        );
+    }
+
+    #[test]
+    fn thinking_without_explicit_dialect_on_ollama_format_is_accepted() {
+        // Counter-case: api_format=ollama auto-infers OllamaThink,
+        // so the same supports_thinking=true model loads cleanly.
+        let src = r#"
+schema_version = 1
+
+[provider]
+name = "ollama_thinking"
+display_name = "Ollama Thinking"
+description = "Inherits thinking dialect from api_format=ollama"
+attribution = "test"
+provider_type = "ollama"
+api_format = "ollama"
+api_base = "https://example.com"
+
+[auth]
+keychain_key = "x"
+display_label = "X"
+
+[defaults]
+max_tokens = 1000
+
+[[models]]
+id = "claims-thinking"
+display_name = "Claims Thinking"
+context_window = 1000
+max_output_tokens = 100
+supports_thinking = true
+default = true
+"#;
+        let res = parse_and_validate("ollama_thinking", src);
+        assert!(
+            res.is_ok(),
+            "ollama format must infer the dialect; got: {res:?}"
+        );
     }
 
     #[test]

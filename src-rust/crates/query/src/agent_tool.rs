@@ -183,7 +183,8 @@ impl Tool for AgentTool {
             output_style: ctx.config.effective_output_style(),
             output_style_prompt: ctx.config.resolve_output_style_prompt(),
             working_directory: Some(ctx.working_dir.display().to_string()),
-            thinking_budget: caps.default_thinking_budget,
+            // Budget derives from effort_level — keep this None to avoid two sources of truth.
+            thinking_budget: None,
             temperature: None,
             tool_result_budget: cc_core::constants::DEFAULT_TOOL_RESULT_BUDGET,
             effort_level: Some(cc_core::effort::EffortLevel::High),

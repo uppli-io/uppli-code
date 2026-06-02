@@ -17,6 +17,9 @@ api_base = "https://api.z.ai/api/paas/v4"
 # given model actually supports vision is the operator's concern (key /
 # region / plan), and is enforced by the API itself.
 supports_vision = true
+# z.ai expects the Anthropic-spec `thinking: {type: "enabled",
+# budget_tokens: N}` block on its OpenAI-compat wire (per z.ai GLM-5+ docs).
+thinking_format = "anthropic_nested"
 
 [auth]
 env_vars = ["ZHIPU_API_KEY", "GLM_API_KEY"]
@@ -26,7 +29,6 @@ required = true
 
 [defaults]
 max_tokens = 16384
-thinking_budget = 16000
 request_timeout_sec = 600
 max_retries = 5
 

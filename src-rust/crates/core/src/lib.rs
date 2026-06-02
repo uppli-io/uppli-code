@@ -667,9 +667,6 @@ pub mod config {
         pub model: Option<String>,
         /// Fast model for hybrid mode (optional).
         pub fast_model: Option<String>,
-        /// Whether this provider supports thinking/reasoning.
-        #[serde(default)]
-        pub supports_thinking: Option<bool>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -1026,8 +1023,6 @@ pub mod constants {
     pub const DEFAULT_COMPACT_THRESHOLD: f32 = 0.9;
     pub const MAX_TURNS_DEFAULT: u32 = 100;
     pub const MAX_TOOL_ERRORS: u32 = 3;
-    /// Default thinking budget for deepseek-reasoner (32K tokens).
-    pub const DEFAULT_THINKING_BUDGET: u32 = 32_000;
     /// Maximum cumulative size (chars) of tool results kept in conversation
     /// history before older results are replaced with a truncation notice.
     pub const DEFAULT_TOOL_RESULT_BUDGET: usize = 150_000;

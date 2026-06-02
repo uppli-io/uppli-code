@@ -725,10 +725,10 @@ mod tests {
                 },
             ],
             default_max_tokens: 64_000,
-            default_thinking_budget: Some(32_000),
             api_format: ApiFormat::OpenAI,
             default_api_base: "http://localhost:8080".to_string(),
             supports_vision: false,
+            thinking_format: None,
             auth: AuthConfig::default(),
         }
     }
