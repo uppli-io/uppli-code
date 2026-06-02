@@ -482,7 +482,26 @@ pub mod client {
             if self.capabilities.supports_vision {
                 return;
             }
+            // Performance: re-walking the entire message history on every
+            // send is O(history). We trim two ways:
+            //   (a) Skip assistant messages entirely — assistant outputs
+            //       carry Text + ToolUse + Thinking blocks; Image and
+            //       Document only appear in USER messages (top-level
+            //       paste or nested tool_result). Skipping ~50% of the
+            //       history is a free constant-factor win.
+            //   (b) `degrade_value` already early-returns on non-Array
+            //       content (plain-string user prompts and simple tool
+            //       results are O(1)). Combined with (a), the realistic
+            //       per-send cost on a 100-turn session is sub-ms.
+            //
+            // The walk remains idempotent — already-degraded blocks are
+            // a no-op — so this stays safe across session resume from
+            // disk (where previously-degraded user messages get walked
+            // again with zero observable effect).
             for msg in request.messages.iter_mut() {
+                if msg.role == "assistant" {
+                    continue;
+                }
                 degrade_value(&mut msg.content);
             }
         }
@@ -1417,6 +1436,53 @@ mod tests {
         let before = content.clone();
         client::degrade_value(&mut content);
         assert_eq!(content, before);
+    }
+
+    #[test]
+    fn deepseek_client_assistant_messages_skipped_by_degrade() {
+        // Perf optimisation: degrade_blocks_if_needed skips assistant
+        // messages entirely (they never carry Image/Document). The test
+        // pins the contract by feeding a deliberately-garbage assistant
+        // message — if the walker were to touch it, the garbage would
+        // be rewritten as an error. Instead it must pass through intact.
+        let client = deepseek_test_client();
+        let mut req = CreateMessageRequest::builder("deepseek-v4-pro", 4096).build();
+        // Synthetic assistant message containing an "image" block. This
+        // could never actually happen (assistant API responses never
+        // return image blocks), but it's a robust way to assert the
+        // walker REALLY skips the message instead of recursing.
+        req.messages.push(ApiMessage {
+            role: "assistant".to_string(),
+            content: serde_json::json!([
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/png", "data": "FAKE"}
+                }
+            ]),
+        });
+        // Real user message that SHOULD be walked: contains a real image
+        // that must be rejected with an explicit error.
+        req.messages.push(ApiMessage {
+            role: "user".to_string(),
+            content: serde_json::json!([
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/png", "data": "REAL"}
+                }
+            ]),
+        });
+        client.degrade_blocks_if_needed(&mut req);
+        let body = serde_json::to_value(&req).unwrap();
+        // Assistant message: untouched. The "image" block still present.
+        assert_eq!(body["messages"][0]["role"], "assistant");
+        assert_eq!(body["messages"][0]["content"][0]["type"], "image");
+        // User message: walked. The image was rewritten as text-ERROR.
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["messages"][1]["content"][0]["type"], "text");
+        assert!(body["messages"][1]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("ERROR"));
     }
 
     #[test]
