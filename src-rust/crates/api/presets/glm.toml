@@ -17,6 +17,12 @@ api_base = "https://api.z.ai/api/paas/v4"
 # given model actually supports vision is the operator's concern (key /
 # region / plan), and is enforced by the API itself.
 supports_vision = true
+# z.ai expects the Anthropic-spec `thinking: {type: "enabled",
+# budget_tokens: N}` block on its OpenAI-compat wire (per z.ai docs
+# for GLM-5+). It's NOT the Qwen3 `enable_thinking` dialect — this
+# is the exact case that motivated the per-provider thinking_format
+# field: api_format=openai but thinking dialect=Anthropic.
+thinking_format = "anthropic_nested"
 
 [auth]
 env_vars = ["ZHIPU_API_KEY", "GLM_API_KEY"]
@@ -26,7 +32,6 @@ required = true
 
 [defaults]
 max_tokens = 16384
-thinking_budget = 16000
 request_timeout_sec = 600
 max_retries = 5
 

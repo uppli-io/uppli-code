@@ -266,7 +266,11 @@ impl QueryConfig {
         Self {
             model: default_model,
             max_tokens,
-            thinking_budget: caps.default_thinking_budget,
+            // PR D: thinking_budget is derived ONLY from --effort flag
+            // (EffortLevel::thinking_budget_tokens). No per-provider
+            // override. Default to None — the cc-cli main builds the
+            // EffortLevel-driven value into the request shape.
+            thinking_budget: None,
             fallback_model: caps.fast_model.clone(),
             output_style: cfg.effective_output_style(),
             output_style_prompt: cfg.resolve_output_style_prompt(),

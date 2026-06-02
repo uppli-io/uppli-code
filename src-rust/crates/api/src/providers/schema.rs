@@ -47,6 +47,37 @@ pub struct ProviderToml {
     /// can't accidentally claim vision support.
     #[serde(default)]
     pub supports_vision: bool,
+    /// Wire-level "thinking" / reasoning dialect the provider's upstream
+    /// API expects when `--effort` is set. Each value mirrors the
+    /// provider's official spec — uppli-code is a transparent adapter,
+    /// it never invents its own thinking dialect.
+    ///
+    /// - `anthropic_nested` → `thinking: {type: "enabled", budget_tokens: N}`
+    ///   (Anthropic Messages API spec, z.ai for GLM-5+, future Claude
+    ///   providers)
+    /// - `qwen3` → `enable_thinking: true, thinking_budget: N`
+    ///   (Alibaba DashScope Qwen3 docs)
+    /// - `ollama_think` → `think: true`
+    ///   (Ollama API spec for Qwen3 local models)
+    /// - absent (None) → no thinking field on the wire (provider's
+    ///   model decides on its own per its default behaviour)
+    ///
+    /// Default inference (when field omitted):
+    /// api_format=anthropic → "anthropic_nested";
+    /// api_format=ollama → "ollama_think";
+    /// api_format=openai → None (most OpenAI-compat endpoints
+    /// don't accept thinking fields; Qwen3 and z.ai opt in explicitly).
+    ///
+    /// **If your OpenAI-compat provider DOES accept a thinking dialect
+    /// (z.ai uses Anthropic-nested, Alibaba DashScope uses Qwen3,
+    /// OpenRouter uses its own normalized `reasoning` block — not yet
+    /// supported here), declare `thinking_format` explicitly. Failing
+    /// to declare it on a provider whose models have
+    /// `supports_thinking = true` makes the loader refuse the config
+    /// at startup with `LoadError::ThinkingFormatMissing` — a transparent
+    /// adapter cannot silently drop a user's `--effort`.**
+    #[serde(default)]
+    pub thinking_format: Option<ThinkingFormatToml>,
 }
 
 /// Wire protocol family. Mirrors `provider::ApiFormat` but is a separate
@@ -57,6 +88,20 @@ pub enum ApiFormatToml {
     Anthropic,
     Openai,
     Ollama,
+}
+
+/// Thinking dialect declared by the provider. Each variant mirrors an
+/// official upstream spec — see field comment on `ProviderToml::thinking_format`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingFormatToml {
+    /// Anthropic Messages API: `thinking: {type: "enabled", budget_tokens: N}`.
+    /// Also the format z.ai expects on its OpenAI-compat wire for GLM-5+.
+    AnthropicNested,
+    /// Qwen3 / Alibaba DashScope: `enable_thinking: true, thinking_budget: N`.
+    Qwen3,
+    /// Ollama: `think: true`.
+    OllamaThink,
 }
 
 /// The `[auth]` table.
@@ -76,12 +121,15 @@ fn default_required() -> bool {
 }
 
 /// The `[defaults]` table.
+///
+/// Note: PR D dropped `thinking_budget` — the budget is now derived
+/// exclusively from `EffortLevel::thinking_budget_tokens()` in cc-core,
+/// driven by the user's `--effort` flag. One source of truth, no
+/// per-provider override.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderDefaultsToml {
     pub max_tokens: u32,
-    #[serde(default)]
-    pub thinking_budget: Option<u32>,
     #[serde(default = "default_timeout_sec")]
     pub request_timeout_sec: u64,
     #[serde(default = "default_max_retries")]

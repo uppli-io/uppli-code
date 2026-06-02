@@ -1682,7 +1682,7 @@ async fn run_sdk_headless(
                         caps.api_format,
                         caps.default_model,
                         caps.fast_model.as_deref().unwrap_or("none"),
-                        if caps.default_thinking_budget.is_some() { "supported" } else { "not supported" },
+                        if caps.thinking_format.is_some() { "supported" } else { "not supported" },
                     ))
                 }
                 "status" => {

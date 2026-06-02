@@ -55,7 +55,11 @@ fn build_registry() -> Vec<ProviderPreset> {
                     .fast_model
                     .as_ref()
                     .map(|s| Box::leak(s.clone().into_boxed_str()) as &'static str),
-                supports_thinking: loaded.capabilities.default_thinking_budget.is_some(),
+                // PR D: provider-level "supports thinking" derives from
+                // having a wire dialect declared. Per-model accuracy lives
+                // in known_models[].supports_thinking and is consulted at
+                // the runtime dispatch.
+                supports_thinking: loaded.capabilities.thinking_format.is_some(),
                 auth: loaded.capabilities.auth,
                 provider_type: loaded.provider_type.clone(),
             }
@@ -220,9 +224,10 @@ fn create_openai_compat_provider(
         if let Some(ref fm) = s.fast_model {
             cfg.fast_model = Some(fm.clone());
         }
-        if let Some(thinking) = s.supports_thinking {
-            cfg.supports_thinking = thinking;
-        }
+        // PR D: dropped the `supports_thinking` override from settings.json.
+        // Thinking dispatch is now driven by the provider preset's
+        // `thinking_format`. To change it, edit the TOML preset — the
+        // settings.json override layer kept growing flags for no benefit.
     }
 
     // CLI --api-base (UPPLI_API_BASE env) overrides everything.

@@ -129,14 +129,17 @@ pub struct ProviderCapabilities {
     // ── Token defaults ───────────────────────────────────────
     /// Default max_tokens for API requests.
     pub default_max_tokens: u32,
-    /// Default thinking budget (None = thinking not supported by default).
-    pub default_thinking_budget: Option<u32>,
 
     // ── API config ───────────────────────────────────────────
     /// Wire protocol family.
     pub api_format: ApiFormat,
     /// Default API base URL.
     pub default_api_base: String,
+    /// Wire-level thinking dialect declared by the provider preset.
+    /// See `ProviderToml::thinking_format` for the rationale; this is
+    /// the runtime equivalent. `None` = no thinking on the wire (the
+    /// provider's model decides on its own per its default behaviour).
+    pub thinking_format: Option<ThinkingFormat>,
 
     // ── Multi-modal support ──────────────────────────────────
     /// Whether the provider's default model accepts image/document
@@ -159,6 +162,22 @@ pub enum ApiFormat {
     OpenAI,
     /// Ollama `/api/chat` with NDJSON streaming.
     Ollama,
+}
+
+/// Thinking dialect declared by the provider at load time.
+///
+/// Each variant mirrors the upstream API's official spec — uppli-code is
+/// a transparent adapter and never invents its own thinking format. See
+/// `crates/api/src/providers/schema.rs` for the TOML side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThinkingFormat {
+    /// Anthropic Messages API spec: `thinking: {type: "enabled", budget_tokens: N}`.
+    /// Also the format z.ai expects on its OpenAI-compat wire for GLM-5+.
+    AnthropicNested,
+    /// Qwen3 / Alibaba DashScope: `enable_thinking: true, thinking_budget: N`.
+    Qwen3,
+    /// Ollama: `think: true`.
+    OllamaThink,
 }
 
 impl std::fmt::Display for ApiFormat {
@@ -209,7 +228,11 @@ pub trait LlmProvider: Send + Sync {
             .iter()
             .find(|m| m.id == model)
             .map(|m| m.supports_thinking)
-            .unwrap_or_else(|| caps.default_thinking_budget.is_some())
+            // Unknown model: fall back to whether the provider declares a
+            // wire-level thinking dialect. If yes, it's reasonable to
+            // assume the unknown model the operator picked also thinks
+            // (they're plugging it into a thinking-capable wire).
+            .unwrap_or_else(|| caps.thinking_format.is_some())
     }
 
     /// For hybrid mode: given a "slow" model, return the "fast" model.
@@ -302,10 +325,10 @@ mod tests {
                 fast_model: None,
                 known_models,
                 default_max_tokens,
-                default_thinking_budget: None,
                 api_format: ApiFormat::OpenAI,
                 default_api_base: String::new(),
                 supports_vision: false,
+                thinking_format: None,
                 auth: AuthConfig {
                     env_vars: &[],
                     keychain_key: "test",
@@ -394,9 +417,9 @@ mod tests {
     }
 
     #[test]
-    fn model_supports_thinking_true_for_unknown_with_budget() {
+    fn model_supports_thinking_true_for_unknown_when_provider_has_thinking_dialect() {
         let mut p = make_provider(vec![], 4096);
-        p.caps.default_thinking_budget = Some(16_000);
+        p.caps.thinking_format = Some(ThinkingFormat::AnthropicNested);
         assert!(p.model_supports_thinking("unknown"));
     }
 }

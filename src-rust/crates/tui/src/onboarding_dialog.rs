@@ -328,8 +328,10 @@ impl OnboardingDialogState {
                     .or_default();
                 ps.model = self.chosen_model.clone();
                 ps.fast_model = self.chosen_fast.clone();
-                let provider = &self.providers[self.provider_idx];
-                ps.supports_thinking = Some(provider.supports_thinking);
+                // PR D: stopped persisting supports_thinking — it was a
+                // snapshot of preset state that went stale on every
+                // upstream update. Thinking dispatch now derives from
+                // the preset's thinking_format at runtime.
             }
             settings.has_completed_onboarding = true;
             let _ = settings.save_sync();

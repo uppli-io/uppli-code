@@ -31,7 +31,7 @@ Think Claude Code, but you pick your model and your provider. No lock-in, no sub
 | Parameter | uppli-code | Claude Code Opus | Advantage |
 |-----------|-----------|-----------------|-----------|
 | `max_turns` | **250** | 200 | +25% more attempts |
-| `thinking_budget` | **131,072** | 128,000 | > Claude |
+| `thinking_budget` | **64,000 (--effort max)** | 128,000 | Tied to `--effort` (Low 8k → Max 64k) |
 | `max_tokens` | **32,768** | 16,384 | **2x output** |
 | `context_window` | **1,000,000** | 200,000 | **5x context** |
 | `tool_result_budget` | **0 (no truncation)** | ~100K chars | Full history |

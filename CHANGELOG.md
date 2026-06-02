@@ -4,6 +4,26 @@ All notable changes to uppli-code are documented in this file.
 
 ## Unreleased
 
+### Architecture: thinking dialect declared per-provider, budget unified on EffortLevel (PR D)
+
+User directive: **"on peut virer tt ces histoire de budget ca me soule, ca introduit des erreurs et des paramètres en plus"** + **"je veux qu'on respecte tout ce que offre l'anthropic api ou openAI api — c'est la garantie que le provider sera compatible avec le LLM."** PR D collapses thinking infrastructure from two duplicated knobs into one wire-dialect declaration per provider.
+
+- **Removed `default_thinking_budget`** from `ProviderCapabilities`, the `[defaults]` TOML table, and all 5 provider presets that carried it. The budget value is now derived **exclusively** from `cc_core::effort::EffortLevel::thinking_budget_tokens()` (Low=8k / Med=16k / High=32k / Max=64k), driven by `--effort`. Single source of truth.
+- **Removed `OpenAiProviderConfig.supports_thinking`** — it was a derived `default_thinking_budget.is_some()` flag that turned into a third copy of the same fact.
+- **Removed hardcoded `then_some(64_000)`** in the MCP super-agent (`cli/src/mcp_server.rs`); now reads `EffortLevel::Max.thinking_budget_tokens()`.
+- **`ProviderSettings.supports_thinking` in `settings.json` is now ignored at load time** (kept for back-compat deserialization, never read). The wire dialect is declared in the preset TOML, not in user settings.
+- **New `ProviderToml.thinking_format`** field declares which dialect the upstream API expects on the wire — uppli-code mirrors the upstream spec verbatim, never invents:
+  - `anthropic_nested` → `thinking: {type: "enabled", budget_tokens: N}` (Anthropic Messages API; also what z.ai expects on its OpenAI-compat wire for GLM-5+).
+  - `qwen3` → `enable_thinking: true, thinking_budget: N` (Alibaba DashScope Qwen3 docs).
+  - `ollama_think` → `think: true` (Ollama spec).
+  - Absent → no thinking field on wire. Default inference: `api_format=anthropic → anthropic_nested`; `api_format=ollama → ollama_think`; `api_format=openai → None`.
+- **`presets/alibaba.toml`** declares `thinking_format = "qwen3"`; **`presets/glm.toml`** declares `thinking_format = "anthropic_nested"` (the hybrid case that motivated the per-provider field: OpenAI wire, Anthropic-style nested thinking block).
+- **Loader guard**: if any model declares `supports_thinking = true` and no dialect is declared or inferable, the loader **refuses the config at startup** with `LoadError::ThinkingFormatMissing`. A transparent adapter cannot silently drop a user's `--effort`. This caught and fixed an OpenRouter Qwen3 silent-drop in this PR.
+- **OpenRouter Qwen3 thinking is OFF** until the normalized `reasoning` dialect is implemented and live-tested (a 4th wire shape). Re-enable once the OpenRouter dialect is wired into `ThinkingFormat` and tested live.
+- **Onboarding no longer persists `supports_thinking`** to settings.json — it was a stale snapshot of preset state.
+- **5 new dispatch tests** in `openai_provider.rs` pin each arm (Qwen3, AnthropicNested with user_wants_thinking=true and =false, OllamaThink, None).
+- **MCP super-agent thinking_budget cap**: was 131,072 (README claim) / 64_000 (hardcoded), now **64,000** via `EffortLevel::Max.thinking_budget_tokens()`. README updated to match.
+
 ### Architecture: OpenAI provider iso the AnthropicClient rejection (PR C, symmetry)
 
 - **OpenAI-compat translation layer now mirrors AnthropicClient's loud rejection.** Before this commit, the OpenAI path silently dropped images when the model was non-vision: tool_result blocks emitted only the surviving text, top-level user messages forwarded image_url parts which would 400 at the endpoint. After: an explicit `[ERROR: N visual block(s) (image/document) cannot be read — Restart uppli-code with a vision-capable provider...]` is appended to the textual content. The model receives the same loud refusal whatever wire format it speaks.
