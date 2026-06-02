@@ -421,7 +421,11 @@ impl OpenAiProvider {
             // (tool_use_id, text_parts, image_parts) — split so we can emit
             // either a flat string (text-only providers) or an OpenAI vision
             // multi-part Array (vision-capable providers like GLM-4.6v).
-            let mut tool_results: Vec<(String, Vec<String>, Vec<Value>)> = Vec::new();
+            // (tool_use_id, text_parts, image_parts, document_count)
+            let mut tool_results: Vec<(String, Vec<String>, Vec<Value>, usize)> = Vec::new();
+            // Top-level document blocks (outside tool_result) — counted
+            // separately so the user-message branch can surface an error.
+            let mut top_level_document_count: usize = 0;
 
             for block in blocks {
                 let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -444,18 +448,14 @@ impl OpenAiProvider {
                         }
                     }
                     "document" => {
-                        // PDF / Document blocks. Verified live on z.ai
-                        // (glm-4.5v): forwarding a `data:application/pdf;
-                        // base64,...` via `image_url` returns
-                        // `API error 400: 图片输入格式/解析错误`
-                        // (image input format/parsing error). The OpenAI-compat
-                        // vision channel only accepts true images. We rely
-                        // entirely on the textual extract that `pdf::read_pdf`
-                        // already places in `content.text` of the tool_result
-                        // — providers using this wire never need the raw PDF.
-                        //
-                        // The Document block is consumed and discarded here;
-                        // a sibling `text` block carries the extracted content.
+                        // PDF blocks at the top level of a user message.
+                        // z.ai live: forwarding via image_url returns
+                        // `API error 400: 图片输入格式/解析错误`. Track the
+                        // count; the user-message branch downstream
+                        // surfaces an explicit error per the iso UX
+                        // contract (same as AnthropicClient flipping
+                        // is_error=true on a non-vision provider).
+                        top_level_document_count += 1;
                     }
                     "thinking" => {
                         // Thinking blocks from Anthropic format have no equivalent in
@@ -502,13 +502,15 @@ impl OpenAiProvider {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        // Walk the inner content and split it into two
-                        // channels: a textual fallback (always populated)
-                        // and a list of vision-format parts (image_url
-                        // entries — only sent when the provider advertises
-                        // vision support).
+                        // Walk the inner content and split it into three
+                        // channels: textual fallback (always populated),
+                        // image parts (sent only when supports_vision), and
+                        // document count (always surfaced as an error
+                        // because the OpenAI image_url channel rejects
+                        // application/pdf with a 400 regardless of caps).
                         let mut inner_text_parts: Vec<String> = Vec::new();
                         let mut inner_image_parts: Vec<Value> = Vec::new();
+                        let mut inner_document_count: usize = 0;
 
                         if let Some(c) = block.get("content") {
                             if let Some(s) = c.as_str() {
@@ -536,11 +538,13 @@ impl OpenAiProvider {
                                             }
                                         }
                                         "document" => {
-                                            // PDF blocks not forwarded on the
-                                            // OpenAI-compat wire (z.ai 400 on
-                                            // application/pdf in image_url).
-                                            // Textual extract is already in
-                                            // a sibling text part.
+                                            // PDF blocks rejected by the
+                                            // OpenAI vision channel. Track
+                                            // the count so we can surface
+                                            // an explicit error downstream
+                                            // — iso the AnthropicClient
+                                            // rejection contract.
+                                            inner_document_count += 1;
                                         }
                                         _ => {
                                             // Unknown nested block — fall back
@@ -557,7 +561,12 @@ impl OpenAiProvider {
                                 inner_text_parts.push(c.to_string());
                             }
                         }
-                        tool_results.push((tool_use_id, inner_text_parts, inner_image_parts));
+                        tool_results.push((
+                            tool_use_id,
+                            inner_text_parts,
+                            inner_image_parts,
+                            inner_document_count,
+                        ));
                     }
                     _ => {}
                 }
@@ -592,35 +601,44 @@ impl OpenAiProvider {
                 // Ollama doesn't use tool_call_id (no IDs in its tool call responses).
                 let include_tool_call_id = self.config.api_format != ApiFormat::Ollama;
                 let provider_supports_vision = self.capabilities.supports_vision;
-                for (tool_use_id, text_parts, image_parts) in tool_results {
+                for (tool_use_id, text_parts, image_parts, document_count) in tool_results {
                     let text = text_parts.join("\n");
+                    // Compute which failure modes apply:
+                    //   * images present + !vision   → image error
+                    //   * documents present (always) → document error
+                    let rejected_image_count = if !provider_supports_vision {
+                        image_parts.len()
+                    } else {
+                        0
+                    };
+                    let error_text =
+                        unsupported_blocks_error_text(rejected_image_count, document_count);
+                    let mut composed_text = text;
+                    if !error_text.is_empty() {
+                        if !composed_text.is_empty() && !composed_text.ends_with('\n') {
+                            composed_text.push('\n');
+                        }
+                        composed_text.push_str(&error_text);
+                    }
                     let content_value = if !image_parts.is_empty() && provider_supports_vision {
                         // Vision-capable provider — emit an OpenAI multi-part
-                        // array with the textual caption first, then each
-                        // image / document part. GLM-4.6v and Qwen-VL accept
-                        // this shape on tool role messages.
+                        // array with the textual content (+ any document
+                        // rejection text appended) first, then each image
+                        // part. Documents still produce an error even on
+                        // vision providers because the wire format can't
+                        // transmit them.
                         let mut parts: Vec<Value> = Vec::new();
-                        if !text.is_empty() {
-                            parts.push(serde_json::json!({ "type": "text", "text": text }));
+                        if !composed_text.is_empty() {
+                            parts
+                                .push(serde_json::json!({ "type": "text", "text": composed_text }));
                         }
                         parts.extend(image_parts);
                         Value::Array(parts)
-                    } else if !image_parts.is_empty() {
-                        // Non-vision provider but the tool produced image
-                        // parts. Iso the AnthropicClient rejection: append
-                        // an explicit error and tell the user to restart
-                        // uppli-code with a vision-capable provider, instead
-                        // of silently dropping the images.
-                        let mut composed = text;
-                        if !composed.is_empty() && !composed.ends_with('\n') {
-                            composed.push('\n');
-                        }
-                        composed.push_str(&unsupported_blocks_error_text(image_parts.len()));
-                        Value::String(composed)
                     } else {
-                        // Text-only payload — flat string is OK on every
-                        // OpenAI-compat endpoint.
-                        Value::String(text)
+                        // No image parts forwarded — flat string is the
+                        // legal shape. composed_text already carries any
+                        // error text for rejected images and/or documents.
+                        Value::String(composed_text)
                     };
                     result.push(OpenAiMessage {
                         role: "tool".to_string(),
@@ -635,16 +653,28 @@ impl OpenAiProvider {
                     });
                 }
             } else {
-                // Regular user message with text and/or image blocks.
-                // OpenAI vision format requires content to be a list of parts
-                // (text + image_url) when images are present.
+                // Regular user message with text and/or image / document blocks.
                 let text = text_parts.join("");
                 let has_images = !image_parts.is_empty();
                 let provider_supports_vision = self.capabilities.supports_vision;
+                let rejected_image_count = if !provider_supports_vision {
+                    image_parts.len()
+                } else {
+                    0
+                };
+                let error_text =
+                    unsupported_blocks_error_text(rejected_image_count, top_level_document_count);
+                let mut composed_text = text;
+                if !error_text.is_empty() {
+                    if !composed_text.is_empty() && !composed_text.ends_with('\n') {
+                        composed_text.push('\n');
+                    }
+                    composed_text.push_str(&error_text);
+                }
                 if has_images && provider_supports_vision {
                     let mut parts: Vec<Value> = Vec::new();
-                    if !text.is_empty() {
-                        parts.push(serde_json::json!({ "type": "text", "text": text }));
+                    if !composed_text.is_empty() {
+                        parts.push(serde_json::json!({ "type": "text", "text": composed_text }));
                     }
                     parts.extend(image_parts);
                     result.push(OpenAiMessage {
@@ -654,26 +684,10 @@ impl OpenAiProvider {
                         tool_call_id: None,
                         name: None,
                     });
-                } else if has_images {
-                    // Non-vision provider receiving image blocks at the
-                    // top level. Reject loudly with an explicit error,
-                    // iso the AnthropicClient rejection.
-                    let mut composed = text;
-                    if !composed.is_empty() && !composed.ends_with('\n') {
-                        composed.push('\n');
-                    }
-                    composed.push_str(&unsupported_blocks_error_text(image_parts.len()));
+                } else if !composed_text.is_empty() {
                     result.push(OpenAiMessage {
                         role: role.clone(),
-                        content: Some(Value::String(composed)),
-                        tool_calls: None,
-                        tool_call_id: None,
-                        name: None,
-                    });
-                } else if !text.is_empty() {
-                    result.push(OpenAiMessage {
-                        role: role.clone(),
-                        content: Some(Value::String(text)),
+                        content: Some(Value::String(composed_text)),
                         tool_calls: None,
                         tool_call_id: None,
                         name: None,
@@ -1599,21 +1613,54 @@ fn base_already_versioned(api_base: &str) -> bool {
     false
 }
 
-/// Build the same explicit-error text that AnthropicClient injects when
-/// a provider's model can't read visual blocks. Used by the OpenAI-compat
-/// translation layer to mirror the rejection behaviour across both
-/// wire families — iso UX: "the file can't be read; restart uppli-code
-/// with a vision-capable provider", never silent drop.
-fn unsupported_blocks_error_text(n_blocks: usize) -> String {
-    let plural = if n_blocks > 1 { "blocks" } else { "block" };
-    format!(
-        "[ERROR: {} visual {} (image/document) cannot be read — the current \
-         provider's model does not support vision. Restart uppli-code with a \
-         vision-capable provider (e.g. `uppli-code --provider glm`) to process \
-         this file. The current session cannot be salvaged; ask the user to \
-         relaunch.]",
-        n_blocks, plural
-    )
+/// Compose explicit-error text for visual blocks the OpenAI-compat wire
+/// cannot transmit to the model. Used by the translation layer to mirror
+/// the AnthropicClient rejection behaviour across both wire families —
+/// iso UX: every non-transmissible block becomes a loud `[ERROR: ...]`,
+/// never a silent drop.
+///
+/// Two failure modes are handled, each with its own message because the
+/// remediation differs:
+///   * `image_count` > 0 AND model does not support vision → the
+///     PROVIDER model can't read images; user must restart with a
+///     vision-capable provider.
+///   * `document_count` > 0 (regardless of supports_vision) → the wire
+///     format itself (OpenAI vision `image_url`) does NOT accept PDFs;
+///     z.ai live test returns `API error 400: 图片输入格式/解析错误`.
+///     The PDF's text extract is shipped in the surviving text content,
+///     so the model still has signal — but it must know the raw bytes
+///     never reached it.
+fn unsupported_blocks_error_text(image_count: usize, document_count: usize) -> String {
+    let mut messages: Vec<String> = Vec::new();
+    if image_count > 0 {
+        let plural = if image_count > 1 { "blocks" } else { "block" };
+        messages.push(format!(
+            "[ERROR: {} image {} cannot be read — the current provider's \
+             model does not support vision. Restart uppli-code with a \
+             vision-capable provider (e.g. `uppli-code --provider glm`) to \
+             process image files. The current session cannot be salvaged; \
+             ask the user to relaunch.]",
+            image_count, plural
+        ));
+    }
+    if document_count > 0 {
+        let plural = if document_count > 1 {
+            "blocks"
+        } else {
+            "block"
+        };
+        messages.push(format!(
+            "[ERROR: {} document {} (PDF) cannot be transmitted to \
+             OpenAI-compatible providers; only true images are accepted on \
+             the `image_url` channel. The text extract from the PDF is in \
+             the accompanying content — use that. To forward the raw PDF \
+             bytes for vision analysis of layouts/figures, use an \
+             Anthropic-format provider whose model accepts document blocks \
+             natively.]",
+            document_count, plural
+        ));
+    }
+    messages.join("\n")
 }
 
 fn uuid_v4() -> String {
@@ -1747,13 +1794,15 @@ mod tests {
 
     #[test]
     fn test_translate_user_message_with_pdf_document_block() {
-        // Document blocks are intentionally DROPPED on the OpenAI-compat
-        // wire. Live test on z.ai (glm-4.5v) returned API error 400
-        // "图片输入格式/解析错误" when we sent a PDF via image_url. The
-        // OpenAI vision channel only accepts true images; PDF text is
-        // expected to come through as a sibling text block (filled by
-        // pdf::read_pdf on the tool side). Sending the raw PDF would
-        // 400 even if the wire-shape is "valid".
+        // Document blocks must NOT reach z.ai via image_url (400 on
+        // application/pdf). The previous fix silently dropped them —
+        // that violated the "iso UX, error if not supported" contract
+        // because the Anthropic wire flips is_error=true in the same
+        // case. Current behaviour (iso): the translation layer emits
+        // an EXPLICIT [ERROR: ... document ... cannot be transmitted
+        // ...] line in the message content so the model knows the
+        // PDF bytes never reached it. The PDF's text extract (placed
+        // by pdf::read_pdf in a sibling text block) still goes through.
         let provider = OpenAiProvider::new(OpenAiProviderConfig::from_loaded(
             crate::providers::loader::registry().find("glm").unwrap(),
             "test-key-long-enough".to_string(),
@@ -1838,6 +1887,65 @@ mod tests {
             surviving_text.contains("Read this invoice"),
             "text block must survive: {}",
             surviving_text
+        );
+        // NEW contract: document rejection is explicit, not silent.
+        assert!(
+            surviving_text.contains("ERROR") && surviving_text.contains("document"),
+            "document rejection must be surfaced as explicit ERROR text (iso \
+             AnthropicClient is_error=true), got: {}",
+            surviving_text
+        );
+    }
+
+    #[test]
+    fn tool_result_document_on_vision_provider_still_errors() {
+        // Even on a vision-capable OpenAI-compat provider (glm-4.5v),
+        // PDF documents in a tool_result must surface an error: the
+        // OpenAI image_url channel rejects application/pdf with a 400
+        // regardless of model capability. The image_url path is reserved
+        // for true images. Test asserts the rejection is explicit, not
+        // silent — closes the iso-UX gap with AnthropicClient.
+        let provider = glm_provider_for_test();
+        let msg = crate::types::ApiMessage {
+            role: "user".to_string(),
+            content: serde_json::json!([
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu_pdf",
+                    "content": [
+                        { "type": "text", "text": "[PDF: report.pdf, 12 pages]\nExtracted text: Q1 results..." },
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": "JVBERi0="
+                            }
+                        }
+                    ]
+                }
+            ]),
+        };
+        let translated = provider.translate_message(&msg);
+        assert_eq!(translated.len(), 1);
+        assert_eq!(translated[0].role, "tool");
+        let content = translated[0].content.as_ref().expect("content set");
+        let text_payload = content.as_str().expect(
+            "document-only tool_result must emit a flat string \
+                     (no image_url parts forwarded)",
+        );
+        // Text extract must survive.
+        assert!(text_payload.contains("Q1 results"));
+        // Explicit error must be present.
+        assert!(
+            text_payload.contains("ERROR") && text_payload.contains("document"),
+            "document rejection must be a loud [ERROR: ...] block, got: {}",
+            text_payload
+        );
+        assert!(
+            text_payload.contains("Anthropic-format provider"),
+            "remediation must mention the Anthropic-format alternative for vision-PDF, got: {}",
+            text_payload
         );
     }
 
