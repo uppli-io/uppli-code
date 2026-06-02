@@ -9,13 +9,17 @@ attribution = "powered by DeepSeek"
 provider_type = "deepseek"
 api_format = "anthropic"
 api_base = "https://api.deepseek.com/anthropic"
-# DeepSeek's V4 family does not (yet) accept image / document content in its
-# Anthropic-compatible endpoint. Conservative default — flip to true once
-# DeepSeek ships vision.
+# ⚠ ADVISORY ONLY — runtime caps for DeepSeek live in crates/api/src/lib.rs
+# inside AnthropicClient::capabilities() as a `static OnceLock`. The
+# TOML-loaded ProviderCapabilities is consumed by OpenAi-compat providers
+# only (factory branch in provider_factory.rs::create_provider). DeepSeek
+# takes the `ProviderType::Deepseek` branch which builds an AnthropicClient
+# whose caps are hardcoded. A workspace test (crates/api/tests/
+# deepseek_caps_consistency.rs) asserts these flags match the static caps
+# so flipping one without the other fails CI loudly.
+# TODO(pr-c): unify by routing AnthropicClient through the loader registry
+# so editing the TOML alone is enough.
 supports_vision = false
-# Anthropic wire format accepts tool_result with structured blocks. Keep
-# enabled even without vision so text-only multi-part tool results (e.g.
-# attached tables) ride the same channel.
 supports_tool_result_blocks = true
 
 [auth]

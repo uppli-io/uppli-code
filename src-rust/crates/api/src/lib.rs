@@ -1316,6 +1316,38 @@ mod tests {
     }
 
     #[test]
+    fn test_deepseek_toml_caps_match_static_anthropic_client_caps() {
+        // The TOML at crates/api/presets/deepseek.toml declares
+        // supports_vision / supports_tool_result_blocks, BUT those
+        // values are not actually read at runtime — DeepSeek goes
+        // through AnthropicClient whose ProviderCapabilities is a
+        // hardcoded OnceLock. This is a documented (annotated in the
+        // TOML) trap: edit one side, the other silently lies.
+        //
+        // The test asserts both stay in sync so a future commit
+        // touching the TOML alone fails CI loudly. Remove (or invert)
+        // when AnthropicClient is wired through the loader registry —
+        // see TODO(pr-c) in deepseek.toml.
+        let loaded = crate::providers::loader::registry()
+            .find("deepseek")
+            .expect("deepseek must be in the registry");
+        let static_caps = deepseek_caps_for_test();
+        assert_eq!(
+            loaded.capabilities.supports_vision, static_caps.supports_vision,
+            "deepseek.toml supports_vision ({}) drifted from AnthropicClient static caps ({}). \
+             Update both — see TODO(pr-c) in deepseek.toml.",
+            loaded.capabilities.supports_vision, static_caps.supports_vision
+        );
+        assert_eq!(
+            loaded.capabilities.supports_tool_result_blocks,
+            static_caps.supports_tool_result_blocks,
+            "deepseek.toml supports_tool_result_blocks ({}) drifted from AnthropicClient static caps ({})",
+            loaded.capabilities.supports_tool_result_blocks,
+            static_caps.supports_tool_result_blocks,
+        );
+    }
+
+    #[test]
     fn test_deepseek_fast_model_differs_from_default() {
         let caps = deepseek_caps_for_test();
         assert_eq!(caps.default_model, "deepseek-v4-pro");
