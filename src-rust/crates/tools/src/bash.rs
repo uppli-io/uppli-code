@@ -308,7 +308,7 @@ impl Tool for BashTool {
 
         let timeout_ms = params
             .timeout
-            .min(ctx.config.effective_bash_timeout_max_ms());
+            .min(cc_core::constants::DEFAULT_BASH_TIMEOUT_MAX_MS);
 
         // Retrieve the persistent shell state for this session.
         let shell_state_arc = session_shell_state(&ctx.session_id);
@@ -441,8 +441,8 @@ impl Tool for BashTool {
                     output = "(no output)".to_string();
                 }
 
-                // Truncate very long output — knob: --bash-output-max-chars
-                let max_output_len = ctx.config.effective_bash_output_max_chars();
+                // Truncate very long output
+                let max_output_len = cc_core::constants::DEFAULT_BASH_OUTPUT_MAX_CHARS;
                 if output.len() > max_output_len {
                     let half = max_output_len / 2;
                     let start = &output[..half];
@@ -553,8 +553,8 @@ impl BashTool {
                 if output.is_empty() {
                     output = "(no output)".to_string();
                 }
-                // Shared knob with the Unix path so they cannot drift.
-                let max_output_len = ctx.config.effective_bash_output_max_chars();
+                // Shared constant with the Unix path so they cannot drift.
+                let max_output_len = cc_core::constants::DEFAULT_BASH_OUTPUT_MAX_CHARS;
                 if output.len() > max_output_len {
                     let half = max_output_len / 2;
                     let start = &output[..half];

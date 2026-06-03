@@ -586,11 +586,6 @@ pub mod config {
         pub output_style: Option<String>,
         pub auto_compact: bool,
         pub compact_threshold: f32,
-        /// Red "critical" threshold (fraction of context window used) for the
-        /// auto-compact critical notice. `None` falls back to
-        /// `DEFAULT_COMPACT_CRITICAL_PCT` (0.98).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub compact_critical_pct: Option<f64>,
         /// How many recent messages to keep verbatim after auto-compact.
         /// `None` falls back to `DEFAULT_COMPACT_KEEP_RECENT_MESSAGES` (10).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -605,19 +600,10 @@ pub mod config {
         /// `DEFAULT_COMPACT_REINJECT_MAX_FILES` (5).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub compact_reinject_max_files: Option<usize>,
-        /// Yellow "warning" threshold (fraction of context window used) for the
-        /// auto-compact warning notice. `None` falls back to
-        /// `DEFAULT_COMPACT_WARNING_PCT` (0.90).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub compact_warning_pct: Option<f64>,
         /// Fraction of the context window at which reactive-compact fires.
         /// `None` falls back to `DEFAULT_REACTIVE_COMPACT_THRESHOLD` (0.95).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub reactive_compact_threshold: Option<f64>,
-        /// Emergency context-collapse threshold (fraction of context window).
-        /// `None` falls back to `DEFAULT_CONTEXT_COLLAPSE_THRESHOLD` (0.99).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub context_collapse_threshold: Option<f64>,
         /// Max retries before surfacing a partial response on `max_tokens`.
         /// `None` falls back to `DEFAULT_MAX_TOKENS_RECOVERY_LIMIT` (3).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -646,7 +632,6 @@ pub mod config {
         pub allowed_tools: Vec<String>,
         pub disallowed_tools: Vec<String>,
         pub env: HashMap<String, String>,
-        pub enable_all_mcp_servers: bool,
         pub custom_system_prompt: Option<String>,
         pub append_system_prompt: Option<String>,
         pub disable_claude_mds: bool,
@@ -676,12 +661,6 @@ pub mod config {
         /// Max output tokens used when summarising for auto-compact.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub compact_summary_max_tokens: Option<u32>,
-        /// Context window assumed by /cost / /ctx-viz commands.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub cost_command_context_window: Option<u64>,
-        /// System prompt token estimate used by /cost / /ctx-viz when no custom prompt is set.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub cost_command_system_prompt_tokens: Option<u32>,
         /// Max bytes of diff output shown by /diff before truncation.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub diff_command_max_bytes: Option<usize>,
@@ -695,43 +674,12 @@ pub mod config {
         /// files. `None` falls back to `DEFAULT_FILE_PREVIEW_MAX_CHARS` (2000).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub file_preview_max_chars: Option<usize>,
-        /// HTTP timeout (seconds) for `/upgrade` and `/release-notes` GitHub
-        /// release-check calls. `None` falls back to
-        /// `DEFAULT_GITHUB_RELEASE_CHECK_TIMEOUT_SECS` (8).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub github_release_check_timeout_secs: Option<u64>,
-        /// Maximum results returned by the Glob tool before truncation. `None`
-        /// falls back to `DEFAULT_GLOB_MAX_RESULTS` (250).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub glob_max_results: Option<usize>,
-        /// HTTP timeout (seconds) for `/share` session upload. `None` falls
-        /// back to `DEFAULT_SHARE_UPLOAD_TIMEOUT_SECS` (15).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub share_upload_timeout_secs: Option<u64>,
-        /// HTTP timeout (seconds) for the WebFetch tool. `None` falls back to
-        /// `DEFAULT_WEB_FETCH_TIMEOUT_SECS` (30).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub web_fetch_timeout_secs: Option<u64>,
-
         // --- Batch 1 configurable parameters (sorted alphabetically) ---
-        /// Default line count when the FileRead caller omits `limit`.
-        /// `None` falls back to `DEFAULT_LINE_LIMIT` (2000).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub default_read_line_limit: Option<usize>,
         /// Max consecutive auto-compact failures before the circuit breaker
         /// disables auto-compact for the rest of the session.
         /// `None` falls back to `MAX_COMPACT_RETRIES` (3).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub max_compact_retries: Option<u32>,
-        /// Hard cap on the raw image bytes the FileRead handler will inline
-        /// as base64. Beyond this → caption-only fallback.
-        /// `None` falls back to `MAX_IMAGE_BYTES` (5 MiB).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub max_image_bytes: Option<u64>,
-        /// Per-line truncation for text reads — defeats single-line megabyte
-        /// minified files. `None` falls back to `MAX_LINE_CHARS` (16 384).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub max_line_chars: Option<usize>,
         /// Cap on the bytes a text-path FileRead will materialise as String.
         /// `None` falls back to `MAX_TEXT_BYTES` (10 MiB).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -749,10 +697,6 @@ pub mod config {
         /// (2048).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub image_resize_long_edge: Option<u32>,
-        /// Cap on archive entries listed in a single FileRead invocation.
-        /// `None` falls back to `DEFAULT_MAX_ARCHIVE_MEMBERS` (1024).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub max_archive_members: Option<usize>,
         /// Cap on rows emitted from the OOXML / XLSX text fallback.
         /// `None` falls back to `DEFAULT_MAX_OOXML_ROWS` (500).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -800,31 +744,15 @@ pub mod config {
         pub session_tail_scan_bytes: Option<u64>,
 
         // --- Batch 3 configurable parameters (sorted alphabetically) ---
-        /// Hard cap (chars) on the foreground Bash tool's combined
-        /// stdout+stderr output before head+tail truncation. `None` falls
-        /// back to `DEFAULT_BASH_OUTPUT_MAX_CHARS` (500 000). Shared by the
-        /// Unix and Windows code paths so they cannot drift apart.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub bash_output_max_chars: Option<usize>,
         /// Defensive cap on the number of `ContentBlock`s a single FileRead
         /// tool result can carry (images / documents). `None` falls back to
         /// `DEFAULT_MAX_BLOCKS_PER_RESULT` (20).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub max_blocks_per_result: Option<usize>,
-        /// Cap on the bytes of inline text extracted from a single OOXML
-        /// document (.docx / .xlsx / .pptx). `None` falls back to
-        /// `DEFAULT_MAX_OOXML_TEXT_BYTES` (1.5 MiB).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub max_ooxml_text_bytes: Option<usize>,
         /// Cap on the number of slides extracted from a PPTX file. `None`
         /// falls back to `DEFAULT_MAX_PPTX_SLIDES` (20).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub max_pptx_slides: Option<usize>,
-        /// Cap on the chars of the WebFetch tool's HTML-to-text body before
-        /// tail truncation. `None` falls back to
-        /// `DEFAULT_WEB_FETCH_MAX_CHARS` (100 000).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub web_fetch_max_chars: Option<usize>,
 
         // --- Batch 5 configurable parameters (sorted alphabetically) ---
         /// Fraction of context window at which proactive auto-compact fires.
@@ -855,10 +783,6 @@ pub mod config {
         /// `None` falls back to `PROVIDER_INITIAL_BACKOFF_MS` (2000).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub provider_initial_backoff_ms: Option<u64>,
-        /// Max retry backoff ceiling (seconds) for OpenAI-format providers.
-        /// `None` falls back to `PROVIDER_MAX_BACKOFF_SECS` (30).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub provider_max_backoff_secs: Option<u64>,
         /// Capacity of the streaming MPSC channel between provider and consumer.
         /// `None` falls back to `PROVIDER_STREAM_CHANNEL_CAPACITY` (256).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -889,22 +813,8 @@ pub mod config {
         /// `None` falls back to `DEFAULT_AWAY_SUMMARY_RECENT_MESSAGES` (30).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub away_summary_recent_messages: Option<usize>,
-        /// Maximum HTTP retries the provider layer attempts before bubbling
-        /// up. `None` falls back to `DEFAULT_PROVIDER_MAX_RETRIES` (5).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub provider_max_retries: Option<u32>,
-        /// Per-request HTTP timeout (seconds) the provider layer applies to
-        /// outbound calls. `None` falls back to
-        /// `DEFAULT_PROVIDER_REQUEST_TIMEOUT_SEC` (600).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub provider_request_timeout_sec: Option<u64>,
 
         // --- Batch 12 configurable parameters (sorted alphabetically) ---
-        /// Hard cap (ms) on the timeout the Bash tool will honour from a
-        /// caller-supplied `timeout`. `None` falls back to
-        /// `DEFAULT_BASH_TIMEOUT_MAX_MS` (600 000).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub bash_timeout_max_ms: Option<u64>,
         /// Wall-clock budget (seconds) for the CodeAudit Python subprocess.
         /// `None` falls back to `DEFAULT_CODE_AUDIT_TIMEOUT_SECS` (10).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -919,11 +829,6 @@ pub mod config {
         /// `DEFAULT_REPL_LINE_READ_TIMEOUT_SECS` (30).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub repl_line_read_timeout_secs: Option<u64>,
-        /// Hard cap (ms) on the user-requested sleep duration honoured by
-        /// the Sleep tool. `None` falls back to `DEFAULT_SLEEP_MAX_MS`
-        /// (300 000).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub sleep_max_ms: Option<u64>,
         /// Max HTTP redirects WebFetch will follow before giving up.
         /// `None` falls back to `DEFAULT_WEB_FETCH_MAX_REDIRECTS` (10).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -935,21 +840,6 @@ pub mod config {
         /// `DEFAULT_LSP_REQUEST_TIMEOUT_SECS` (30).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub lsp_request_timeout_secs: Option<u64>,
-        /// Wall-clock budget (seconds) for the OAuth browser-callback HTTP
-        /// listener to accept the redirect. `None` falls back to
-        /// `DEFAULT_OAUTH_CALLBACK_TIMEOUT_SECS` (120).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub oauth_callback_timeout_secs: Option<u64>,
-        /// Wall-clock budget (seconds) for the whole OAuth login flow
-        /// (callback OR manual paste). `None` falls back to
-        /// `DEFAULT_OAUTH_FULL_FLOW_TIMEOUT_SECS` (120).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub oauth_full_flow_timeout_secs: Option<u64>,
-        /// HTTP timeout (seconds) for the OAuth token-exchange POST call.
-        /// `None` falls back to `DEFAULT_OAUTH_TOKEN_EXCHANGE_TIMEOUT_SECS`
-        /// (30).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub oauth_token_exchange_timeout_secs: Option<u64>,
         /// Wall-clock budget (seconds) for the parent to wait for the IPC
         /// peer-child to bind its Unix socket. `None` falls back to
         /// `DEFAULT_PEER_SOCKET_APPEAR_TIMEOUT_SECS` (5).
@@ -1298,20 +1188,6 @@ pub mod config {
             }
         }
 
-        /// Resolve the effective yellow-warning fraction for the token warning
-        /// banner shown ahead of auto-compact.
-        pub fn effective_compact_warning_pct(&self) -> f64 {
-            self.compact_warning_pct
-                .unwrap_or(crate::constants::DEFAULT_COMPACT_WARNING_PCT)
-        }
-
-        /// Resolve the effective red-critical fraction for the token warning
-        /// banner shown ahead of auto-compact.
-        pub fn effective_compact_critical_pct(&self) -> f64 {
-            self.compact_critical_pct
-                .unwrap_or(crate::constants::DEFAULT_COMPACT_CRITICAL_PCT)
-        }
-
         /// Resolve the effective count of recent messages preserved verbatim
         /// after auto-compact.
         pub fn effective_compact_keep_recent_messages(&self) -> usize {
@@ -1341,12 +1217,6 @@ pub mod config {
         }
 
         // --- Batch 7 effective_* helpers ---
-
-        /// Resolve the effective emergency context-collapse threshold (0.0 - 1.0).
-        pub fn effective_context_collapse_threshold(&self) -> f64 {
-            self.context_collapse_threshold
-                .unwrap_or(crate::constants::DEFAULT_CONTEXT_COLLAPSE_THRESHOLD)
-        }
 
         /// Resolve the effective max-tokens recovery retry budget.
         pub fn effective_max_tokens_recovery_retries(&self) -> u32 {
@@ -1436,18 +1306,6 @@ pub mod config {
                 .unwrap_or(crate::constants::DEFAULT_COMPACT_SUMMARY_MAX_TOKENS)
         }
 
-        /// Resolve the context window used by /cost / /ctx-viz.
-        pub fn effective_cost_command_context_window(&self) -> u64 {
-            self.cost_command_context_window
-                .unwrap_or(crate::constants::DEFAULT_COST_COMMAND_CONTEXT_WINDOW)
-        }
-
-        /// Resolve the system prompt token estimate used by /cost / /ctx-viz.
-        pub fn effective_cost_command_system_prompt_tokens(&self) -> u32 {
-            self.cost_command_system_prompt_tokens
-                .unwrap_or(crate::constants::DEFAULT_COST_COMMAND_SYSTEM_PROMPT_TOKENS)
-        }
-
         /// Resolve the max diff bytes shown by /diff before truncation.
         pub fn effective_diff_command_max_bytes(&self) -> usize {
             self.diff_command_max_bytes
@@ -1468,55 +1326,13 @@ pub mod config {
                 .unwrap_or(crate::constants::DEFAULT_FILE_PREVIEW_MAX_CHARS)
         }
 
-        /// Resolve the HTTP timeout (seconds) for GitHub release-check calls.
-        pub fn effective_github_release_check_timeout_secs(&self) -> u64 {
-            self.github_release_check_timeout_secs
-                .unwrap_or(crate::constants::DEFAULT_GITHUB_RELEASE_CHECK_TIMEOUT_SECS)
-        }
-
-        /// Resolve the maximum results returned by the Glob tool.
-        pub fn effective_glob_max_results(&self) -> usize {
-            self.glob_max_results
-                .unwrap_or(crate::constants::DEFAULT_GLOB_MAX_RESULTS)
-        }
-
-        /// Resolve the HTTP timeout (seconds) for `/share` session upload.
-        pub fn effective_share_upload_timeout_secs(&self) -> u64 {
-            self.share_upload_timeout_secs
-                .unwrap_or(crate::constants::DEFAULT_SHARE_UPLOAD_TIMEOUT_SECS)
-        }
-
-        /// Resolve the HTTP timeout (seconds) for the WebFetch tool.
-        pub fn effective_web_fetch_timeout_secs(&self) -> u64 {
-            self.web_fetch_timeout_secs
-                .unwrap_or(crate::constants::DEFAULT_WEB_FETCH_TIMEOUT_SECS)
-        }
-
         // --- Batch 1 effective_* helpers (sorted alphabetically) ---
-
-        /// Resolve the default `limit` for FileRead when the caller omits it.
-        pub fn effective_default_read_line_limit(&self) -> usize {
-            self.default_read_line_limit
-                .unwrap_or(crate::constants::DEFAULT_LINE_LIMIT)
-        }
 
         /// Resolve the max consecutive auto-compact failures before the
         /// circuit breaker opens.
         pub fn effective_max_compact_retries(&self) -> u32 {
             self.max_compact_retries
                 .unwrap_or(crate::constants::MAX_COMPACT_RETRIES)
-        }
-
-        /// Resolve the hard cap on inline image bytes for FileRead.
-        pub fn effective_max_image_bytes(&self) -> u64 {
-            self.max_image_bytes
-                .unwrap_or(crate::constants::MAX_IMAGE_BYTES)
-        }
-
-        /// Resolve the per-line truncation cap for FileRead text mode.
-        pub fn effective_max_line_chars(&self) -> usize {
-            self.max_line_chars
-                .unwrap_or(crate::constants::MAX_LINE_CHARS)
         }
 
         /// Resolve the byte cap for FileRead text materialisation.
@@ -1537,12 +1353,6 @@ pub mod config {
         pub fn effective_image_resize_long_edge(&self) -> u32 {
             self.image_resize_long_edge
                 .unwrap_or(crate::constants::DEFAULT_IMAGE_RESIZE_LONG_EDGE)
-        }
-
-        /// Resolve the cap on archive entries listed in a single FileRead.
-        pub fn effective_max_archive_members(&self) -> usize {
-            self.max_archive_members
-                .unwrap_or(crate::constants::DEFAULT_MAX_ARCHIVE_MEMBERS)
         }
 
         /// Resolve the cap on rows emitted from the OOXML / XLSX fallback.
@@ -1615,13 +1425,6 @@ pub mod config {
 
         // --- Batch 3 effective_* helpers (sorted alphabetically) ---
 
-        /// Resolve the cap (chars) on the foreground Bash tool's combined
-        /// stdout+stderr output before head+tail truncation.
-        pub fn effective_bash_output_max_chars(&self) -> usize {
-            self.bash_output_max_chars
-                .unwrap_or(crate::constants::DEFAULT_BASH_OUTPUT_MAX_CHARS)
-        }
-
         /// Resolve the defensive cap on `ContentBlock`s carried by a single
         /// FileRead tool result.
         pub fn effective_max_blocks_per_result(&self) -> usize {
@@ -1629,23 +1432,10 @@ pub mod config {
                 .unwrap_or(crate::constants::DEFAULT_MAX_BLOCKS_PER_RESULT)
         }
 
-        /// Resolve the cap on bytes of inline text extracted from a single
-        /// OOXML document.
-        pub fn effective_max_ooxml_text_bytes(&self) -> usize {
-            self.max_ooxml_text_bytes
-                .unwrap_or(crate::constants::DEFAULT_MAX_OOXML_TEXT_BYTES)
-        }
-
         /// Resolve the cap on the number of PPTX slides extracted.
         pub fn effective_max_pptx_slides(&self) -> usize {
             self.max_pptx_slides
                 .unwrap_or(crate::constants::DEFAULT_MAX_PPTX_SLIDES)
-        }
-
-        /// Resolve the cap on chars of the WebFetch tool's HTML-to-text body.
-        pub fn effective_web_fetch_max_chars(&self) -> usize {
-            self.web_fetch_max_chars
-                .unwrap_or(crate::constants::DEFAULT_WEB_FETCH_MAX_CHARS)
         }
 
         // --- Batch 9 effective_* helpers (sorted alphabetically) ---
@@ -1660,12 +1450,6 @@ pub mod config {
         pub fn effective_provider_initial_backoff_ms(&self) -> u64 {
             self.provider_initial_backoff_ms
                 .unwrap_or(crate::constants::PROVIDER_INITIAL_BACKOFF_MS)
-        }
-
-        /// Resolve the retry backoff ceiling (seconds) for OpenAI-format providers.
-        pub fn effective_provider_max_backoff_secs(&self) -> u64 {
-            self.provider_max_backoff_secs
-                .unwrap_or(crate::constants::PROVIDER_MAX_BACKOFF_SECS)
         }
 
         /// Resolve the streaming MPSC channel capacity for OpenAI-format providers.
@@ -1712,25 +1496,7 @@ pub mod config {
                 .unwrap_or(crate::constants::DEFAULT_AWAY_SUMMARY_RECENT_MESSAGES)
         }
 
-        /// Resolve the provider-layer HTTP retry count.
-        pub fn effective_provider_max_retries(&self) -> u32 {
-            self.provider_max_retries
-                .unwrap_or(crate::constants::DEFAULT_PROVIDER_MAX_RETRIES)
-        }
-
-        /// Resolve the provider-layer per-request HTTP timeout (seconds).
-        pub fn effective_provider_request_timeout_sec(&self) -> u64 {
-            self.provider_request_timeout_sec
-                .unwrap_or(crate::constants::DEFAULT_PROVIDER_REQUEST_TIMEOUT_SEC)
-        }
-
         // --- Batch 12 effective_* helpers (sorted alphabetically) ---
-
-        /// Resolve the hard cap (ms) on the Bash tool's caller-supplied timeout.
-        pub fn effective_bash_timeout_max_ms(&self) -> u64 {
-            self.bash_timeout_max_ms
-                .unwrap_or(crate::constants::DEFAULT_BASH_TIMEOUT_MAX_MS)
-        }
 
         /// Resolve the wall-clock budget (seconds) for the CodeAudit subprocess.
         pub fn effective_code_audit_timeout_secs(&self) -> u64 {
@@ -1750,12 +1516,6 @@ pub mod config {
                 .unwrap_or(crate::constants::DEFAULT_REPL_LINE_READ_TIMEOUT_SECS)
         }
 
-        /// Resolve the hard cap (ms) on the Sleep tool's caller-supplied duration.
-        pub fn effective_sleep_max_ms(&self) -> u64 {
-            self.sleep_max_ms
-                .unwrap_or(crate::constants::DEFAULT_SLEEP_MAX_MS)
-        }
-
         /// Resolve the max HTTP redirects WebFetch will follow.
         pub fn effective_web_fetch_max_redirects(&self) -> usize {
             self.web_fetch_max_redirects
@@ -1768,24 +1528,6 @@ pub mod config {
         pub fn effective_lsp_request_timeout_secs(&self) -> u64 {
             self.lsp_request_timeout_secs
                 .unwrap_or(crate::constants::DEFAULT_LSP_REQUEST_TIMEOUT_SECS)
-        }
-
-        /// Resolve the OAuth browser-callback listener timeout (seconds).
-        pub fn effective_oauth_callback_timeout_secs(&self) -> u64 {
-            self.oauth_callback_timeout_secs
-                .unwrap_or(crate::constants::DEFAULT_OAUTH_CALLBACK_TIMEOUT_SECS)
-        }
-
-        /// Resolve the whole-OAuth-flow timeout (seconds).
-        pub fn effective_oauth_full_flow_timeout_secs(&self) -> u64 {
-            self.oauth_full_flow_timeout_secs
-                .unwrap_or(crate::constants::DEFAULT_OAUTH_FULL_FLOW_TIMEOUT_SECS)
-        }
-
-        /// Resolve the OAuth token-exchange HTTP timeout (seconds).
-        pub fn effective_oauth_token_exchange_timeout_secs(&self) -> u64 {
-            self.oauth_token_exchange_timeout_secs
-                .unwrap_or(crate::constants::DEFAULT_OAUTH_TOKEN_EXCHANGE_TIMEOUT_SECS)
         }
 
         /// Resolve the timeout (seconds) the parent waits for the peer
@@ -2343,9 +2085,6 @@ pub mod constants {
     /// Defensive cap on the number of `ContentBlock`s a single FileRead
     /// tool result can carry.
     pub const DEFAULT_MAX_BLOCKS_PER_RESULT: usize = 20;
-    /// Cap on the bytes of inline text extracted from a single OOXML
-    /// document (.docx / .xlsx / .pptx).
-    pub const DEFAULT_MAX_OOXML_TEXT_BYTES: usize = 1_500_000;
     /// Cap on the number of slides extracted from a PPTX file.
     pub const DEFAULT_MAX_PPTX_SLIDES: usize = 20;
     /// Cap (chars) on the WebFetch tool's HTML-to-text body before tail
@@ -2513,21 +2252,15 @@ pub mod constants {
     /// Wall-clock budget (seconds) for the OAuth browser-callback HTTP
     /// listener to accept the redirect from the authorization server.
     /// Mirrors the historical hardcoded `120s` in
-    /// `cli::oauth_flow::run_callback_server`. Configurable via
-    /// `Config.oauth_callback_timeout_secs` /
-    /// `--oauth-callback-timeout-secs`.
+    /// `cli::oauth_flow::run_callback_server`.
     pub const DEFAULT_OAUTH_CALLBACK_TIMEOUT_SECS: u64 = 120;
     /// Wall-clock budget (seconds) for the whole OAuth login flow (auto
     /// callback OR manual paste). Mirrors the historical hardcoded `120s`
-    /// in `cli::oauth_flow::wait_for_auth_code_impl`. Configurable via
-    /// `Config.oauth_full_flow_timeout_secs` /
-    /// `--oauth-full-flow-timeout-secs`.
+    /// in `cli::oauth_flow::wait_for_auth_code_impl`.
     pub const DEFAULT_OAUTH_FULL_FLOW_TIMEOUT_SECS: u64 = 120;
     /// HTTP timeout (seconds) for the OAuth token-exchange POST call.
     /// Mirrors the historical hardcoded `30s` in
-    /// `cli::oauth_flow::exchange_code_for_tokens`. Configurable via
-    /// `Config.oauth_token_exchange_timeout_secs` /
-    /// `--oauth-token-exchange-timeout-secs`.
+    /// `cli::oauth_flow::exchange_code_for_tokens`.
     pub const DEFAULT_OAUTH_TOKEN_EXCHANGE_TIMEOUT_SECS: u64 = 30;
     /// Wall-clock budget (seconds) for the parent process to wait for the
     /// IPC peer-child to bind its Unix socket before aborting. Mirrors the

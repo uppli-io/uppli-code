@@ -110,15 +110,11 @@ pub async fn read_odf(path: &Path, kind: Kind) -> HandlerOutput {
     // is inside `<text:span>` and other containers. As a pragmatic
     // first pass we treat every text-node inside the content.xml as
     // body text, with newlines on paragraph boundaries.
-    // ODF does not yet thread Config through; use the default cap. When
-    // ODF gets its own --max-odf-text-bytes knob this can switch to the
-    // effective value.
-    let max_text = cc_core::constants::DEFAULT_MAX_OOXML_TEXT_BYTES;
-    let text = super::ooxml::walk_ooxml_text(&xml, b"span", max_text);
+    let text = super::ooxml::walk_ooxml_text(&xml, b"span");
     let combined = if text.is_empty() {
         // Fallback: pull every text node by reusing the walker but
         // matching the `p` tag (paragraph text directly inside <text:p>).
-        super::ooxml::walk_ooxml_text(&xml, b"p", max_text)
+        super::ooxml::walk_ooxml_text(&xml, b"p")
     } else {
         text
     };

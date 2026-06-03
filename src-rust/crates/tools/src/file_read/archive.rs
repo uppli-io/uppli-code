@@ -44,8 +44,12 @@ use super::output::HandlerOutput;
 /// raising it costs RAM per entry with zero detection upside.
 const SNIFF_BYTES: usize = 4 * 1024;
 
-pub async fn read_archive(path: &Path, kind: Kind, cfg: &cc_core::config::Config) -> HandlerOutput {
-    let max_archive_members = cfg.effective_max_archive_members();
+pub async fn read_archive(
+    path: &Path,
+    kind: Kind,
+    _cfg: &cc_core::config::Config,
+) -> HandlerOutput {
+    let max_archive_members = cc_core::constants::DEFAULT_MAX_ARCHIVE_MEMBERS;
     let display = path.display().to_string();
 
     let meta = match fs::symlink_metadata(path).await {

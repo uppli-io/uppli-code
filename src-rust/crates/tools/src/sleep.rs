@@ -50,15 +50,14 @@ impl Tool for SleepTool {
         })
     }
 
-    async fn execute(&self, input: Value, ctx: &ToolContext) -> ToolResult {
+    async fn execute(&self, input: Value, _ctx: &ToolContext) -> ToolResult {
         let params: SleepInput = match serde_json::from_value(input) {
             Ok(p) => p,
             Err(e) => return ToolResult::error(format!("Invalid input: {}", e)),
         };
 
-        // Cap at the configured maximum (default 5 minutes).
-        let max_ms = ctx.config.effective_sleep_max_ms();
-        let duration_ms = params.ms.min(max_ms);
+        // Cap at the hardcoded maximum (5 minutes).
+        let duration_ms = params.ms.min(cc_core::constants::DEFAULT_SLEEP_MAX_MS);
         debug!(ms = duration_ms, "Sleeping");
 
         tokio::time::sleep(Duration::from_millis(duration_ms)).await;

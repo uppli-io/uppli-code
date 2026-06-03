@@ -224,7 +224,7 @@ fn try_open_browser(url: &str) {
 async fn run_callback_server(
     listener: TcpListener,
     expected_state: &str,
-    config: &Config,
+    _config: &Config,
 ) -> anyhow::Result<String> {
     debug!(
         "OAuth callback server listening on port {}",
@@ -232,7 +232,8 @@ async fn run_callback_server(
     );
 
     // Accept exactly one connection (the browser redirect)
-    let callback_timeout = Duration::from_secs(config.effective_oauth_callback_timeout_secs());
+    let callback_timeout =
+        Duration::from_secs(cc_core::constants::DEFAULT_OAUTH_CALLBACK_TIMEOUT_SECS);
     let (mut socket, _) = tokio::time::timeout(callback_timeout, listener.accept())
         .await
         .context("Timeout waiting for browser redirect")?
@@ -312,7 +313,7 @@ async fn exchange_code_for_tokens(
     code_verifier: &str,
     port: u16,
     use_manual_redirect: bool,
-    config: &Config,
+    _config: &Config,
 ) -> anyhow::Result<TokenExchangeResponse> {
     let redirect_uri = if use_manual_redirect {
         oauth::MANUAL_REDIRECT_URL.to_string()
@@ -331,7 +332,7 @@ async fn exchange_code_for_tokens(
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(
-            config.effective_oauth_token_exchange_timeout_secs(),
+            cc_core::constants::DEFAULT_OAUTH_TOKEN_EXCHANGE_TIMEOUT_SECS,
         ))
         .build()?;
 
@@ -441,8 +442,8 @@ pub async fn refresh_oauth_token(tokens: &OAuthTokens) -> anyhow::Result<OAuthTo
 }
 
 /// Wait for the OAuth authorization code from either the browser redirect (automatic)
-/// or manual paste by the user.  Races the two with a configurable timeout
-/// (default 120s, override via `Config.oauth_full_flow_timeout_secs`).
+/// or manual paste by the user.  Races the two with the hardcoded
+/// `DEFAULT_OAUTH_FULL_FLOW_TIMEOUT_SECS` (120s) ceiling.
 async fn wait_for_auth_code_impl(
     listener: TcpListener,
     expected_state: &str,
@@ -467,7 +468,7 @@ async fn wait_for_auth_code_impl(
         }
     });
 
-    let full_flow_secs = config.effective_oauth_full_flow_timeout_secs();
+    let full_flow_secs = cc_core::constants::DEFAULT_OAUTH_FULL_FLOW_TIMEOUT_SECS;
     tokio::select! {
         result = cb_rx => {
             result.unwrap_or_else(|_| Err(anyhow::anyhow!("Callback server dropped")))

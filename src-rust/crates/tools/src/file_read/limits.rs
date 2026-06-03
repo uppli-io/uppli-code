@@ -44,8 +44,7 @@ pub use cc_core::constants::MAX_LINE_CHARS;
 
 /// Default line count when the caller omits `limit` — preserves legacy
 /// behaviour from the pre-PR-B implementation. Re-exported from
-/// `cc_core::constants` so the runtime helper
-/// `Config::effective_default_read_line_limit()` shares the same default.
+/// `cc_core::constants`.
 pub use cc_core::constants::DEFAULT_LINE_LIMIT;
 
 // ── Image ───────────────────────────────────────────────────────────────────

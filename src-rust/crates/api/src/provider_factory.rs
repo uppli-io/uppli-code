@@ -232,16 +232,6 @@ fn create_openai_compat_provider(
         cfg.api_base = base;
     }
 
-    // Batch 8: CLI / settings override the TOML preset values for HTTP
-    // request timeout and retry count. Only swap when the user opted in
-    // (Option::is_some) — otherwise keep whatever the TOML provided.
-    if let Some(retries) = config.provider_max_retries {
-        cfg.max_retries = retries;
-    }
-    if let Some(secs) = config.provider_request_timeout_sec {
-        cfg.request_timeout = std::time::Duration::from_secs(secs);
-    }
-
     Ok(Box::new(crate::OpenAiProvider::new(cfg)?))
 }
 

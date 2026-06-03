@@ -1189,11 +1189,10 @@ pub async fn reactive_compact(
         .unwrap_or_default();
 
     // Phase 4: re-inject recently modified file context. Caps come from
-    // `Config::compact_reinject_max_files` /
-    // `Config::compact_reinject_max_file_bytes` (CLI:
-    // --compact-reinject-max-files / --compact-reinject-max-file-bytes).
+    // `Config::compact_reinject_max_files` (CLI: --compact-reinject-max-files)
+    // and the compile-time per-file byte cap.
     let max_files = config.compact_reinject_max_files;
-    let max_file_bytes = config.compact_reinject_max_file_bytes;
+    let max_file_bytes = cc_core::constants::DEFAULT_COMPACT_REINJECT_MAX_FILE_BYTES;
     let mut injected = 0;
     for path in recently_modified.iter().take(max_files.saturating_mul(3)) {
         if injected >= max_files {

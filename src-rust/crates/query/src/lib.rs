@@ -198,30 +198,25 @@ pub struct QueryConfig {
     /// rate-limit errors (mirrors TS `--fallback-model`).
     pub fallback_model: Option<String>,
     /// Yellow "warning" threshold (fraction of context window used) for the
-    /// auto-compact warning notice. Mirrors `Config::compact_warning_pct`.
+    /// auto-compact warning notice. Sourced from
+    /// `cc_core::constants::DEFAULT_COMPACT_WARNING_PCT`.
     pub compact_warning_pct: f64,
     /// Red "critical" threshold (fraction of context window used) for the
-    /// auto-compact critical notice. Mirrors `Config::compact_critical_pct`.
+    /// auto-compact critical notice. Sourced from
+    /// `cc_core::constants::DEFAULT_COMPACT_CRITICAL_PCT`.
     pub compact_critical_pct: f64,
-    /// How many recent messages to keep verbatim after auto-compact runs.
-    /// Mirrors `Config::compact_keep_recent_messages`.
-    pub compact_keep_recent_messages: usize,
     /// Max number of recently-modified files reactive-compact re-injects
     /// after summarising. Mirrors `Config::compact_reinject_max_files`.
     pub compact_reinject_max_files: usize,
-    /// Per-file byte cap for reactive-compact file re-injection.
-    /// Mirrors `Config::compact_reinject_max_file_bytes`.
-    pub compact_reinject_max_file_bytes: u64,
     /// Fraction of the context window at which reactive-compact fires.
     /// Mirrors `Config::reactive_compact_threshold`.
     pub reactive_compact_threshold: f64,
     /// Max output tokens used when summarising history for auto-compact.
     /// Mirrors `Config::compact_summary_max_tokens`.
     pub compact_summary_max_tokens: u32,
-    /// Max consecutive auto-compact failures before the circuit breaker
-    /// opens and disables auto-compact for the rest of the session.
-    /// Mirrors `Config::max_compact_retries`.
-    pub max_compact_retries: u32,
+    /// How many most-recent messages survive verbatim through auto-compact.
+    /// Mirrors `Config::effective_compact_keep_recent_messages`.
+    pub compact_keep_recent_messages: usize,
     /// Fraction of context window at which proactive auto-compact fires.
     /// Mirrors `Config::autocompact_trigger_fraction`.
     pub autocompact_trigger_fraction: f64,
@@ -267,13 +262,10 @@ impl Default for QueryConfig {
             fallback_model: fallback,
             compact_warning_pct: cc_core::constants::DEFAULT_COMPACT_WARNING_PCT,
             compact_critical_pct: cc_core::constants::DEFAULT_COMPACT_CRITICAL_PCT,
-            compact_keep_recent_messages: cc_core::constants::DEFAULT_COMPACT_KEEP_RECENT_MESSAGES,
             compact_reinject_max_files: cc_core::constants::DEFAULT_COMPACT_REINJECT_MAX_FILES,
-            compact_reinject_max_file_bytes:
-                cc_core::constants::DEFAULT_COMPACT_REINJECT_MAX_FILE_BYTES,
             reactive_compact_threshold: cc_core::constants::DEFAULT_REACTIVE_COMPACT_THRESHOLD,
             compact_summary_max_tokens: cc_core::constants::DEFAULT_COMPACT_SUMMARY_MAX_TOKENS,
-            max_compact_retries: cc_core::constants::MAX_COMPACT_RETRIES,
+            compact_keep_recent_messages: cc_core::constants::DEFAULT_COMPACT_KEEP_RECENT_MESSAGES,
             autocompact_trigger_fraction: cc_core::constants::DEFAULT_AUTOCOMPACT_TRIGGER_FRACTION,
             compact_warning_buffer_tokens:
                 cc_core::constants::DEFAULT_COMPACT_WARNING_BUFFER_TOKENS,
@@ -289,15 +281,13 @@ impl QueryConfig {
             output_style: cfg.effective_output_style(),
             output_style_prompt: cfg.resolve_output_style_prompt(),
             working_directory: cfg.project_dir.as_ref().map(|p| p.display().to_string()),
-            compact_warning_pct: cfg.effective_compact_warning_pct(),
-            compact_critical_pct: cfg.effective_compact_critical_pct(),
-            compact_keep_recent_messages: cfg.effective_compact_keep_recent_messages(),
+            compact_warning_pct: cc_core::constants::DEFAULT_COMPACT_WARNING_PCT,
+            compact_critical_pct: cc_core::constants::DEFAULT_COMPACT_CRITICAL_PCT,
             compact_reinject_max_files: cfg.effective_compact_reinject_max_files(),
-            compact_reinject_max_file_bytes: cfg.effective_compact_reinject_max_file_bytes(),
             reactive_compact_threshold: cfg.effective_reactive_compact_threshold(),
             compact_summary_max_tokens: cfg.effective_compact_summary_max_tokens(),
+            compact_keep_recent_messages: cfg.effective_compact_keep_recent_messages(),
             tool_result_budget: cfg.effective_tool_result_budget(),
-            max_compact_retries: cfg.effective_max_compact_retries(),
             autocompact_trigger_fraction: cfg.effective_autocompact_trigger_fraction(),
             compact_warning_buffer_tokens: cfg.effective_compact_warning_buffer_tokens(),
             ..Default::default()
@@ -327,15 +317,13 @@ impl QueryConfig {
             output_style: cfg.effective_output_style(),
             output_style_prompt: cfg.resolve_output_style_prompt(),
             working_directory: cfg.project_dir.as_ref().map(|p| p.display().to_string()),
-            compact_warning_pct: cfg.effective_compact_warning_pct(),
-            compact_critical_pct: cfg.effective_compact_critical_pct(),
-            compact_keep_recent_messages: cfg.effective_compact_keep_recent_messages(),
+            compact_warning_pct: cc_core::constants::DEFAULT_COMPACT_WARNING_PCT,
+            compact_critical_pct: cc_core::constants::DEFAULT_COMPACT_CRITICAL_PCT,
             compact_reinject_max_files: cfg.effective_compact_reinject_max_files(),
-            compact_reinject_max_file_bytes: cfg.effective_compact_reinject_max_file_bytes(),
             reactive_compact_threshold: cfg.effective_reactive_compact_threshold(),
             compact_summary_max_tokens: cfg.effective_compact_summary_max_tokens(),
+            compact_keep_recent_messages: cfg.effective_compact_keep_recent_messages(),
             tool_result_budget: cfg.effective_tool_result_budget(),
-            max_compact_retries: cfg.effective_max_compact_retries(),
             autocompact_trigger_fraction: cfg.effective_autocompact_trigger_fraction(),
             compact_warning_buffer_tokens: cfg.effective_compact_warning_buffer_tokens(),
             ..Default::default()
@@ -1114,8 +1102,9 @@ pub async fn run_query_loop(
 
         // Emit token warning events when approaching context limits.
         // Thresholds come from `config.compact_warning_pct` /
-        // `config.compact_critical_pct` (CLI: --compact-warning-pct /
-        // --compact-critical-pct).
+        // `config.compact_critical_pct` (sourced from
+        // `cc_core::constants::DEFAULT_COMPACT_WARNING_PCT` /
+        // `DEFAULT_COMPACT_CRITICAL_PCT`).
         {
             let warning_state = compact::calculate_token_warning_state_full(
                 usage.input_tokens,
@@ -1153,7 +1142,7 @@ pub async fn run_query_loop(
             if compact::should_context_collapse(
                 usage.input_tokens,
                 context_limit,
-                Some(tool_ctx.config.effective_context_collapse_threshold()),
+                Some(cc_core::constants::DEFAULT_CONTEXT_COLLAPSE_THRESHOLD),
             ) {
                 if let Some(ref tx) = event_tx {
                     let _ = tx.send(QueryEvent::Status(
@@ -1218,9 +1207,9 @@ pub async fn run_query_loop(
                 &config.model,
                 &mut compact_state,
                 ctx_window,
-                config.compact_keep_recent_messages,
+                cc_core::constants::DEFAULT_COMPACT_KEEP_RECENT_MESSAGES,
                 config.compact_summary_max_tokens,
-                config.max_compact_retries,
+                cc_core::constants::MAX_COMPACT_RETRIES,
                 config.autocompact_trigger_fraction,
             )
             .await
@@ -1927,13 +1916,10 @@ mod tests {
             fallback_model: None,
             compact_warning_pct: cc_core::constants::DEFAULT_COMPACT_WARNING_PCT,
             compact_critical_pct: cc_core::constants::DEFAULT_COMPACT_CRITICAL_PCT,
-            compact_keep_recent_messages: cc_core::constants::DEFAULT_COMPACT_KEEP_RECENT_MESSAGES,
             compact_reinject_max_files: cc_core::constants::DEFAULT_COMPACT_REINJECT_MAX_FILES,
-            compact_reinject_max_file_bytes:
-                cc_core::constants::DEFAULT_COMPACT_REINJECT_MAX_FILE_BYTES,
             reactive_compact_threshold: cc_core::constants::DEFAULT_REACTIVE_COMPACT_THRESHOLD,
             compact_summary_max_tokens: cc_core::constants::DEFAULT_COMPACT_SUMMARY_MAX_TOKENS,
-            max_compact_retries: cc_core::constants::MAX_COMPACT_RETRIES,
+            compact_keep_recent_messages: cc_core::constants::DEFAULT_COMPACT_KEEP_RECENT_MESSAGES,
             autocompact_trigger_fraction: cc_core::constants::DEFAULT_AUTOCOMPACT_TRIGGER_FRACTION,
             compact_warning_buffer_tokens:
                 cc_core::constants::DEFAULT_COMPACT_WARNING_BUFFER_TOKENS,

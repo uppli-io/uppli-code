@@ -181,14 +181,13 @@ impl Tool for FileReadTool {
             None
         };
 
-        // Resolve runtime caps from Config (Batch 1: --max-text-bytes,
-        // --max-line-chars, --default-read-line-limit, --max-image-bytes).
+        // Resolve runtime caps from Config (Batch 1: --max-text-bytes).
         let text_limits = text::TextLimits {
             max_text_bytes: ctx.config.effective_max_text_bytes(),
-            max_line_chars: ctx.config.effective_max_line_chars(),
-            default_line_limit: ctx.config.effective_default_read_line_limit(),
+            max_line_chars: cc_core::constants::MAX_LINE_CHARS,
+            default_line_limit: cc_core::constants::DEFAULT_LINE_LIMIT,
         };
-        let max_image_bytes = ctx.config.effective_max_image_bytes();
+        let max_image_bytes = cc_core::constants::MAX_IMAGE_BYTES;
 
         // ── Dispatch ───────────────────────────────────────────────────
         let mut out = match kind {

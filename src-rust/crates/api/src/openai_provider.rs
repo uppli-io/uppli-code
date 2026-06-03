@@ -110,7 +110,7 @@ impl OpenAiProviderConfig {
     /// Returns `self` so this can be chained after `from_loaded`.
     pub fn with_runtime_overrides(mut self, cfg: &cc_core::config::Config) -> Self {
         self.initial_backoff_ms = cfg.effective_provider_initial_backoff_ms();
-        self.max_backoff_secs = cfg.effective_provider_max_backoff_secs();
+        self.max_backoff_secs = cc_core::constants::PROVIDER_MAX_BACKOFF_SECS;
         self.stream_channel_capacity = cfg.effective_provider_stream_channel_capacity();
         self
     }

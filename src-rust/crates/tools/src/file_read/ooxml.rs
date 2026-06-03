@@ -46,12 +46,6 @@ use super::detect::Kind;
 use super::limits::{MAX_OOXML_BYTES, MAX_XML_DEPTH};
 use super::output::HandlerOutput;
 
-// Runtime cap on the bytes of inline text extracted from a single
-// OOXML document flows through `Config::effective_max_ooxml_text_bytes`
-// (knob: --max-ooxml-text-bytes); the fallback constant lives in
-// `cc_core::constants::DEFAULT_MAX_OOXML_TEXT_BYTES` and is imported
-// inside `mod tests` where it is exercised directly.
-
 /// Cap on the DECOMPRESSED bytes read from a single ZIP entry inside
 /// an OOXML / ODF archive. Without this, a 20 MiB .xlsx whose
 /// xl/worksheets/sheet1.xml decompresses to 20 GiB (zip bomb) would
@@ -141,18 +135,11 @@ pub async fn read_ooxml(path: &Path, kind: Kind, cfg: &cc_core::config::Config) 
         }
     };
 
-    let max_ooxml_text_bytes = cfg.effective_max_ooxml_text_bytes();
     let max_pptx_slides = cfg.effective_max_pptx_slides();
     match kind {
-        Kind::Xlsx => extract_xlsx(path, &mut archive, max_ooxml_text_bytes, max_ooxml_rows),
-        Kind::Docx => extract_docx(path, &mut archive, size, max_ooxml_text_bytes),
-        Kind::Pptx => extract_pptx(
-            path,
-            &mut archive,
-            size,
-            max_ooxml_text_bytes,
-            max_pptx_slides,
-        ),
+        Kind::Xlsx => extract_xlsx(path, &mut archive, max_ooxml_rows),
+        Kind::Docx => extract_docx(path, &mut archive, size),
+        Kind::Pptx => extract_pptx(path, &mut archive, size, max_pptx_slides),
         // ODF formats are handled in odf.rs which calls helpers here.
         other => HandlerOutput::error_text(format!(
             "[OOXML handler called for non-OOXML kind: {:?}]",
@@ -166,7 +153,6 @@ pub async fn read_ooxml(path: &Path, kind: Kind, cfg: &cc_core::config::Config) 
 fn extract_xlsx<R: std::io::Read + std::io::Seek>(
     path: &Path,
     archive: &mut ZipArchive<R>,
-    max_ooxml_text_bytes: usize,
     max_ooxml_rows: usize,
 ) -> HandlerOutput {
     let shared_strings = read_shared_strings(archive);
@@ -221,7 +207,6 @@ fn extract_xlsx<R: std::io::Read + std::io::Seek>(
             MAX_ZIP_ENTRY_DECOMPRESSED / (1024 * 1024)
         ));
     }
-    cap_text_bytes(&mut out, max_ooxml_text_bytes);
 
     HandlerOutput::success_text(out)
 }
@@ -428,7 +413,6 @@ fn extract_docx<R: Read + std::io::Seek>(
     path: &Path,
     archive: &mut ZipArchive<R>,
     size: u64,
-    max_ooxml_text_bytes: usize,
 ) -> HandlerOutput {
     let mut out = caption::docx(path, size);
     out.push_str("\n\n");
@@ -450,7 +434,7 @@ fn extract_docx<R: Read + std::io::Seek>(
             ))
         }
     };
-    let body = walk_ooxml_text(&xml, b"t", max_ooxml_text_bytes);
+    let body = walk_ooxml_text(&xml, b"t");
     if body.is_empty() {
         out.push_str("[No text runs found in word/document.xml.]\n");
     } else {
@@ -462,7 +446,6 @@ fn extract_docx<R: Read + std::io::Seek>(
             MAX_ZIP_ENTRY_DECOMPRESSED / (1024 * 1024)
         ));
     }
-    cap_text_bytes(&mut out, max_ooxml_text_bytes);
     HandlerOutput::success_text(out)
 }
 
@@ -472,7 +455,6 @@ fn extract_pptx<R: Read + std::io::Seek>(
     path: &Path,
     archive: &mut ZipArchive<R>,
     size: u64,
-    max_ooxml_text_bytes: usize,
     max_pptx_slides: usize,
 ) -> HandlerOutput {
     // Collect slide entries, sort by numeric index (NOT lexicographically
@@ -508,7 +490,7 @@ fn extract_pptx<R: Read + std::io::Seek>(
             any_slide_capped |= capped;
         }
         out.push_str(&format!("## Slide {}\n", idx));
-        let slide_text = walk_ooxml_text(&xml, b"t", max_ooxml_text_bytes);
+        let slide_text = walk_ooxml_text(&xml, b"t");
         if slide_text.is_empty() {
             out.push_str("[no text runs]\n");
         } else {
@@ -532,7 +514,6 @@ fn extract_pptx<R: Read + std::io::Seek>(
             MAX_ZIP_ENTRY_DECOMPRESSED / (1024 * 1024)
         ));
     }
-    cap_text_bytes(&mut out, max_ooxml_text_bytes);
     HandlerOutput::success_text(out)
 }
 
@@ -543,7 +524,7 @@ fn extract_pptx<R: Read + std::io::Seek>(
 // unknown elements. Returns concatenated text with paragraph-level
 // newlines (PPTX `<a:p>` and DOCX `<w:p>` both end with a newline).
 
-pub(super) fn walk_ooxml_text(xml: &str, tag: &[u8], max_bytes: usize) -> String {
+pub(super) fn walk_ooxml_text(xml: &str, tag: &[u8]) -> String {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     reader.config_mut().expand_empty_elements = true;
@@ -553,10 +534,6 @@ pub(super) fn walk_ooxml_text(xml: &str, tag: &[u8], max_bytes: usize) -> String
     let mut in_t = false;
     let mut in_para = false;
     loop {
-        if out.len() > max_bytes {
-            cap_text_bytes(&mut out, max_bytes);
-            break;
-        }
         match reader.read_event_into(&mut buf) {
             Ok(Event::DocType(_)) => break,
             Ok(Event::Start(e)) => {
@@ -609,26 +586,9 @@ fn local_name(name: &[u8]) -> &[u8] {
     }
 }
 
-/// UTF-8-safe truncation of `s` at DEFAULT_MAX_OOXML_TEXT_BYTES. Walks back to
-/// the nearest char boundary so we never panic mid-codepoint.
-fn cap_text_bytes(s: &mut String, max_bytes: usize) {
-    if s.len() <= max_bytes {
-        return;
-    }
-    let mut cut = max_bytes;
-    while cut > 0 && !s.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    s.truncate(cut);
-    s.push_str(
-        "\n[Truncated at max_ooxml_text_bytes — use Bash + libreoffice / unzip for the rest.]\n",
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cc_core::constants::DEFAULT_MAX_OOXML_TEXT_BYTES;
 
     #[test]
     fn local_name_strips_namespace() {
@@ -640,7 +600,7 @@ mod tests {
     #[test]
     fn walk_ooxml_text_collects_t_runs() {
         let xml = r#"<doc xmlns:w="urn:x"><w:p><w:r><w:t>hello </w:t></w:r><w:r><w:t>world</w:t></w:r></w:p></doc>"#;
-        let text = walk_ooxml_text(xml, b"t", DEFAULT_MAX_OOXML_TEXT_BYTES);
+        let text = walk_ooxml_text(xml, b"t");
         assert!(text.contains("hello"));
         assert!(text.contains("world"));
         assert!(text.contains("\n"), "paragraph end should emit a newline");
@@ -649,20 +609,8 @@ mod tests {
     #[test]
     fn walk_ooxml_text_stops_on_doctype() {
         let xml = r#"<!DOCTYPE poison><doc><w:t>nope</w:t></doc>"#;
-        let text = walk_ooxml_text(xml, b"t", DEFAULT_MAX_OOXML_TEXT_BYTES);
+        let text = walk_ooxml_text(xml, b"t");
         assert!(text.is_empty(), "DOCTYPE must short-circuit");
-    }
-
-    #[test]
-    fn cap_text_bytes_is_char_safe() {
-        // Build a string with a multi-byte char right at the cap boundary.
-        let mut s = "a".repeat(DEFAULT_MAX_OOXML_TEXT_BYTES - 1);
-        s.push('é'); // 2 bytes — straddles the boundary
-        s.push_str(&"b".repeat(100));
-        cap_text_bytes(&mut s, DEFAULT_MAX_OOXML_TEXT_BYTES);
-        assert!(s.len() <= DEFAULT_MAX_OOXML_TEXT_BYTES + 200); // truncation footer
-                                                                // Must not panic — implicit by reaching here.
-        assert!(s.contains("Truncated"));
     }
 
     #[test]

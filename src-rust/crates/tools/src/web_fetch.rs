@@ -176,7 +176,7 @@ impl Tool for WebFetchTool {
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(
-                ctx.config.effective_web_fetch_timeout_secs(),
+                cc_core::constants::DEFAULT_WEB_FETCH_TIMEOUT_SECS,
             ))
             .redirect(reqwest::redirect::Policy::limited(
                 ctx.config.effective_web_fetch_max_redirects(),
@@ -222,8 +222,8 @@ impl Tool for WebFetchTool {
             body
         };
 
-        // Truncate very long content — knob: --web-fetch-max-chars
-        let max_len = ctx.config.effective_web_fetch_max_chars();
+        // Truncate very long content
+        let max_len = cc_core::constants::DEFAULT_WEB_FETCH_MAX_CHARS;
         let text = if text.len() > max_len {
             format!(
                 "{}\n\n... (truncated, {} total characters)",

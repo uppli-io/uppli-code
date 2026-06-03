@@ -3816,7 +3816,7 @@ impl SlashCommand for ContextCommand {
 
         // Configurable via --cost-command-context-window. Default 200K matches
         // historic behaviour for Anthropic models.
-        let context_window: u64 = ctx.config.effective_cost_command_context_window();
+        let context_window: u64 = cc_core::constants::DEFAULT_COST_COMMAND_CONTEXT_WINDOW;
 
         let used_tokens = ctx.cost_tracker.total_tokens();
         let pct = if context_window > 0 {
@@ -4137,14 +4137,14 @@ impl SlashCommand for UpgradeCommand {
          If a newer version is available, shows the upgrade command."
     }
 
-    async fn execute(&self, _args: &str, ctx: &mut CommandContext) -> CommandResult {
+    async fn execute(&self, _args: &str, _ctx: &mut CommandContext) -> CommandResult {
         let current = cc_core::constants::APP_VERSION;
 
         // Check GitHub releases API for latest version
         let client = reqwest::Client::builder()
             .user_agent(format!("claude-code-rust/{}", current))
             .timeout(std::time::Duration::from_secs(
-                ctx.config.effective_github_release_check_timeout_secs(),
+                cc_core::constants::DEFAULT_GITHUB_RELEASE_CHECK_TIMEOUT_SECS,
             ))
             .build();
 
@@ -4230,7 +4230,7 @@ impl SlashCommand for ReleaseNotesCommand {
          Without an argument, shows notes for the current version."
     }
 
-    async fn execute(&self, args: &str, ctx: &mut CommandContext) -> CommandResult {
+    async fn execute(&self, args: &str, _ctx: &mut CommandContext) -> CommandResult {
         let current = cc_core::constants::APP_VERSION;
         let version = args.trim();
 
@@ -4245,7 +4245,7 @@ impl SlashCommand for ReleaseNotesCommand {
         let client = reqwest::Client::builder()
             .user_agent(format!("claude-code-rust/{}", current))
             .timeout(std::time::Duration::from_secs(
-                ctx.config.effective_github_release_check_timeout_secs(),
+                cc_core::constants::DEFAULT_GITHUB_RELEASE_CHECK_TIMEOUT_SECS,
             ))
             .build();
 
@@ -5207,7 +5207,7 @@ impl SlashCommand for ShareCommand {
 
         let client = match reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(
-                ctx.config.effective_share_upload_timeout_secs(),
+                cc_core::constants::DEFAULT_SHARE_UPLOAD_TIMEOUT_SECS,
             ))
             .build()
         {
@@ -5377,13 +5377,13 @@ impl SlashCommand for CtxVizCommand {
 
     async fn execute(&self, _args: &str, ctx: &mut CommandContext) -> CommandResult {
         let model = ctx.config.effective_model().to_string();
-        let context_window: u64 = ctx.config.effective_cost_command_context_window();
+        let context_window: u64 = cc_core::constants::DEFAULT_COST_COMMAND_CONTEXT_WINDOW;
 
         // Estimate system prompt tokens: rough chars/4 approximation
         // Build a minimal system prompt to estimate its size. Fallback estimate
         // is configurable via --cost-command-system-prompt-tokens.
         let sys_prompt_fallback_chars =
-            ctx.config.effective_cost_command_system_prompt_tokens() as usize * 4;
+            cc_core::constants::DEFAULT_COST_COMMAND_SYSTEM_PROMPT_TOKENS as usize * 4;
         let sys_prompt_chars: usize = ctx
             .config
             .custom_system_prompt

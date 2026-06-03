@@ -188,42 +188,15 @@ struct Cli {
     #[arg(long = "no-auto-compact", action = ArgAction::SetTrue)]
     no_auto_compact: bool,
 
-    /// Red "critical" token-usage threshold (0.0-1.0); fires the critical
-    /// notice ahead of auto-compact. Default: 0.98.
-    #[arg(long = "compact-critical-pct", value_name = "FRACTION")]
-    compact_critical_pct: Option<f64>,
-
-    /// How many recent messages to keep verbatim after auto-compact runs.
-    /// Default: 10.
-    #[arg(long = "compact-keep-recent-messages", value_name = "COUNT")]
-    compact_keep_recent_messages: Option<usize>,
-
-    /// Per-file byte cap when reactive-compact re-injects recently-modified
-    /// files. Files larger than this are skipped. Default: 51200 (50 KiB).
-    #[arg(long = "compact-reinject-max-file-bytes", value_name = "BYTES")]
-    compact_reinject_max_file_bytes: Option<u64>,
-
     /// Maximum number of recently-modified files reactive-compact re-injects
     /// after summarising. Default: 5.
     #[arg(long = "compact-reinject-max-files", value_name = "COUNT")]
     compact_reinject_max_files: Option<usize>,
 
-    /// Yellow "warning" token-usage threshold (0.0-1.0); fires the warning
-    /// notice ahead of auto-compact. Default: 0.90.
-    #[arg(long = "compact-warning-pct", value_name = "FRACTION")]
-    compact_warning_pct: Option<f64>,
-
     /// Fraction of the context window (0.0-1.0) at which reactive-compact
     /// fires. Default: 0.95.
     #[arg(long = "reactive-compact-threshold", value_name = "FRACTION")]
     reactive_compact_threshold: Option<f64>,
-
-    /// Emergency context-collapse threshold (fraction of the context window).
-    /// At this point the entire conversation is collapsed to a summary +
-    /// the last user turn. Default 0.99. Lower to be more aggressive,
-    /// raise (toward 1.0) to suppress the safety net entirely.
-    #[arg(long = "context-collapse-threshold", value_name = "FRACTION")]
-    context_collapse_threshold: Option<f64>,
 
     /// Max retries when the model hits `max_tokens` before surfacing the
     /// partial response. Default 3.
@@ -349,10 +322,6 @@ struct Cli {
     #[arg(long = "provider-initial-backoff-ms", value_name = "MS")]
     provider_initial_backoff_ms: Option<u64>,
 
-    /// Max retry backoff ceiling (seconds) for OpenAI-format providers.
-    #[arg(long = "provider-max-backoff-secs", value_name = "SECS")]
-    provider_max_backoff_secs: Option<u64>,
-
     /// Capacity of the streaming MPSC channel between provider and consumer.
     #[arg(long = "provider-stream-channel-capacity", value_name = "N")]
     provider_stream_channel_capacity: Option<usize>,
@@ -467,14 +436,6 @@ struct Cli {
     #[arg(long = "compact-summary-max-tokens", value_name = "TOKENS")]
     compact_summary_max_tokens: Option<u32>,
 
-    /// Context window assumed by the /cost and /ctx-viz commands.
-    #[arg(long = "cost-command-context-window", value_name = "TOKENS")]
-    cost_command_context_window: Option<u64>,
-
-    /// System prompt token estimate used by /cost and /ctx-viz.
-    #[arg(long = "cost-command-system-prompt-tokens", value_name = "TOKENS")]
-    cost_command_system_prompt_tokens: Option<u32>,
-
     /// Max bytes of diff output shown by the /diff command before truncation.
     #[arg(long = "diff-command-max-bytes", value_name = "BYTES")]
     diff_command_max_bytes: Option<usize>,
@@ -488,42 +449,11 @@ struct Cli {
     #[arg(long = "file-preview-max-chars", value_name = "CHARS")]
     file_preview_max_chars: Option<usize>,
 
-    /// HTTP timeout (seconds) for `/upgrade` and `/release-notes` GitHub
-    /// release-check calls.
-    #[arg(long = "github-release-check-timeout-secs", value_name = "SECS")]
-    github_release_check_timeout_secs: Option<u64>,
-
-    /// Maximum results returned by the Glob tool before truncation.
-    #[arg(long = "glob-max-results", value_name = "COUNT")]
-    glob_max_results: Option<usize>,
-
-    /// HTTP timeout (seconds) for `/share` session upload.
-    #[arg(long = "share-upload-timeout-secs", value_name = "SECS")]
-    share_upload_timeout_secs: Option<u64>,
-
-    /// HTTP timeout (seconds) for the WebFetch tool.
-    #[arg(long = "web-fetch-timeout-secs", value_name = "SECS")]
-    web_fetch_timeout_secs: Option<u64>,
-
     // --- Batch 1 configurable parameters (sorted alphabetically) ---
-    /// Default `limit` used by Read when the caller omits it (lines).
-    #[arg(long = "default-read-line-limit", value_name = "LINES")]
-    default_read_line_limit: Option<usize>,
-
     /// Max consecutive auto-compact failures before the circuit breaker
     /// disables auto-compact for the rest of the session.
     #[arg(long = "max-compact-retries", value_name = "COUNT")]
     max_compact_retries: Option<u32>,
-
-    /// Hard cap on the raw image bytes Read will inline as base64.
-    /// Beyond this the tool returns a caption-only fallback.
-    #[arg(long = "max-image-bytes", value_name = "BYTES")]
-    max_image_bytes: Option<u64>,
-
-    /// Per-line truncation cap for Read text mode (chars).
-    /// Defeats single-line minified files blowing the budget.
-    #[arg(long = "max-line-chars", value_name = "CHARS")]
-    max_line_chars: Option<usize>,
 
     /// Cap on the bytes Read will materialise as String for text files.
     #[arg(long = "max-text-bytes", value_name = "BYTES")]
@@ -538,10 +468,6 @@ struct Cli {
     /// Long-edge pixel target when downscaling oversized images for Read.
     #[arg(long = "image-resize-long-edge", value_name = "PIXELS")]
     image_resize_long_edge: Option<u32>,
-
-    /// Cap on archive entries listed by Read in a single invocation.
-    #[arg(long = "max-archive-members", value_name = "COUNT")]
-    max_archive_members: Option<usize>,
 
     /// Cap on rows emitted from the OOXML / XLSX text fallback in Read.
     #[arg(long = "max-ooxml-rows", value_name = "COUNT")]
@@ -593,28 +519,14 @@ struct Cli {
     session_tail_scan_bytes: Option<u64>,
 
     // --- Batch 3 configurable parameters (sorted alphabetically) ---
-    /// Max chars of bash tool stdout+stderr before head+tail truncation.
-    /// Shared by the Unix and Windows code paths.
-    #[arg(long = "bash-output-max-chars", value_name = "CHARS")]
-    bash_output_max_chars: Option<usize>,
-
     /// Defensive cap on the number of `ContentBlock`s a single Read tool
     /// result can carry (images / documents).
     #[arg(long = "max-blocks-per-result", value_name = "BLOCKS")]
     max_blocks_per_result: Option<usize>,
 
-    /// Cap on the bytes of inline text extracted from a single OOXML
-    /// document (.docx / .xlsx / .pptx).
-    #[arg(long = "max-ooxml-text-bytes", value_name = "BYTES")]
-    max_ooxml_text_bytes: Option<usize>,
-
     /// Cap on the number of slides extracted from a PPTX file.
     #[arg(long = "max-pptx-slides", value_name = "SLIDES")]
     max_pptx_slides: Option<usize>,
-
-    /// Max chars of WebFetch HTML-to-text body before tail truncation.
-    #[arg(long = "web-fetch-max-chars", value_name = "CHARS")]
-    web_fetch_max_chars: Option<usize>,
 
     // --- Batch 8 configurable parameters (sorted alphabetically) ---
     /// Legacy Anthropic-client retry count (deprecation path: prefer
@@ -634,20 +546,7 @@ struct Cli {
     #[arg(long = "away-summary-recent-messages", value_name = "COUNT")]
     away_summary_recent_messages: Option<usize>,
 
-    /// Maximum HTTP retries the provider layer attempts before bubbling up.
-    #[arg(long = "provider-max-retries", value_name = "COUNT")]
-    provider_max_retries: Option<u32>,
-
-    /// Per-request HTTP timeout (seconds) the provider layer applies.
-    #[arg(long = "provider-request-timeout-sec", value_name = "SECS")]
-    provider_request_timeout_sec: Option<u64>,
-
     // --- Batch 12 configurable parameters (sorted alphabetically) ---
-    /// Hard cap (ms) on the timeout the Bash tool will honour from a
-    /// caller-supplied `timeout`. Default 600000 (10 minutes).
-    #[arg(long = "bash-timeout-max-ms", value_name = "MS")]
-    bash_timeout_max_ms: Option<u64>,
-
     /// Wall-clock budget (seconds) for the CodeAudit Python subprocess.
     /// Default 10.
     #[arg(long = "code-audit-timeout-secs", value_name = "SECS")]
@@ -663,11 +562,6 @@ struct Cli {
     #[arg(long = "repl-line-read-timeout-secs", value_name = "SECS")]
     repl_line_read_timeout_secs: Option<u64>,
 
-    /// Hard cap (ms) on the user-requested sleep duration honoured by the
-    /// Sleep tool. Default 300000 (5 minutes).
-    #[arg(long = "sleep-max-ms", value_name = "MS")]
-    sleep_max_ms: Option<u64>,
-
     /// Max HTTP redirects WebFetch will follow before giving up. Default 10.
     #[arg(long = "web-fetch-max-redirects", value_name = "COUNT")]
     web_fetch_max_redirects: Option<usize>,
@@ -677,21 +571,6 @@ struct Cli {
     /// gopls, etc.). Default 30.
     #[arg(long = "lsp-request-timeout-secs", value_name = "SECS")]
     lsp_request_timeout_secs: Option<u64>,
-
-    /// Timeout (seconds) for the OAuth browser-callback HTTP listener.
-    /// Default 120.
-    #[arg(long = "oauth-callback-timeout-secs", value_name = "SECS")]
-    oauth_callback_timeout_secs: Option<u64>,
-
-    /// Whole-flow OAuth timeout (seconds) — auto callback OR manual paste.
-    /// Default 120.
-    #[arg(long = "oauth-full-flow-timeout-secs", value_name = "SECS")]
-    oauth_full_flow_timeout_secs: Option<u64>,
-
-    /// HTTP timeout (seconds) for the OAuth token-exchange POST call.
-    /// Default 30.
-    #[arg(long = "oauth-token-exchange-timeout-secs", value_name = "SECS")]
-    oauth_token_exchange_timeout_secs: Option<u64>,
 
     /// Timeout (seconds) for the parent process to wait for the IPC peer
     /// child to bind its Unix socket before aborting. Default 5.
@@ -1054,9 +933,6 @@ async fn main() -> anyhow::Result<()> {
     if let Some(v) = cli.provider_initial_backoff_ms {
         config.provider_initial_backoff_ms = Some(v);
     }
-    if let Some(v) = cli.provider_max_backoff_secs {
-        config.provider_max_backoff_secs = Some(v);
-    }
     if let Some(v) = cli.provider_stream_channel_capacity {
         config.provider_stream_channel_capacity = Some(v);
     }
@@ -1109,28 +985,13 @@ async fn main() -> anyhow::Result<()> {
     if cli.no_auto_compact {
         config.auto_compact = false;
     }
-    if let Some(v) = cli.compact_critical_pct {
-        config.compact_critical_pct = Some(v);
-    }
-    if let Some(v) = cli.compact_keep_recent_messages {
-        config.compact_keep_recent_messages = Some(v);
-    }
-    if let Some(v) = cli.compact_reinject_max_file_bytes {
-        config.compact_reinject_max_file_bytes = Some(v);
-    }
     if let Some(v) = cli.compact_reinject_max_files {
         config.compact_reinject_max_files = Some(v);
-    }
-    if let Some(v) = cli.compact_warning_pct {
-        config.compact_warning_pct = Some(v);
     }
     if let Some(v) = cli.reactive_compact_threshold {
         config.reactive_compact_threshold = Some(v);
     }
     // --- Batch 7 wiring ---
-    if let Some(v) = cli.context_collapse_threshold {
-        config.context_collapse_threshold = Some(v);
-    }
     if let Some(v) = cli.max_tokens_recovery_retries {
         config.max_tokens_recovery_retries = Some(v);
     }
@@ -1156,12 +1017,6 @@ async fn main() -> anyhow::Result<()> {
     if let Some(v) = cli.compact_summary_max_tokens {
         config.compact_summary_max_tokens = Some(v);
     }
-    if let Some(v) = cli.cost_command_context_window {
-        config.cost_command_context_window = Some(v);
-    }
-    if let Some(v) = cli.cost_command_system_prompt_tokens {
-        config.cost_command_system_prompt_tokens = Some(v);
-    }
     if let Some(v) = cli.diff_command_max_bytes {
         config.diff_command_max_bytes = Some(v);
     }
@@ -1173,31 +1028,10 @@ async fn main() -> anyhow::Result<()> {
     if let Some(v) = cli.file_preview_max_chars {
         config.file_preview_max_chars = Some(v);
     }
-    if let Some(v) = cli.github_release_check_timeout_secs {
-        config.github_release_check_timeout_secs = Some(v);
-    }
-    if let Some(v) = cli.glob_max_results {
-        config.glob_max_results = Some(v);
-    }
-    if let Some(v) = cli.share_upload_timeout_secs {
-        config.share_upload_timeout_secs = Some(v);
-    }
-    if let Some(v) = cli.web_fetch_timeout_secs {
-        config.web_fetch_timeout_secs = Some(v);
-    }
 
     // --- Batch 1 wiring (sorted alphabetically) ---
-    if let Some(v) = cli.default_read_line_limit {
-        config.default_read_line_limit = Some(v);
-    }
     if let Some(v) = cli.max_compact_retries {
         config.max_compact_retries = Some(v);
-    }
-    if let Some(v) = cli.max_image_bytes {
-        config.max_image_bytes = Some(v);
-    }
-    if let Some(v) = cli.max_line_chars {
-        config.max_line_chars = Some(v);
     }
     if let Some(v) = cli.max_text_bytes {
         config.max_text_bytes = Some(v);
@@ -1209,9 +1043,6 @@ async fn main() -> anyhow::Result<()> {
     // --- Batch 2 wiring (file_read limits, sorted alphabetically) ---
     if let Some(v) = cli.image_resize_long_edge {
         config.image_resize_long_edge = Some(v);
-    }
-    if let Some(v) = cli.max_archive_members {
-        config.max_archive_members = Some(v);
     }
     if let Some(v) = cli.max_ooxml_rows {
         config.max_ooxml_rows = Some(v);
@@ -1247,20 +1078,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // --- Batch 3 wiring (sorted alphabetically) ---
-    if let Some(v) = cli.bash_output_max_chars {
-        config.bash_output_max_chars = Some(v);
-    }
     if let Some(v) = cli.max_blocks_per_result {
         config.max_blocks_per_result = Some(v);
     }
-    if let Some(v) = cli.max_ooxml_text_bytes {
-        config.max_ooxml_text_bytes = Some(v);
-    }
     if let Some(v) = cli.max_pptx_slides {
         config.max_pptx_slides = Some(v);
-    }
-    if let Some(v) = cli.web_fetch_max_chars {
-        config.web_fetch_max_chars = Some(v);
     }
     // --- Batch 8 configurable parameters wiring (sorted alphabetically) ---
     if let Some(v) = cli.anthropic_legacy_max_retries {
@@ -1275,17 +1097,8 @@ async fn main() -> anyhow::Result<()> {
     if let Some(v) = cli.away_summary_recent_messages {
         config.away_summary_recent_messages = Some(v);
     }
-    if let Some(v) = cli.provider_max_retries {
-        config.provider_max_retries = Some(v);
-    }
-    if let Some(v) = cli.provider_request_timeout_sec {
-        config.provider_request_timeout_sec = Some(v);
-    }
 
     // --- Batch 12 wiring (sorted alphabetically) ---
-    if let Some(v) = cli.bash_timeout_max_ms {
-        config.bash_timeout_max_ms = Some(v);
-    }
     if let Some(v) = cli.code_audit_timeout_secs {
         config.code_audit_timeout_secs = Some(v);
     }
@@ -1295,9 +1108,6 @@ async fn main() -> anyhow::Result<()> {
     if let Some(v) = cli.repl_line_read_timeout_secs {
         config.repl_line_read_timeout_secs = Some(v);
     }
-    if let Some(v) = cli.sleep_max_ms {
-        config.sleep_max_ms = Some(v);
-    }
     if let Some(v) = cli.web_fetch_max_redirects {
         config.web_fetch_max_redirects = Some(v);
     }
@@ -1305,15 +1115,6 @@ async fn main() -> anyhow::Result<()> {
     // --- Batch 13 wiring (sorted alphabetically) ---
     if let Some(v) = cli.lsp_request_timeout_secs {
         config.lsp_request_timeout_secs = Some(v);
-    }
-    if let Some(v) = cli.oauth_callback_timeout_secs {
-        config.oauth_callback_timeout_secs = Some(v);
-    }
-    if let Some(v) = cli.oauth_full_flow_timeout_secs {
-        config.oauth_full_flow_timeout_secs = Some(v);
-    }
-    if let Some(v) = cli.oauth_token_exchange_timeout_secs {
-        config.oauth_token_exchange_timeout_secs = Some(v);
     }
     if let Some(v) = cli.peer_socket_appear_timeout_secs {
         config.peer_socket_appear_timeout_secs = Some(v);

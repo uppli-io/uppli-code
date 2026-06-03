@@ -102,7 +102,7 @@ impl Tool for GlobTool {
         entries_with_time.sort_by_key(|e| std::cmp::Reverse(e.1));
 
         let total = entries_with_time.len();
-        let max_results = ctx.config.effective_glob_max_results();
+        let max_results = cc_core::constants::DEFAULT_GLOB_MAX_RESULTS;
         let truncated = total > max_results;
 
         let mut output = String::new();
