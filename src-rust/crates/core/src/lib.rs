@@ -744,11 +744,6 @@ pub mod config {
         pub tool_result_budget: Option<usize>,
 
         // --- Batch 2 configurable parameters (file_read limits, sorted alphabetically) ---
-        /// Long-edge pixel target when downscaling oversized images for the
-        /// FileRead tool. `None` falls back to `DEFAULT_IMAGE_RESIZE_LONG_EDGE`
-        /// (2048).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub image_resize_long_edge: Option<u32>,
         /// Cap on archive entries listed in a single FileRead invocation.
         /// `None` falls back to `DEFAULT_MAX_ARCHIVE_MEMBERS` (1024).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1515,12 +1510,6 @@ pub mod config {
         }
 
         // --- Batch 2 effective_* helpers (file_read limits, sorted alphabetically) ---
-
-        /// Resolve the long-edge pixel target for FileRead image downscale.
-        pub fn effective_image_resize_long_edge(&self) -> u32 {
-            self.image_resize_long_edge
-                .unwrap_or(crate::constants::DEFAULT_IMAGE_RESIZE_LONG_EDGE)
-        }
 
         /// Resolve the cap on archive entries listed in a single FileRead.
         pub fn effective_max_archive_members(&self) -> usize {
@@ -2359,10 +2348,6 @@ pub mod constants {
     pub const MAX_TEXT_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
 
     // --- Batch 2 configurable defaults (file_read limits) ---
-    /// Long-edge pixel target when downscaling oversized images for the
-    /// FileRead tool. Mirrors the historical
-    /// `file_read::limits::IMAGE_RESIZE_LONG_EDGE`.
-    pub const DEFAULT_IMAGE_RESIZE_LONG_EDGE: u32 = 2_048;
     /// Cap on archive entries listed in a single FileRead invocation.
     /// Mirrors the historical `file_read::limits::MAX_ARCHIVE_MEMBERS`.
     pub const DEFAULT_MAX_ARCHIVE_MEMBERS: usize = 1_024;

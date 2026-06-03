@@ -535,10 +535,6 @@ struct Cli {
     tool_result_budget: Option<usize>,
 
     // --- Batch 2 configurable parameters (file_read limits, sorted alphabetically) ---
-    /// Long-edge pixel target when downscaling oversized images for Read.
-    #[arg(long = "image-resize-long-edge", value_name = "PIXELS")]
-    image_resize_long_edge: Option<u32>,
-
     /// Cap on archive entries listed by Read in a single invocation.
     #[arg(long = "max-archive-members", value_name = "COUNT")]
     max_archive_members: Option<usize>,
@@ -1190,9 +1186,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // --- Batch 2 wiring (file_read limits, sorted alphabetically) ---
-    if let Some(v) = cli.image_resize_long_edge {
-        config.image_resize_long_edge = Some(v);
-    }
     if let Some(v) = cli.max_archive_members {
         config.max_archive_members = Some(v);
     }

@@ -63,10 +63,6 @@ pub use cc_core::constants::MAX_IMAGE_BYTES;
 /// to gigabytes in RAM — must remain a hard ceiling, not user-tunable.
 pub const MAX_IMAGE_PIXELS: u64 = 8_000_000; // 8 MP
 
-/// When an image exceeds MAX_IMAGE_PIXELS, downscale to this long-edge
-/// in JPEG q=80 (mirrors the screenshot path in `computer_use.rs`).
-pub const IMAGE_RESIZE_LONG_EDGE: u32 = 2048;
-
 // ── PDF ─────────────────────────────────────────────────────────────────────
 
 /// Cap on the PDF bytes inlined as a `ContentBlock::Document` for vision
