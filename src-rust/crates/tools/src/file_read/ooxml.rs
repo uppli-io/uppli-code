@@ -174,7 +174,7 @@ fn extract_xlsx<R: std::io::Read + std::io::Seek>(
     let worksheet_name = "xl/worksheets/sheet1.xml";
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut total_rows = 0usize;
-    let mut truncated = false;
+    let mut stop_note: Option<&'static str> = None;
 
     let mut entry_capped = false;
     if let Ok(mut zf) = archive.by_name(worksheet_name) {
@@ -182,7 +182,7 @@ fn extract_xlsx<R: std::io::Read + std::io::Seek>(
         entry_capped = capped;
         let result = walk_xlsx_rows(&xml, &shared_strings);
         total_rows = result.total_rows;
-        truncated = result.truncated;
+        stop_note = result.stop.note();
         rows = result.rows;
     }
 
@@ -195,11 +195,12 @@ fn extract_xlsx<R: std::io::Read + std::io::Seek>(
             out.push_str(&row.join("\t"));
             out.push('\n');
         }
-        if truncated {
+        if let Some(reason) = stop_note {
             out.push_str(&format!(
-                "\n[Note: walker stopped early at {} rows of {} (malformed XML or depth guard tripped).]\n",
+                "\n[Note: walker stopped at {} rows of {}: {}.]\n",
                 rows.len(),
                 total_rows,
+                reason,
             ));
         }
     }
@@ -217,7 +218,32 @@ fn extract_xlsx<R: std::io::Read + std::io::Seek>(
 struct XlsxRows {
     rows: Vec<Vec<String>>,
     total_rows: usize,
-    truncated: bool,
+    stop: XlsxStop,
+}
+
+/// Why the XLSX row walker stopped reading. Only `Eof` means the
+/// sheet was consumed in full; every other variant indicates rows
+/// after `total_rows` may exist but were not read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum XlsxStop {
+    Eof,
+    /// OOXML must not contain a `<!DOCTYPE>`. We refuse and stop.
+    DocTypeRefused,
+    /// `MAX_XML_DEPTH` tripped — a billion-laughs / nested-explosion guard.
+    DepthExceeded,
+    /// quick-xml returned a parse error mid-stream.
+    XmlError,
+}
+
+impl XlsxStop {
+    fn note(self) -> Option<&'static str> {
+        match self {
+            Self::Eof => None,
+            Self::DocTypeRefused => Some("DOCTYPE in worksheet refused"),
+            Self::DepthExceeded => Some("XML nesting depth guard tripped"),
+            Self::XmlError => Some("malformed worksheet XML"),
+        }
+    }
 }
 
 fn walk_xlsx_rows(xml: &str, shared_strings: &[String]) -> XlsxRows {
@@ -228,7 +254,7 @@ fn walk_xlsx_rows(xml: &str, shared_strings: &[String]) -> XlsxRows {
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut current_row: Vec<String> = Vec::new();
     let mut total_rows = 0usize;
-    let mut truncated = false;
+    let mut stop = XlsxStop::Eof;
     let mut depth: u32 = 0;
     let mut in_value = false;
     let mut cell_type_shared = false;
@@ -236,13 +262,13 @@ fn walk_xlsx_rows(xml: &str, shared_strings: &[String]) -> XlsxRows {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::DocType(_)) => {
-                // Defensive — DOCTYPE in OOXML is suspicious. Stop here.
-                truncated = true;
+                stop = XlsxStop::DocTypeRefused;
                 break;
             }
             Ok(Event::Start(e)) => {
                 depth = depth.saturating_add(1);
                 if depth > MAX_XML_DEPTH {
+                    stop = XlsxStop::DepthExceeded;
                     break;
                 }
                 let name = e.name();
@@ -289,7 +315,10 @@ fn walk_xlsx_rows(xml: &str, shared_strings: &[String]) -> XlsxRows {
                 }
             }
             Ok(Event::Eof) => break,
-            Err(_) => break,
+            Err(_) => {
+                stop = XlsxStop::XmlError;
+                break;
+            }
             _ => {}
         }
         buf.clear();
@@ -297,7 +326,7 @@ fn walk_xlsx_rows(xml: &str, shared_strings: &[String]) -> XlsxRows {
     XlsxRows {
         rows,
         total_rows,
-        truncated,
+        stop,
     }
 }
 
@@ -650,9 +679,52 @@ mod tests {
         let result = walk_xlsx_rows(xml, &shared);
         assert_eq!(result.total_rows, 2);
         assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.stop, XlsxStop::Eof);
         assert_eq!(result.rows[0], vec!["hello", "world"]);
         assert_eq!(result.rows[1], vec!["42"]);
     }
+
+    #[test]
+    fn xlsx_walk_flags_doctype_as_premature_stop() {
+        let xml = r#"<?xml version="1.0"?><!DOCTYPE x><worksheet><sheetData>
+            <row><c><v>1</v></c></row>
+        </sheetData></worksheet>"#;
+        let result = walk_xlsx_rows(xml, &[]);
+        assert_eq!(result.stop, XlsxStop::DocTypeRefused);
+        assert!(
+            result.stop.note().is_some(),
+            "premature stop must carry a footer note"
+        );
+    }
+
+    #[test]
+    fn xlsx_walk_flags_depth_guard_as_premature_stop() {
+        // Build a worksheet whose <sheetData> nests past MAX_XML_DEPTH.
+        // We start with one normal row so the walker has produced output
+        // before the guard fires — this is the case that used to leave
+        // the user with a silent truncation.
+        let mut xml = String::from(r#"<worksheet><sheetData><row><c><v>1</v></c></row>"#);
+        for _ in 0..=MAX_XML_DEPTH {
+            xml.push_str("<deep>");
+        }
+        xml.push_str("</worksheet>");
+        let result = walk_xlsx_rows(&xml, &[]);
+        assert_eq!(result.stop, XlsxStop::DepthExceeded);
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "rows read before the guard must be kept"
+        );
+        assert!(result.stop.note().is_some());
+    }
+
+    // No test for `XlsxStop::XmlError` — quick-xml in non-strict mode
+    // recovers from most malformed input by emitting Event::Eof, so
+    // forcing a parse Err in a deterministic fixture is brittle.
+    // The dispatch branch in walk_xlsx_rows is still load-bearing for
+    // the rare cases where quick-xml does refuse (e.g. invalid byte
+    // sequences in the underlying Read); it just doesn't get a unit
+    // test. Integration coverage lives in the OOXML smoke tests.
 
     #[test]
     fn read_entry_capped_truncates_at_cap() {
@@ -688,7 +760,7 @@ mod tests {
         }
         xml.push_str("</sheetData></worksheet>");
         let result = walk_xlsx_rows(&xml, &[]);
-        assert!(!result.truncated);
+        assert_eq!(result.stop, XlsxStop::Eof);
         assert_eq!(result.rows.len(), 505);
         assert_eq!(result.total_rows, 505);
     }
