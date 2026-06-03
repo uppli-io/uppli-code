@@ -27,12 +27,6 @@ use crate::ToolResult;
 use cc_core::types::ContentBlock;
 use std::path::Path;
 
-// Runtime cap on `ContentBlock`s carried by a single FileRead tool
-// result flows through `Config::effective_max_blocks_per_result`
-// (knob: --max-blocks-per-result); the fallback constant lives in
-// `cc_core::constants::DEFAULT_MAX_BLOCKS_PER_RESULT` and is imported
-// inside `mod tests` where it is exercised directly.
-
 /// Description of a truncation that happened inside a handler. Used by
 /// `finalize` to append a canonical footer to `content` instead of every
 /// handler hand-rolling its own message.
@@ -120,7 +114,7 @@ impl HandlerOutput {
     /// Convert into the final `ToolResult`. Single dispatch point for the
     /// blocks-vs-text decision. Enforces every invariant the per-handler
     /// commits rely on.
-    pub fn finalize(mut self, path: &Path, max_blocks: usize) -> ToolResult {
+    pub fn finalize(mut self, path: &Path) -> ToolResult {
         // Footer first so the caption survives untruncated above it.
         if let Some(t) = self.truncation.as_ref() {
             self.content.push_str(&t.footer());
@@ -138,20 +132,7 @@ impl HandlerOutput {
             self.content = format!("[Read {} — empty handler output]", path.display());
         }
 
-        // Invariant 2: blocks length capped at DEFAULT_MAX_BLOCKS_PER_RESULT.
-        // Defensive guard against a handler that streams many small
-        // sub-images and forgets its own cap. The budget guard doesn't
-        // see Image/Document payloads (TODO(pr-c)), so this is the only
-        // thing keeping a runaway handler bounded.
-        if self.blocks.len() > max_blocks {
-            self.blocks.truncate(max_blocks);
-            self.content.push_str(&format!(
-                "\n[Note: block list truncated to {} entries — handler emitted more.]\n",
-                max_blocks
-            ));
-        }
-
-        // Invariant 3: only emit blocks when they actually carry an Image
+        // Invariant 2: only emit blocks when they actually carry an Image
         // or Document. Pure-text structured blocks (a future multi-part
         // table dialect, etc.) are valuable on capable providers but
         // we don't have an emitter for them yet — fold them into
@@ -179,7 +160,6 @@ impl HandlerOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cc_core::constants::DEFAULT_MAX_BLOCKS_PER_RESULT;
     use cc_core::types::ImageSource;
     use std::path::PathBuf;
 
@@ -201,7 +181,7 @@ mod tests {
     #[test]
     fn finalize_text_only_produces_success_no_blocks() {
         let out = HandlerOutput::success_text("hello world");
-        let r = out.finalize(&dummy_path(), DEFAULT_MAX_BLOCKS_PER_RESULT);
+        let r = out.finalize(&dummy_path());
         assert!(!r.is_error);
         assert_eq!(r.content, "hello world");
         assert!(r.blocks.is_none(), "text-only must not populate blocks");
@@ -215,7 +195,7 @@ mod tests {
             truncation: None,
             is_error: false,
         };
-        let r = out.finalize(&dummy_path(), DEFAULT_MAX_BLOCKS_PER_RESULT);
+        let r = out.finalize(&dummy_path());
         assert!(!r.is_error);
         assert_eq!(r.content, "[Image: dummy 1x1 png]");
         let blocks = r.blocks.expect("blocks must be Some");
@@ -232,7 +212,7 @@ mod tests {
             truncation: None,
             is_error: true,
         };
-        let r = out.finalize(&dummy_path(), DEFAULT_MAX_BLOCKS_PER_RESULT);
+        let r = out.finalize(&dummy_path());
         assert!(r.is_error);
         assert!(r.blocks.is_none(), "error result must not carry blocks");
     }
@@ -248,31 +228,24 @@ mod tests {
             }),
             is_error: false,
         };
-        let r = out.finalize(&dummy_path(), DEFAULT_MAX_BLOCKS_PER_RESULT);
+        let r = out.finalize(&dummy_path());
         assert!(r.content.contains("row 1"));
         assert!(r.content.contains("98 more lines"));
         assert!(r.content.contains("100 total"));
     }
 
     #[test]
-    fn finalize_caps_blocks_at_max() {
-        let blocks: Vec<ContentBlock> = (0..DEFAULT_MAX_BLOCKS_PER_RESULT + 5)
-            .map(|_| image_block())
-            .collect();
+    fn finalize_emits_all_visual_blocks_uncapped() {
+        let blocks: Vec<ContentBlock> = (0..25).map(|_| image_block()).collect();
         let out = HandlerOutput {
             content: "many images".to_string(),
             blocks,
             truncation: None,
             is_error: false,
         };
-        let r = out.finalize(&dummy_path(), DEFAULT_MAX_BLOCKS_PER_RESULT);
+        let r = out.finalize(&dummy_path());
         let blocks = r.blocks.expect("blocks must be Some");
-        assert_eq!(blocks.len(), DEFAULT_MAX_BLOCKS_PER_RESULT);
-        assert!(
-            r.content.contains("truncated"),
-            "must note the cap was hit, got: {}",
-            r.content
-        );
+        assert_eq!(blocks.len(), 25);
     }
 
     #[test]
@@ -289,7 +262,7 @@ mod tests {
             truncation: None,
             is_error: false,
         };
-        let r = out.finalize(&dummy_path(), DEFAULT_MAX_BLOCKS_PER_RESULT);
+        let r = out.finalize(&dummy_path());
         assert!(
             r.blocks.is_none(),
             "text-only blocks must NOT promote to ToolResult.blocks"

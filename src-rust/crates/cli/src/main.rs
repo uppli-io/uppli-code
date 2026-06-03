@@ -543,18 +543,10 @@ struct Cli {
     #[arg(long = "max-archive-members", value_name = "COUNT")]
     max_archive_members: Option<usize>,
 
-    /// Cap on rows emitted from the OOXML / XLSX text fallback in Read.
-    #[arg(long = "max-ooxml-rows", value_name = "COUNT")]
-    max_ooxml_rows: Option<usize>,
-
     /// Cap on PDF bytes inlined as a Document block for vision providers.
     /// Beyond this the tool still extracts text but emits no Document block.
     #[arg(long = "max-pdf-bytes", value_name = "BYTES")]
     max_pdf_bytes: Option<u64>,
-
-    /// Cap on the number of PDF pages Read will emit text for.
-    #[arg(long = "max-pdf-pages", value_name = "COUNT")]
-    max_pdf_pages: Option<usize>,
 
     /// Wall-clock budget (seconds) for pdf-extract text extraction.
     #[arg(long = "pdf-extract-timeout-secs", value_name = "SECONDS")]
@@ -598,19 +590,10 @@ struct Cli {
     #[arg(long = "bash-output-max-chars", value_name = "CHARS")]
     bash_output_max_chars: Option<usize>,
 
-    /// Defensive cap on the number of `ContentBlock`s a single Read tool
-    /// result can carry (images / documents).
-    #[arg(long = "max-blocks-per-result", value_name = "BLOCKS")]
-    max_blocks_per_result: Option<usize>,
-
     /// Cap on the bytes of inline text extracted from a single OOXML
     /// document (.docx / .xlsx / .pptx).
     #[arg(long = "max-ooxml-text-bytes", value_name = "BYTES")]
     max_ooxml_text_bytes: Option<usize>,
-
-    /// Cap on the number of slides extracted from a PPTX file.
-    #[arg(long = "max-pptx-slides", value_name = "SLIDES")]
-    max_pptx_slides: Option<usize>,
 
     /// Max chars of WebFetch HTML-to-text body before tail truncation.
     #[arg(long = "web-fetch-max-chars", value_name = "CHARS")]
@@ -1213,14 +1196,8 @@ async fn main() -> anyhow::Result<()> {
     if let Some(v) = cli.max_archive_members {
         config.max_archive_members = Some(v);
     }
-    if let Some(v) = cli.max_ooxml_rows {
-        config.max_ooxml_rows = Some(v);
-    }
     if let Some(v) = cli.max_pdf_bytes {
         config.max_pdf_bytes = Some(v);
-    }
-    if let Some(v) = cli.max_pdf_pages {
-        config.max_pdf_pages = Some(v);
     }
     if let Some(v) = cli.pdf_extract_timeout_secs {
         config.pdf_extract_timeout_secs = Some(v);
@@ -1250,14 +1227,8 @@ async fn main() -> anyhow::Result<()> {
     if let Some(v) = cli.bash_output_max_chars {
         config.bash_output_max_chars = Some(v);
     }
-    if let Some(v) = cli.max_blocks_per_result {
-        config.max_blocks_per_result = Some(v);
-    }
     if let Some(v) = cli.max_ooxml_text_bytes {
         config.max_ooxml_text_bytes = Some(v);
-    }
-    if let Some(v) = cli.max_pptx_slides {
-        config.max_pptx_slides = Some(v);
     }
     if let Some(v) = cli.web_fetch_max_chars {
         config.web_fetch_max_chars = Some(v);

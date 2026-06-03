@@ -233,7 +233,7 @@ impl Tool for FileReadTool {
             out.content = format!("{}{}", note, out.content);
         }
 
-        out.finalize(&path, ctx.config.effective_max_blocks_per_result())
+        out.finalize(&path)
     }
 }
 

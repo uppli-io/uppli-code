@@ -74,9 +74,6 @@ pub const IMAGE_RESIZE_LONG_EDGE: u32 = 2048;
 /// `blocks=None`.
 pub const MAX_PDF_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB
 
-/// Cap on the number of pages the handler will emit text for.
-pub const MAX_PDF_PAGES: usize = 50;
-
 /// Wall-clock budget for `pdf-extract::extract_text`. The crate has
 /// historical panic CVEs and can also hang on adversarial input; we
 /// wrap it in `spawn_blocking` + `tokio::time::timeout` + `catch_unwind`.
@@ -91,9 +88,6 @@ pub const PDF_EXTRACT_TIMEOUT_SECS: u64 = 30;
 /// 20 MiB rejects truly unreasonable docs while allowing all realistic
 /// ones; user gets a clear error rather than silent loss.
 pub const MAX_OOXML_BYTES: u64 = 20 * 1024 * 1024; // 20 MiB
-
-/// Cap on the number of XLSX rows emitted in the textual fallback.
-pub const MAX_OOXML_ROWS: usize = 500;
 
 /// Maximum nesting depth for XML elements inside OOXML / ODF parts.
 /// Defeats billion-laughs / XXE / deeply-nested entities.
@@ -134,13 +128,6 @@ pub const MAX_ARCHIVE_MEMBERS: usize = 1024;
 /// Hardcoded: nested-archive recursion guard against zip-quine attacks.
 /// Depth 2 is plenty for any real archive.
 pub const MAX_ARCHIVE_DEPTH: u32 = 2;
-
-// ── Output ──────────────────────────────────────────────────────────────────
-
-/// Defensive cap on the number of `ContentBlock`s a single tool result
-/// can carry. Until the budget guard is teach to sum block payloads
-/// (TODO(pr-c)), this keeps the worst-case tool_result bounded.
-pub const MAX_BLOCKS_PER_RESULT: usize = 20;
 
 // ── Human-readable byte formatting ──────────────────────────────────────────
 

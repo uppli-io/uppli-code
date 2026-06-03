@@ -753,18 +753,10 @@ pub mod config {
         /// `None` falls back to `DEFAULT_MAX_ARCHIVE_MEMBERS` (1024).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub max_archive_members: Option<usize>,
-        /// Cap on rows emitted from the OOXML / XLSX text fallback.
-        /// `None` falls back to `DEFAULT_MAX_OOXML_ROWS` (500).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub max_ooxml_rows: Option<usize>,
         /// Cap on PDF bytes inlined as a Document block for vision providers.
         /// `None` falls back to `DEFAULT_MAX_PDF_BYTES` (5 MiB).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub max_pdf_bytes: Option<u64>,
-        /// Cap on the number of PDF pages the FileRead handler emits text for.
-        /// `None` falls back to `DEFAULT_MAX_PDF_PAGES` (50).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub max_pdf_pages: Option<usize>,
         /// Wall-clock budget (seconds) for pdf-extract text extraction.
         /// `None` falls back to `DEFAULT_PDF_EXTRACT_TIMEOUT_SECS` (30).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -806,20 +798,11 @@ pub mod config {
         /// Unix and Windows code paths so they cannot drift apart.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub bash_output_max_chars: Option<usize>,
-        /// Defensive cap on the number of `ContentBlock`s a single FileRead
-        /// tool result can carry (images / documents). `None` falls back to
-        /// `DEFAULT_MAX_BLOCKS_PER_RESULT` (20).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub max_blocks_per_result: Option<usize>,
         /// Cap on the bytes of inline text extracted from a single OOXML
         /// document (.docx / .xlsx / .pptx). `None` falls back to
         /// `DEFAULT_MAX_OOXML_TEXT_BYTES` (1.5 MiB).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub max_ooxml_text_bytes: Option<usize>,
-        /// Cap on the number of slides extracted from a PPTX file. `None`
-        /// falls back to `DEFAULT_MAX_PPTX_SLIDES` (20).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub max_pptx_slides: Option<usize>,
         /// Cap on the chars of the WebFetch tool's HTML-to-text body before
         /// tail truncation. `None` falls back to
         /// `DEFAULT_WEB_FETCH_MAX_CHARS` (100 000).
@@ -1545,22 +1528,10 @@ pub mod config {
                 .unwrap_or(crate::constants::DEFAULT_MAX_ARCHIVE_MEMBERS)
         }
 
-        /// Resolve the cap on rows emitted from the OOXML / XLSX fallback.
-        pub fn effective_max_ooxml_rows(&self) -> usize {
-            self.max_ooxml_rows
-                .unwrap_or(crate::constants::DEFAULT_MAX_OOXML_ROWS)
-        }
-
         /// Resolve the cap on PDF bytes inlined as a Document block.
         pub fn effective_max_pdf_bytes(&self) -> u64 {
             self.max_pdf_bytes
                 .unwrap_or(crate::constants::DEFAULT_MAX_PDF_BYTES)
-        }
-
-        /// Resolve the cap on the number of PDF pages emitted as text.
-        pub fn effective_max_pdf_pages(&self) -> usize {
-            self.max_pdf_pages
-                .unwrap_or(crate::constants::DEFAULT_MAX_PDF_PAGES)
         }
 
         /// Resolve the wall-clock budget (seconds) for pdf-extract.
@@ -1622,24 +1593,11 @@ pub mod config {
                 .unwrap_or(crate::constants::DEFAULT_BASH_OUTPUT_MAX_CHARS)
         }
 
-        /// Resolve the defensive cap on `ContentBlock`s carried by a single
-        /// FileRead tool result.
-        pub fn effective_max_blocks_per_result(&self) -> usize {
-            self.max_blocks_per_result
-                .unwrap_or(crate::constants::DEFAULT_MAX_BLOCKS_PER_RESULT)
-        }
-
         /// Resolve the cap on bytes of inline text extracted from a single
         /// OOXML document.
         pub fn effective_max_ooxml_text_bytes(&self) -> usize {
             self.max_ooxml_text_bytes
                 .unwrap_or(crate::constants::DEFAULT_MAX_OOXML_TEXT_BYTES)
-        }
-
-        /// Resolve the cap on the number of PPTX slides extracted.
-        pub fn effective_max_pptx_slides(&self) -> usize {
-            self.max_pptx_slides
-                .unwrap_or(crate::constants::DEFAULT_MAX_PPTX_SLIDES)
         }
 
         /// Resolve the cap on chars of the WebFetch tool's HTML-to-text body.
@@ -2340,14 +2298,9 @@ pub mod constants {
     /// output before head+tail truncation kicks in. Shared by Unix and
     /// Windows code paths.
     pub const DEFAULT_BASH_OUTPUT_MAX_CHARS: usize = 500_000;
-    /// Defensive cap on the number of `ContentBlock`s a single FileRead
-    /// tool result can carry.
-    pub const DEFAULT_MAX_BLOCKS_PER_RESULT: usize = 20;
     /// Cap on the bytes of inline text extracted from a single OOXML
     /// document (.docx / .xlsx / .pptx).
     pub const DEFAULT_MAX_OOXML_TEXT_BYTES: usize = 1_500_000;
-    /// Cap on the number of slides extracted from a PPTX file.
-    pub const DEFAULT_MAX_PPTX_SLIDES: usize = 20;
     /// Cap (chars) on the WebFetch tool's HTML-to-text body before tail
     /// truncation.
     pub const DEFAULT_WEB_FETCH_MAX_CHARS: usize = 100_000;
@@ -2413,15 +2366,9 @@ pub mod constants {
     /// Cap on archive entries listed in a single FileRead invocation.
     /// Mirrors the historical `file_read::limits::MAX_ARCHIVE_MEMBERS`.
     pub const DEFAULT_MAX_ARCHIVE_MEMBERS: usize = 1_024;
-    /// Cap on rows emitted from the OOXML / XLSX text fallback. Mirrors
-    /// the historical `file_read::limits::MAX_OOXML_ROWS`.
-    pub const DEFAULT_MAX_OOXML_ROWS: usize = 500;
     /// Cap on PDF bytes inlined as a Document block for vision providers.
     /// Mirrors the historical `file_read::limits::MAX_PDF_BYTES`.
     pub const DEFAULT_MAX_PDF_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB
-    /// Cap on the number of PDF pages the FileRead handler emits text for.
-    /// Mirrors the historical `file_read::limits::MAX_PDF_PAGES`.
-    pub const DEFAULT_MAX_PDF_PAGES: usize = 50;
     /// Wall-clock budget (seconds) for pdf-extract text extraction. Mirrors
     /// the historical `file_read::limits::PDF_EXTRACT_TIMEOUT_SECS`.
     pub const DEFAULT_PDF_EXTRACT_TIMEOUT_SECS: u64 = 30;

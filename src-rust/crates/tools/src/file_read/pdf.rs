@@ -48,19 +48,17 @@ use super::output::HandlerOutput;
 /// useful content.
 ///
 /// `pages` is an optional 1-based page-range selector like `"1-5,7"`.
-/// `None` means "first `effective_max_pdf_pages()` pages". Out-of-range
-/// ranges clamp; unparseable input falls through to all pages with a
-/// note.
+/// `None` means all pages. Out-of-range ranges clamp; unparseable input
+/// falls through to all pages with a note.
 ///
 /// `cfg` carries the user-configurable knobs (`max_pdf_bytes`,
-/// `max_pdf_pages`, `pdf_extract_timeout_secs`).
+/// `pdf_extract_timeout_secs`).
 pub async fn read_pdf(
     path: &Path,
     pages: Option<&str>,
     cfg: &cc_core::config::Config,
 ) -> HandlerOutput {
     let max_pdf_bytes = cfg.effective_max_pdf_bytes();
-    let max_pdf_pages = cfg.effective_max_pdf_pages();
     let pdf_extract_timeout_secs = cfg.effective_pdf_extract_timeout_secs();
     let display = path.display().to_string();
 
@@ -200,7 +198,7 @@ pub async fn read_pdf(
 
     let (page_indices, pages_used_label) = match (pages_request.as_deref(), has_page_markers) {
         (Some(sel), true) => {
-            let parsed = parse_page_selector(sel, total_pages, max_pdf_pages);
+            let parsed = parse_page_selector(sel, total_pages);
             let label = format_pages_label(&parsed, total_pages);
             (parsed, label)
         }
@@ -209,18 +207,9 @@ pub async fn read_pdf(
             // no page markers. Surface this so the model knows the
             // sub-range did NOT apply.
             pages_selector_silently_ignored = true;
-            let capped = std::cmp::min(total_pages, max_pdf_pages);
-            ((1..=capped).collect(), String::new())
+            ((1..=total_pages).collect(), String::new())
         }
-        (None, _) => {
-            let capped = std::cmp::min(total_pages, max_pdf_pages);
-            let label = if total_pages > max_pdf_pages {
-                format!("1-{} of {} (capped at max_pdf_pages)", capped, total_pages)
-            } else {
-                String::new()
-            };
-            ((1..=capped).collect(), label)
-        }
+        (None, _) => ((1..=total_pages).collect(), String::new()),
     };
 
     let mut emitted = String::new();
@@ -297,8 +286,8 @@ pub async fn read_pdf(
 /// `[1, total]`.
 ///
 /// Malformed entries are skipped. Empty / all-malformed selector →
-/// the full range up to `max_pages`.
-fn parse_page_selector(sel: &str, total: usize, max_pages: usize) -> Vec<usize> {
+/// the full range.
+fn parse_page_selector(sel: &str, total: usize) -> Vec<usize> {
     let mut acc: Vec<usize> = Vec::new();
     for part in sel.split(',') {
         let part = part.trim();
@@ -325,12 +314,8 @@ fn parse_page_selector(sel: &str, total: usize, max_pages: usize) -> Vec<usize> 
     acc.sort_unstable();
     acc.dedup();
     if acc.is_empty() {
-        let upper = std::cmp::min(total, max_pages);
-        (1..=upper).collect()
+        (1..=total).collect()
     } else {
-        if acc.len() > max_pages {
-            acc.truncate(max_pages);
-        }
         acc
     }
 }
@@ -369,43 +354,42 @@ fn format_pages_label(pages: &[usize], total: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cc_core::constants::DEFAULT_MAX_PDF_PAGES;
 
     #[test]
     fn page_selector_simple_range() {
-        let p = parse_page_selector("1-3", 10, DEFAULT_MAX_PDF_PAGES);
+        let p = parse_page_selector("1-3", 10);
         assert_eq!(p, vec![1, 2, 3]);
     }
 
     #[test]
     fn page_selector_mixed() {
-        let p = parse_page_selector("1-3,5,7-8", 10, DEFAULT_MAX_PDF_PAGES);
+        let p = parse_page_selector("1-3,5,7-8", 10);
         assert_eq!(p, vec![1, 2, 3, 5, 7, 8]);
     }
 
     #[test]
     fn page_selector_clamps_to_total() {
-        let p = parse_page_selector("1-100", 5, DEFAULT_MAX_PDF_PAGES);
+        let p = parse_page_selector("1-100", 5);
         assert_eq!(p, vec![1, 2, 3, 4, 5]);
     }
 
     #[test]
     fn page_selector_dedupes() {
-        let p = parse_page_selector("1,1,2,2,3", 10, DEFAULT_MAX_PDF_PAGES);
+        let p = parse_page_selector("1,1,2,2,3", 10);
         assert_eq!(p, vec![1, 2, 3]);
     }
 
     #[test]
     fn page_selector_malformed_falls_back_to_all() {
-        let p = parse_page_selector("abc", 5, DEFAULT_MAX_PDF_PAGES);
+        let p = parse_page_selector("abc", 5);
         assert_eq!(p, vec![1, 2, 3, 4, 5]);
     }
 
     #[test]
-    fn page_selector_caps_at_max_pdf_pages() {
+    fn page_selector_handles_huge_input() {
         let sel: String = (1..=200).map(|i| format!("{},", i)).collect();
-        let p = parse_page_selector(&sel, 1000, DEFAULT_MAX_PDF_PAGES);
-        assert!(p.len() <= DEFAULT_MAX_PDF_PAGES);
+        let p = parse_page_selector(&sel, 1000);
+        assert_eq!(p.len(), 200);
     }
 
     // Smoke tests for the two soft-failure signals introduced after PR

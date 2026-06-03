@@ -89,10 +89,7 @@ fn read_entry_capped<R: Read>(entry: &mut R) -> (String, bool) {
 /// route here too — the wrapper in `odf.rs` flips the entry filename
 /// map (content.xml vs word/document.xml) and forwards.
 ///
-/// `cfg` carries the user-configurable knobs (currently
-/// `max_ooxml_rows`).
 pub async fn read_ooxml(path: &Path, kind: Kind, cfg: &cc_core::config::Config) -> HandlerOutput {
-    let max_ooxml_rows = cfg.effective_max_ooxml_rows();
     let display = path.display().to_string();
     let meta = match fs::symlink_metadata(path).await {
         Ok(m) => m,
@@ -142,17 +139,10 @@ pub async fn read_ooxml(path: &Path, kind: Kind, cfg: &cc_core::config::Config) 
     };
 
     let max_ooxml_text_bytes = cfg.effective_max_ooxml_text_bytes();
-    let max_pptx_slides = cfg.effective_max_pptx_slides();
     match kind {
-        Kind::Xlsx => extract_xlsx(path, &mut archive, max_ooxml_text_bytes, max_ooxml_rows),
+        Kind::Xlsx => extract_xlsx(path, &mut archive, max_ooxml_text_bytes),
         Kind::Docx => extract_docx(path, &mut archive, size, max_ooxml_text_bytes),
-        Kind::Pptx => extract_pptx(
-            path,
-            &mut archive,
-            size,
-            max_ooxml_text_bytes,
-            max_pptx_slides,
-        ),
+        Kind::Pptx => extract_pptx(path, &mut archive, size, max_ooxml_text_bytes),
         // ODF formats are handled in odf.rs which calls helpers here.
         other => HandlerOutput::error_text(format!(
             "[OOXML handler called for non-OOXML kind: {:?}]",
@@ -167,7 +157,6 @@ fn extract_xlsx<R: std::io::Read + std::io::Seek>(
     path: &Path,
     archive: &mut ZipArchive<R>,
     max_ooxml_text_bytes: usize,
-    max_ooxml_rows: usize,
 ) -> HandlerOutput {
     let shared_strings = read_shared_strings(archive);
 
@@ -191,7 +180,7 @@ fn extract_xlsx<R: std::io::Read + std::io::Seek>(
     if let Ok(mut zf) = archive.by_name(worksheet_name) {
         let (xml, capped) = read_entry_capped(&mut zf);
         entry_capped = capped;
-        let result = walk_xlsx_rows(&xml, &shared_strings, max_ooxml_rows);
+        let result = walk_xlsx_rows(&xml, &shared_strings);
         total_rows = result.total_rows;
         truncated = result.truncated;
         rows = result.rows;
@@ -208,10 +197,9 @@ fn extract_xlsx<R: std::io::Read + std::io::Seek>(
         }
         if truncated {
             out.push_str(&format!(
-                "\n[Truncated: showing {} rows of {} in active sheet (cap {}). Use Bash + xlsx2csv for the full sheet.]\n",
+                "\n[Note: walker stopped early at {} rows of {} (malformed XML or depth guard tripped).]\n",
                 rows.len(),
                 total_rows,
-                max_ooxml_rows,
             ));
         }
     }
@@ -232,7 +220,7 @@ struct XlsxRows {
     truncated: bool,
 }
 
-fn walk_xlsx_rows(xml: &str, shared_strings: &[String], max_rows: usize) -> XlsxRows {
+fn walk_xlsx_rows(xml: &str, shared_strings: &[String]) -> XlsxRows {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     reader.config_mut().expand_empty_elements = true;
@@ -277,11 +265,7 @@ fn walk_xlsx_rows(xml: &str, shared_strings: &[String], max_rows: usize) -> Xlsx
                 let name_bytes = e.name().as_ref().to_vec();
                 if name_bytes == b"row" {
                     total_rows += 1;
-                    if rows.len() < max_rows {
-                        rows.push(std::mem::take(&mut current_row));
-                    } else {
-                        truncated = true;
-                    }
+                    rows.push(std::mem::take(&mut current_row));
                 } else if name_bytes == b"v" {
                     in_value = false;
                 }
@@ -473,7 +457,6 @@ fn extract_pptx<R: Read + std::io::Seek>(
     archive: &mut ZipArchive<R>,
     size: u64,
     max_ooxml_text_bytes: usize,
-    max_pptx_slides: usize,
 ) -> HandlerOutput {
     // Collect slide entries, sort by numeric index (NOT lexicographically
     // — slide10.xml < slide2.xml lexicographically, but we want 1, 2, ...
@@ -493,8 +476,6 @@ fn extract_pptx<R: Read + std::io::Seek>(
         .collect();
     slides.sort_by_key(|(idx, _)| *idx);
     let total_slides = slides.len();
-    let truncated = total_slides > max_pptx_slides;
-    slides.truncate(max_pptx_slides);
 
     let mut out = caption::pptx(path, total_slides, size);
     out.push_str("\n\n");
@@ -520,12 +501,6 @@ fn extract_pptx<R: Read + std::io::Seek>(
         out.push('\n');
     }
 
-    if truncated {
-        out.push_str(&format!(
-            "\n[Truncated: showed first {} of {} slides. Use Bash + libreoffice for the rest.]\n",
-            max_pptx_slides, total_slides
-        ));
-    }
     if any_slide_capped {
         out.push_str(&format!(
             "\n[Note: one or more slide XML entries capped at {} MiB decompressed — suspected zip bomb.]\n",
@@ -667,13 +642,12 @@ mod tests {
 
     #[test]
     fn xlsx_walk_resolves_shared_strings() {
-        use cc_core::constants::DEFAULT_MAX_OOXML_ROWS;
         let xml = r#"<worksheet xmlns="urn:x"><sheetData>
             <row><c t="s"><v>0</v></c><c t="s"><v>1</v></c></row>
             <row><c><v>42</v></c></row>
         </sheetData></worksheet>"#;
         let shared = vec!["hello".to_string(), "world".to_string()];
-        let result = walk_xlsx_rows(xml, &shared, DEFAULT_MAX_OOXML_ROWS);
+        let result = walk_xlsx_rows(xml, &shared);
         assert_eq!(result.total_rows, 2);
         assert_eq!(result.rows.len(), 2);
         assert_eq!(result.rows[0], vec!["hello", "world"]);
@@ -707,16 +681,15 @@ mod tests {
     }
 
     #[test]
-    fn xlsx_walk_caps_at_max_rows() {
-        use cc_core::constants::DEFAULT_MAX_OOXML_ROWS;
+    fn xlsx_walk_emits_all_rows_uncapped() {
         let mut xml = String::from(r#"<worksheet><sheetData>"#);
-        for _ in 0..(DEFAULT_MAX_OOXML_ROWS + 5) {
+        for _ in 0..505 {
             xml.push_str(r#"<row><c><v>1</v></c></row>"#);
         }
         xml.push_str("</sheetData></worksheet>");
-        let result = walk_xlsx_rows(&xml, &[], DEFAULT_MAX_OOXML_ROWS);
-        assert!(result.truncated);
-        assert_eq!(result.rows.len(), DEFAULT_MAX_OOXML_ROWS);
-        assert_eq!(result.total_rows, DEFAULT_MAX_OOXML_ROWS + 5);
+        let result = walk_xlsx_rows(&xml, &[]);
+        assert!(!result.truncated);
+        assert_eq!(result.rows.len(), 505);
+        assert_eq!(result.total_rows, 505);
     }
 }
