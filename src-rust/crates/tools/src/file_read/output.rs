@@ -27,8 +27,6 @@ use crate::ToolResult;
 use cc_core::types::ContentBlock;
 use std::path::Path;
 
-use super::limits::MAX_BLOCKS_PER_RESULT;
-
 /// Description of a truncation that happened inside a handler. Used by
 /// `finalize` to append a canonical footer to `content` instead of every
 /// handler hand-rolling its own message.
@@ -134,20 +132,7 @@ impl HandlerOutput {
             self.content = format!("[Read {} — empty handler output]", path.display());
         }
 
-        // Invariant 2: blocks length capped at MAX_BLOCKS_PER_RESULT.
-        // Defensive guard against a handler that streams many small
-        // sub-images and forgets its own cap. The budget guard doesn't
-        // see Image/Document payloads (TODO(pr-c)), so this is the only
-        // thing keeping a runaway handler bounded.
-        if self.blocks.len() > MAX_BLOCKS_PER_RESULT {
-            self.blocks.truncate(MAX_BLOCKS_PER_RESULT);
-            self.content.push_str(&format!(
-                "\n[Note: block list truncated to {} entries — handler emitted more.]\n",
-                MAX_BLOCKS_PER_RESULT
-            ));
-        }
-
-        // Invariant 3: only emit blocks when they actually carry an Image
+        // Invariant 2: only emit blocks when they actually carry an Image
         // or Document. Pure-text structured blocks (a future multi-part
         // table dialect, etc.) are valuable on capable providers but
         // we don't have an emitter for them yet — fold them into
@@ -250,10 +235,8 @@ mod tests {
     }
 
     #[test]
-    fn finalize_caps_blocks_at_max() {
-        let blocks: Vec<ContentBlock> = (0..MAX_BLOCKS_PER_RESULT + 5)
-            .map(|_| image_block())
-            .collect();
+    fn finalize_emits_all_visual_blocks_uncapped() {
+        let blocks: Vec<ContentBlock> = (0..25).map(|_| image_block()).collect();
         let out = HandlerOutput {
             content: "many images".to_string(),
             blocks,
@@ -262,12 +245,7 @@ mod tests {
         };
         let r = out.finalize(&dummy_path());
         let blocks = r.blocks.expect("blocks must be Some");
-        assert_eq!(blocks.len(), MAX_BLOCKS_PER_RESULT);
-        assert!(
-            r.content.contains("truncated"),
-            "must note the cap was hit, got: {}",
-            r.content
-        );
+        assert_eq!(blocks.len(), 25);
     }
 
     #[test]

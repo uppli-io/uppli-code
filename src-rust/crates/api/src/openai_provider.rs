@@ -58,6 +58,16 @@ pub struct OpenAiProviderConfig {
     pub thinking_format: Option<crate::provider::ThinkingFormat>,
     /// Authentication configuration.
     pub auth: AuthConfig,
+    // ── Batch 9 tunables (sourced from cc_core::config::Config) ─
+    /// Initial retry backoff (ms) for `send_with_retry`.
+    /// Mirrors `cc_core::constants::PROVIDER_INITIAL_BACKOFF_MS`.
+    pub initial_backoff_ms: u64,
+    /// Max retry backoff ceiling (seconds) for `send_with_retry`.
+    /// Mirrors `cc_core::constants::PROVIDER_MAX_BACKOFF_SECS`.
+    pub max_backoff_secs: u64,
+    /// Capacity of the streaming MPSC channel.
+    /// Mirrors `cc_core::constants::PROVIDER_STREAM_CHANNEL_CAPACITY`.
+    pub stream_channel_capacity: usize,
 }
 
 impl OpenAiProviderConfig {
@@ -90,7 +100,19 @@ impl OpenAiProviderConfig {
             supports_vision: caps.supports_vision,
             thinking_format: caps.thinking_format,
             auth: caps.auth,
+            initial_backoff_ms: cc_core::constants::PROVIDER_INITIAL_BACKOFF_MS,
+            max_backoff_secs: cc_core::constants::PROVIDER_MAX_BACKOFF_SECS,
+            stream_channel_capacity: cc_core::constants::PROVIDER_STREAM_CHANNEL_CAPACITY,
         }
+    }
+
+    /// Override the Batch 9 retry/streaming tunables from a `cc_core::config::Config`.
+    /// Returns `self` so this can be chained after `from_loaded`.
+    pub fn with_runtime_overrides(mut self, cfg: &cc_core::config::Config) -> Self {
+        self.initial_backoff_ms = cfg.effective_provider_initial_backoff_ms();
+        self.max_backoff_secs = cfg.effective_provider_max_backoff_secs();
+        self.stream_channel_capacity = cfg.effective_provider_stream_channel_capacity();
+        self
     }
 }
 
@@ -1252,7 +1274,8 @@ impl OpenAiProvider {
         body: &Value,
     ) -> Result<reqwest::Response, ClaudeError> {
         let mut attempts = 0u32;
-        let mut delay = Duration::from_secs(2);
+        let mut delay = Duration::from_millis(self.config.initial_backoff_ms);
+        let max_backoff = Duration::from_secs(self.config.max_backoff_secs);
 
         loop {
             attempts += 1;
@@ -1289,7 +1312,7 @@ impl OpenAiProvider {
                     "Retryable API error, backing off"
                 );
                 tokio::time::sleep(wait).await;
-                delay = (delay * 2).min(Duration::from_secs(30));
+                delay = (delay * 2).min(max_backoff);
                 continue;
             }
 
@@ -1338,7 +1361,7 @@ impl LlmProvider for OpenAiProvider {
         }
 
         let resp = self.send_with_retry(&url, &body).await?;
-        let (tx, rx) = mpsc::channel(256);
+        let (tx, rx) = mpsc::channel(self.config.stream_channel_capacity);
 
         let api_format = self.config.api_format;
         tokio::spawn(async move {

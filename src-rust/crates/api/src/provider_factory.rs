@@ -164,15 +164,20 @@ fn create_deepseek_provider(
 
     let use_bearer_auth = api_key.starts_with("eyJ");
 
-    let client = crate::AnthropicClient::new(
-        crate::client::ClientConfig {
-            api_key,
-            api_base,
-            use_bearer_auth,
-            ..Default::default()
-        },
-        loaded.capabilities.clone(),
-    )?;
+    // Batch 8: layer Config overrides on top of the legacy ClientConfig
+    // defaults so unattended runs can extend the legacy Anthropic-format
+    // timeout / retry envelope from the CLI.
+    let mut client_config = crate::client::ClientConfig {
+        api_key,
+        api_base,
+        use_bearer_auth,
+        ..Default::default()
+    };
+    client_config.max_retries = config.effective_anthropic_legacy_max_retries();
+    client_config.request_timeout =
+        std::time::Duration::from_secs(config.effective_anthropic_request_timeout_secs());
+
+    let client = crate::AnthropicClient::new(client_config, loaded.capabilities.clone())?;
 
     Ok(Box::new(client))
 }
@@ -209,7 +214,8 @@ fn create_openai_compat_provider(
         String::new()
     };
 
-    let mut cfg = crate::OpenAiProviderConfig::from_loaded(loaded, api_key, model);
+    let mut cfg = crate::OpenAiProviderConfig::from_loaded(loaded, api_key, model)
+        .with_runtime_overrides(config);
 
     // Apply user overrides from settings.json (api_base, fast_model).
     if let Some(s) = settings {
@@ -224,6 +230,16 @@ fn create_openai_compat_provider(
     // CLI --api-base (UPPLI_API_BASE env) overrides everything.
     if let Ok(base) = std::env::var("UPPLI_API_BASE") {
         cfg.api_base = base;
+    }
+
+    // Batch 8: CLI / settings override the TOML preset values for HTTP
+    // request timeout and retry count. Only swap when the user opted in
+    // (Option::is_some) — otherwise keep whatever the TOML provided.
+    if let Some(retries) = config.provider_max_retries {
+        cfg.max_retries = retries;
+    }
+    if let Some(secs) = config.provider_request_timeout_sec {
+        cfg.request_timeout = std::time::Duration::from_secs(secs);
     }
 
     Ok(Box::new(crate::OpenAiProvider::new(cfg)?))

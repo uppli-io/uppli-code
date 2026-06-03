@@ -150,7 +150,6 @@ pub struct StatuslineCommand;
 pub struct SecurityReviewCommand;
 pub struct TerminalSetupCommand;
 pub struct ExtraUsageCommand;
-pub struct FastCommand;
 pub struct ThinkBackCommand;
 pub struct ThinkBackPlayCommand;
 pub struct FeedbackCommand;
@@ -1154,7 +1153,6 @@ impl SlashCommand for StatusCommand {
         // UI settings
         let ui = load_ui_settings();
         let editor_mode = ui.editor_mode.as_deref().unwrap_or("normal");
-        let fast_mode = ui.fast_mode.unwrap_or(false);
 
         // Git status
         let git_branch = tokio::process::Command::new("git")
@@ -1171,7 +1169,6 @@ impl SlashCommand for StatusCommand {
              Auth:           {auth_status}\n\
              Model:          {model}\n\
              Permission mode: {perm:?}\n\
-             Fast mode:      {fast}\n\
              Editor mode:    {editor}\n\n\
              Session\n\
              ───────\n\
@@ -1190,7 +1187,6 @@ impl SlashCommand for StatusCommand {
             auth_status = auth_status,
             model = ctx.config.effective_model(),
             perm = ctx.config.permission_mode,
-            fast = if fast_mode { "on" } else { "off" },
             editor = editor_mode,
             sid = &ctx.session_id[..ctx.session_id.len().min(12)],
             title = ctx.session_title.as_deref().unwrap_or("(untitled)"),
@@ -1253,12 +1249,18 @@ impl SlashCommand for DiffCommand {
                             .to_string(),
                     )
                 } else {
-                    // Truncate very long diffs
+                    // Truncate very long diffs (configurable via --diff-command-max-bytes).
                     let text = stdout.as_ref();
-                    let display = if text.len() > 8000 {
+                    let max_bytes = ctx.config.effective_diff_command_max_bytes();
+                    let display = if text.len() > max_bytes {
+                        // Clamp to a char boundary so we don't slice mid-codepoint.
+                        let mut cut = max_bytes.min(text.len());
+                        while cut > 0 && !text.is_char_boundary(cut) {
+                            cut -= 1;
+                        }
                         format!(
                             "{}\n… (truncated — {} total bytes; use `git diff` for full output)",
-                            &text[..8000],
+                            &text[..cut],
                             text.len()
                         )
                     } else {
@@ -1349,6 +1351,7 @@ impl SlashCommand for MemoryCommand {
                     Ok(content) => {
                         let lines: usize = content.lines().count();
                         let chars = content.len();
+                        let preview_max = ctx.config.effective_file_preview_max_chars();
                         output.push_str(&format!(
                             "\n[{label}]\nPath: {path}\nSize: {lines} lines, {chars} chars\n\
                              ─────────────────────────────────\n\
@@ -1357,10 +1360,14 @@ impl SlashCommand for MemoryCommand {
                             path = path.display(),
                             lines = lines,
                             chars = chars,
-                            content = if content.len() > 2000 {
+                            content = if content.len() > preview_max {
+                                let mut cutoff = preview_max.min(content.len());
+                                while cutoff > 0 && !content.is_char_boundary(cutoff) {
+                                    cutoff -= 1;
+                                }
                                 format!(
                                     "{}…\n(truncated — file is {} chars)",
-                                    &content[..2000],
+                                    &content[..cutoff],
                                     chars
                                 )
                             } else {
@@ -3472,8 +3479,6 @@ struct UiSettings {
     #[serde(default)]
     pub editor_mode: Option<String>, // "vim" or "normal"
     #[serde(default)]
-    pub fast_mode: Option<bool>,
-    #[serde(default)]
     pub voice_enabled: Option<bool>,
     #[serde(default)]
     pub statusline_show_cost: Option<bool>,
@@ -3803,8 +3808,9 @@ impl SlashCommand for ContextCommand {
     async fn execute(&self, _args: &str, ctx: &mut CommandContext) -> CommandResult {
         let model = ctx.config.effective_model();
 
-        // All current Claude models use a 200K context window.
-        let context_window: u64 = 200_000;
+        // Configurable via --cost-command-context-window. Default 200K matches
+        // historic behaviour for Anthropic models.
+        let context_window: u64 = ctx.config.effective_cost_command_context_window();
 
         let used_tokens = ctx.cost_tracker.total_tokens();
         let pct = if context_window > 0 {
@@ -4125,13 +4131,15 @@ impl SlashCommand for UpgradeCommand {
          If a newer version is available, shows the upgrade command."
     }
 
-    async fn execute(&self, _args: &str, _ctx: &mut CommandContext) -> CommandResult {
+    async fn execute(&self, _args: &str, ctx: &mut CommandContext) -> CommandResult {
         let current = cc_core::constants::APP_VERSION;
 
         // Check GitHub releases API for latest version
         let client = reqwest::Client::builder()
             .user_agent(format!("claude-code-rust/{}", current))
-            .timeout(std::time::Duration::from_secs(8))
+            .timeout(std::time::Duration::from_secs(
+                ctx.config.effective_github_release_check_timeout_secs(),
+            ))
             .build();
 
         let client = match client {
@@ -4216,7 +4224,7 @@ impl SlashCommand for ReleaseNotesCommand {
          Without an argument, shows notes for the current version."
     }
 
-    async fn execute(&self, args: &str, _ctx: &mut CommandContext) -> CommandResult {
+    async fn execute(&self, args: &str, ctx: &mut CommandContext) -> CommandResult {
         let current = cc_core::constants::APP_VERSION;
         let version = args.trim();
 
@@ -4230,7 +4238,9 @@ impl SlashCommand for ReleaseNotesCommand {
 
         let client = reqwest::Client::builder()
             .user_agent(format!("claude-code-rust/{}", current))
-            .timeout(std::time::Duration::from_secs(8))
+            .timeout(std::time::Duration::from_secs(
+                ctx.config.effective_github_release_check_timeout_secs(),
+            ))
             .build();
 
         let client = match client {
@@ -4825,72 +4835,6 @@ impl SlashCommand for InstallSlackAppCommand {
     }
 }
 
-// ---- /fast (/speed) ------------------------------------------------------
-
-#[async_trait]
-impl SlashCommand for FastCommand {
-    fn name(&self) -> &str {
-        "fast"
-    }
-    fn aliases(&self) -> Vec<&str> {
-        vec!["speed"]
-    }
-    fn description(&self) -> &str {
-        "Toggle fast mode (uses a faster/cheaper model)"
-    }
-    fn help(&self) -> &str {
-        "Usage: /fast [on|off]\n\n\
-         Fast mode switches to a faster, more economical model variant\n\
-         (claude-haiku) for quick responses. Toggle without argument to switch.\n\
-         The setting is persisted to ~/.uppli/ui-settings.json."
-    }
-
-    async fn execute(&self, args: &str, ctx: &mut CommandContext) -> CommandResult {
-        let current = load_ui_settings();
-        let currently_on = current.fast_mode.unwrap_or(false);
-
-        let enable = match args.trim() {
-            "on" | "enable" | "true" | "1" => true,
-            "off" | "disable" | "false" | "0" => false,
-            "" => !currently_on,
-            other => {
-                return CommandResult::Error(format!(
-                    "Unknown argument '{}'. Use: /fast [on|off]",
-                    other
-                ))
-            }
-        };
-
-        if let Err(e) = mutate_ui_settings(|s| s.fast_mode = Some(enable)) {
-            return CommandResult::Error(format!("Failed to save setting: {}", e));
-        }
-
-        let fast_model = ""; // provider-driven
-        let normal_model = ctx.config.model.as_deref().unwrap_or("unknown");
-
-        if enable {
-            let mut new_config = ctx.config.clone();
-            new_config.model = Some(fast_model.to_string());
-            CommandResult::ConfigChangeMessage(
-                new_config,
-                format!(
-                    "Fast mode ON. Using {} for quicker, cheaper responses.\n\
-                     Use /fast off to return to {}.",
-                    fast_model, normal_model
-                ),
-            )
-        } else {
-            let mut new_config = ctx.config.clone();
-            // Restore default / saved model
-            new_config.model = None;
-            CommandResult::ConfigChangeMessage(
-                new_config,
-                "Fast mode OFF. Restored to provider default model.".to_string(),
-            )
-        }
-    }
-}
-
 // ---- /think-back ---------------------------------------------------------
 
 #[async_trait]
@@ -5190,7 +5134,9 @@ impl SlashCommand for ShareCommand {
         });
 
         let client = match reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
+            .timeout(std::time::Duration::from_secs(
+                ctx.config.effective_share_upload_timeout_secs(),
+            ))
             .build()
         {
             Ok(c) => c,
@@ -5359,16 +5305,19 @@ impl SlashCommand for CtxVizCommand {
 
     async fn execute(&self, _args: &str, ctx: &mut CommandContext) -> CommandResult {
         let model = ctx.config.effective_model().to_string();
-        let context_window: u64 = 200_000; // all current Claude models
+        let context_window: u64 = ctx.config.effective_cost_command_context_window();
 
         // Estimate system prompt tokens: rough chars/4 approximation
-        // Build a minimal system prompt to estimate its size.
+        // Build a minimal system prompt to estimate its size. Fallback estimate
+        // is configurable via --cost-command-system-prompt-tokens.
+        let sys_prompt_fallback_chars =
+            ctx.config.effective_cost_command_system_prompt_tokens() as usize * 4;
         let sys_prompt_chars: usize = ctx
             .config
             .custom_system_prompt
             .as_deref()
             .map(|s| s.len())
-            .unwrap_or(2400 * 4); // fallback: ~2400 tokens worth
+            .unwrap_or(sys_prompt_fallback_chars);
         let sys_prompt_tokens = (sys_prompt_chars / 4).max(1) as u64;
 
         // Estimate conversation tokens from messages
@@ -5912,7 +5861,6 @@ pub fn all_commands() -> Vec<Box<dyn SlashCommand>> {
         Box::new(SecurityReviewCommand),
         Box::new(TerminalSetupCommand),
         Box::new(ExtraUsageCommand),
-        Box::new(FastCommand),
         Box::new(ThinkBackCommand),
         Box::new(ThinkBackPlayCommand),
         Box::new(FeedbackCommand),

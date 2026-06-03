@@ -337,8 +337,6 @@ pub struct App {
     pub model_name: String,
     /// Current effort level (controls extended-thinking budget_tokens).
     pub effort_level: EffortLevel,
-    /// Whether fast mode is currently active (model locked to the provider's fast model).
-    pub fast_mode: bool,
     pub agent_status: Vec<(String, String)>,
     pub history_search: Option<HistorySearch>,
     pub keybindings: KeybindingResolver,
@@ -753,6 +751,11 @@ impl App {
     pub fn new(config: Config, cost_tracker: Arc<CostTracker>) -> Self {
         let model_name = String::from("loading...");
         let user_keybindings = UserKeybindings::load(&Settings::config_dir());
+        let prompt_input = {
+            let mut s = PromptInputState::new();
+            s.undo_history_max = config.effective_tui_undo_history_max();
+            s
+        };
         Self {
             config,
             cost_tracker,
@@ -760,7 +763,7 @@ impl App {
             display_messages: Vec::new(),
             system_annotations: Vec::new(),
             input: String::new(),
-            prompt_input: PromptInputState::new(),
+            prompt_input,
             input_history: Vec::new(),
             history_index: None,
             scroll_offset: 0,
@@ -777,7 +780,6 @@ impl App {
             cost_usd: 0.0,
             model_name,
             effort_level: EffortLevel::Normal,
-            fast_mode: false,
             agent_status: Vec::new(),
             history_search: None,
             keybindings: KeybindingResolver::new(&user_keybindings),
@@ -960,8 +962,7 @@ impl App {
             "model" => {
                 let current = self.model_name.clone();
                 let effort = self.effort_level;
-                let fast = self.fast_mode;
-                self.model_picker.open_with_state(&current, effort, fast);
+                self.model_picker.open_with_state(&current, effort, false);
 
                 // Kick off a background fetch of the model list if we don't
                 // already have a fresh list and aren't already loading.
@@ -1011,24 +1012,6 @@ impl App {
                 };
                 self.status_message = Some(format!("Vim mode {}.", status));
                 self.refresh_prompt_input();
-                true
-            }
-            "fast" => {
-                self.fast_mode = !self.fast_mode;
-                if self.fast_mode {
-                    if let Some(ref fast_id) = self.model_picker.fast_model_id {
-                        self.model_name = fast_id.clone();
-                        self.status_message = Some(format!("Fast mode enabled ({})", fast_id));
-                    } else {
-                        self.status_message = Some("Fast mode enabled.".to_string());
-                    }
-                } else {
-                    // Restore default model from provider capabilities
-                    if let Some(m) = self.model_picker.models.iter().find(|m| m.is_current) {
-                        self.model_name = m.id.clone();
-                    }
-                    self.status_message = Some("Fast mode disabled.".to_string());
-                }
                 true
             }
             "plan" => {
@@ -1810,17 +1793,6 @@ impl App {
                 KeyCode::Right => self.model_picker.effort_next(),
                 KeyCode::Enter => {
                     if let Some((model_id, effort)) = self.model_picker.confirm() {
-                        // If user picked a model other than the fast-mode model
-                        // while fast mode was active, turn fast mode off.
-                        if self.fast_mode
-                            && self
-                                .model_picker
-                                .fast_model_id
-                                .as_deref()
-                                .is_none_or(|fm| model_id != fm)
-                        {
-                            self.fast_mode = false;
-                        }
                         if let Some(e) = effort {
                             self.effort_level = e;
                         }
@@ -3247,16 +3219,6 @@ mod tests {
         assert!(!app.model_picker.visible);
         assert!(app.intercept_slash_command("model"));
         assert!(app.model_picker.visible);
-    }
-
-    #[test]
-    fn test_fast_slash_command_toggles_fast_mode() {
-        let mut app = make_app();
-        assert!(!app.fast_mode);
-        assert!(app.intercept_slash_command("fast"));
-        assert!(app.fast_mode);
-        assert!(app.intercept_slash_command("fast"));
-        assert!(!app.fast_mode);
     }
 
     #[test]

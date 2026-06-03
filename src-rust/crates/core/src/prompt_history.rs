@@ -334,7 +334,16 @@ async fn flush_entries(entries: Vec<LogEntry>) {
 /// The call is fire-and-forget: it spawns a background Tokio task and returns
 /// immediately.  If `CLAUDE_CODE_SKIP_PROMPT_HISTORY` is truthy the call is
 /// a no-op.
+///
+/// Uses the default inline-vs-disk paste threshold. Prefer
+/// [`add_to_history_with_threshold`] when you have a `Config` to pull a
+/// tuned value from.
 pub fn add_to_history(entry: HistoryEntry) {
+    add_to_history_with_threshold(entry, MAX_PASTED_CONTENT_LENGTH);
+}
+
+/// Append `entry` using the supplied inline-vs-disk paste threshold (bytes).
+pub fn add_to_history_with_threshold(entry: HistoryEntry, inline_threshold: usize) {
     if std::env::var("CLAUDE_CODE_SKIP_PROMPT_HISTORY")
         .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(false)
@@ -354,7 +363,7 @@ pub fn add_to_history(entry: HistoryEntry) {
             continue;
         }
 
-        if content.content.len() <= MAX_PASTED_CONTENT_LENGTH {
+        if content.content.len() <= inline_threshold {
             stored_contents.insert(
                 *id,
                 StoredPastedContent {
@@ -413,7 +422,19 @@ pub fn add_to_history(entry: HistoryEntry) {
 /// Read `~/.uppli/history.jsonl`, filter by `project`, and return up to
 /// `MAX_HISTORY_ITEMS` entries newest-first.  Entries belonging to
 /// `current_session_id` are yielded before other sessions' entries.
+///
+/// Uses the default cap. Prefer [`get_history_with_max`] when you have a
+/// `Config` to pull a tuned value from.
 pub async fn get_history(project: &str, current_session_id: Option<&str>) -> Vec<HistoryEntry> {
+    get_history_with_max(project, current_session_id, MAX_HISTORY_ITEMS).await
+}
+
+/// Read `~/.uppli/history.jsonl` and return up to `max_items` entries.
+pub async fn get_history_with_max(
+    project: &str,
+    current_session_id: Option<&str>,
+    max_items: usize,
+) -> Vec<HistoryEntry> {
     let path = history_path();
 
     let (pending, skipped) = {
@@ -469,12 +490,12 @@ pub async fn get_history(project: &str, current_session_id: Option<&str>) -> Vec
         }
     }
 
-    // Yield current-session entries first, then others, capped at MAX_HISTORY_ITEMS.
+    // Yield current-session entries first, then others, capped at max_items.
     let mut result = Vec::new();
     for log_entry in current_session_entries
         .iter()
         .chain(other_entries.iter())
-        .take(MAX_HISTORY_ITEMS)
+        .take(max_items)
     {
         result.push(resolve_log_entry(log_entry).await);
     }

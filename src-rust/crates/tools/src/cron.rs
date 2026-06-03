@@ -43,6 +43,10 @@ pub struct CronTask {
 }
 
 /// 7 days in seconds — tasks older than this are purged on load.
+///
+/// Hardcoded: stale-task GC hygiene. 7-day-old cron entries are
+/// reasonably assumed orphaned; cron history is recoverable, so the
+/// rationale is GC hygiene rather than data loss.
 const MAX_TASK_AGE_SECS: u64 = 7 * 24 * 3600;
 
 /// Whether the store has been initialised from disk for this process.
@@ -461,7 +465,7 @@ impl Tool for CronListTool {
         })
     }
 
-    async fn execute(&self, _input: Value, _ctx: &ToolContext) -> ToolResult {
+    async fn execute(&self, _input: Value, ctx: &ToolContext) -> ToolResult {
         // Merge in-memory store with any persisted tasks from disk.
         ensure_store_loaded().await;
 
@@ -474,6 +478,8 @@ impl Tool for CronListTool {
         let mut tasks: Vec<&CronTask> = store.values().collect();
         tasks.sort_by_key(|t| t.created_at);
 
+        let prompt_display_chars = ctx.config.effective_cron_list_prompt_display_chars();
+
         let lines: Vec<String> = tasks
             .iter()
             .map(|t| {
@@ -484,8 +490,12 @@ impl Tool for CronListTool {
                     cron_to_human(&t.cron),
                     t.recurring,
                     t.durable,
-                    if t.prompt.len() > 60 {
-                        format!("{}…", &t.prompt[..60])
+                    if t.prompt.len() > prompt_display_chars {
+                        let mut cutoff = prompt_display_chars.min(t.prompt.len());
+                        while cutoff > 0 && !t.prompt.is_char_boundary(cutoff) {
+                            cutoff -= 1;
+                        }
+                        format!("{}…", &t.prompt[..cutoff])
                     } else {
                         t.prompt.clone()
                     }

@@ -33,25 +33,29 @@ use tracing::{debug, info, warn};
 // Constants (mirrors TypeScript autoCompact.ts)
 // ---------------------------------------------------------------------------
 
-/// We target keeping this many context tokens free after compaction.
-#[allow(dead_code)]
-const AUTOCOMPACT_BUFFER_TOKENS: u64 = 13_000;
-
 /// Start warning when this many tokens remain in the context window.
 const WARNING_THRESHOLD_BUFFER_TOKENS: u64 = 20_000;
 
 /// Fraction of the context window at which auto-compact triggers.
 const AUTOCOMPACT_TRIGGER_FRACTION: f64 = 0.95;
 
-/// How many recent messages to preserve verbatim after compaction.
-const KEEP_RECENT_MESSAGES: usize = 10;
+/// Default for how many recent messages to preserve verbatim after compaction.
+/// Effective value is `Config::compact_keep_recent_messages`
+/// (CLI: --compact-keep-recent-messages).
+const KEEP_RECENT_MESSAGES: usize = cc_core::constants::DEFAULT_COMPACT_KEEP_RECENT_MESSAGES;
 
-/// Max consecutive auto-compact failures before giving up (circuit breaker).
-const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+/// Default max consecutive auto-compact failures before giving up
+/// (circuit breaker). The effective value at runtime is
+/// `Config::effective_max_compact_retries()` (CLI: --max-compact-retries),
+/// resolved through `cc_core::constants::MAX_COMPACT_RETRIES`.
+const MAX_CONSECUTIVE_FAILURES: u32 = cc_core::constants::MAX_COMPACT_RETRIES;
 
-// Percentage thresholds for token warning states (mirrors TS autoCompact.ts)
-const WARNING_PCT: f64 = 0.90; // 90 % full → yellow warning
-const CRITICAL_PCT: f64 = 0.98; // 98 % full → red critical
+// Percentage thresholds for token warning states (mirrors TS autoCompact.ts).
+// Effective values are sourced from QueryConfig / Config (see
+// --compact-warning-pct / --compact-critical-pct). These constants are kept
+// only as compile-time defaults.
+const WARNING_PCT: f64 = cc_core::constants::DEFAULT_COMPACT_WARNING_PCT; // 90 % full → yellow warning
+const CRITICAL_PCT: f64 = cc_core::constants::DEFAULT_COMPACT_CRITICAL_PCT; // 98 % full → red critical
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -76,11 +80,23 @@ impl AutoCompactState {
     }
 
     /// Record a failed compaction; open circuit breaker if too many.
+    /// Uses the compile-time default `MAX_CONSECUTIVE_FAILURES` — for
+    /// runtime-configured limits, use `on_failure_with_limit`.
     pub fn on_failure(&mut self) {
+        self.on_failure_with_limit(MAX_CONSECUTIVE_FAILURES);
+    }
+
+    /// Record a failed compaction; open circuit breaker after
+    /// `max_retries` consecutive failures. Wired by the query loop from
+    /// `Config::effective_max_compact_retries()` (CLI:
+    /// --max-compact-retries) so the user can raise the threshold when
+    /// the model is paying the cost of transient compaction failures.
+    pub fn on_failure_with_limit(&mut self, max_retries: u32) {
         self.consecutive_failures += 1;
-        if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+        if self.consecutive_failures >= max_retries {
             warn!(
                 failures = self.consecutive_failures,
+                limit = max_retries,
                 "Auto-compact circuit breaker opened – disabling for this session"
             );
             self.disabled = true;
@@ -491,19 +507,48 @@ pub fn format_compact_summary(raw: &str) -> String {
 
 /// Determine token-warning state given current input token count and model.
 ///
-/// Thresholds (mirrors TypeScript autoCompact.ts):
-///   ≥ 95 % → Critical (red warning)
-///   ≥ 80 % → Warning  (yellow warning)
-///   <  80 % → Ok
+/// Thresholds default to TypeScript autoCompact.ts (`WARNING_PCT` / `CRITICAL_PCT`)
+/// but are now configurable via `--compact-warning-pct` /
+/// `--compact-critical-pct`. Use [`calculate_token_warning_state_with`] to
+/// pass non-default thresholds.
 pub fn calculate_token_warning_state(input_tokens: u64, context_window: u64) -> TokenWarningState {
+    calculate_token_warning_state_with(input_tokens, context_window, WARNING_PCT, CRITICAL_PCT)
+}
+
+/// Threshold-parameterised variant of [`calculate_token_warning_state`].
+///
+/// Uses the default warning-buffer cap. Prefer
+/// [`calculate_token_warning_state_full`] when you have a `Config` to pull a
+/// tuned value from.
+pub fn calculate_token_warning_state_with(
+    input_tokens: u64,
+    context_window: u64,
+    warning_pct: f64,
+    critical_pct: f64,
+) -> TokenWarningState {
+    calculate_token_warning_state_full(
+        input_tokens,
+        context_window,
+        warning_pct,
+        critical_pct,
+        WARNING_THRESHOLD_BUFFER_TOKENS,
+    )
+}
+
+/// Fully-parameterised variant of [`calculate_token_warning_state`].
+pub fn calculate_token_warning_state_full(
+    input_tokens: u64,
+    context_window: u64,
+    warning_pct: f64,
+    critical_pct: f64,
+    warning_buffer_tokens: u64,
+) -> TokenWarningState {
     let window = context_window;
     let pct = input_tokens as f64 / window as f64;
 
-    if pct >= CRITICAL_PCT {
+    if pct >= critical_pct {
         TokenWarningState::Critical
-    } else if pct >= WARNING_PCT
-        || window.saturating_sub(input_tokens) <= WARNING_THRESHOLD_BUFFER_TOKENS
-    {
+    } else if pct >= warning_pct || window.saturating_sub(input_tokens) <= warning_buffer_tokens {
         TokenWarningState::Warning
     } else {
         TokenWarningState::Ok
@@ -511,16 +556,34 @@ pub fn calculate_token_warning_state(input_tokens: u64, context_window: u64) -> 
 }
 
 /// Return `true` when auto-compaction should fire.
+///
+/// Uses the default trigger fraction. Prefer [`should_auto_compact_with`]
+/// when you have a `Config` to pull a tuned value from.
 pub fn should_auto_compact(
     input_tokens: u64,
     context_window: u64,
     state: &AutoCompactState,
 ) -> bool {
+    should_auto_compact_with(
+        input_tokens,
+        context_window,
+        state,
+        AUTOCOMPACT_TRIGGER_FRACTION,
+    )
+}
+
+/// Fraction-parameterised variant of [`should_auto_compact`].
+pub fn should_auto_compact_with(
+    input_tokens: u64,
+    context_window: u64,
+    state: &AutoCompactState,
+    trigger_fraction: f64,
+) -> bool {
     if state.disabled {
         return false;
     }
     let window = context_window;
-    let threshold = (window as f64 * AUTOCOMPACT_TRIGGER_FRACTION) as u64;
+    let threshold = (window as f64 * trigger_fraction) as u64;
     input_tokens >= threshold
 }
 
@@ -658,35 +721,57 @@ async fn summarise_head(
 
 /// Compact `messages` in-place, replacing the head with a summary.
 /// Returns the new messages vector on success.
+///
+/// Uses the default `KEEP_RECENT_MESSAGES` constant. Callers that need a
+/// configurable "keep recent" count (e.g. via `--compact-keep-recent-messages`)
+/// should call [`compact_conversation_with_keep`] instead.
 pub async fn compact_conversation(
     client: &dyn cc_api::LlmProvider,
     messages: &[Message],
     model: &str,
+    summary_cap: u32,
+) -> Result<Vec<Message>, ClaudeError> {
+    compact_conversation_with_keep(client, messages, model, KEEP_RECENT_MESSAGES, summary_cap).await
+}
+
+/// Configurable variant of [`compact_conversation`] that lets the caller
+/// pick how many recent messages survive verbatim
+/// (mirrors `Config::effective_compact_keep_recent_messages`).
+pub async fn compact_conversation_with_keep(
+    client: &dyn cc_api::LlmProvider,
+    messages: &[Message],
+    model: &str,
+    keep_recent: usize,
+    summary_cap: u32,
 ) -> Result<Vec<Message>, ClaudeError> {
     let total = messages.len();
 
-    if total <= KEEP_RECENT_MESSAGES + 1 {
+    if total <= keep_recent + 1 {
         debug!(total, "Too few messages to compact – keeping everything");
         return Ok(messages.to_vec());
     }
 
-    // Split: summarise everything except the most recent KEEP_RECENT_MESSAGES.
-    let split_at = total.saturating_sub(KEEP_RECENT_MESSAGES);
+    // Split: summarise everything except the most recent `keep_recent` messages.
+    let split_at = total.saturating_sub(keep_recent);
 
     info!(
         total,
         split_at,
-        keep = KEEP_RECENT_MESSAGES,
+        keep = keep_recent,
         "Compacting conversation"
     );
 
-    // Cap summary tokens to the model's output limit (Qwen3=16K, DeepSeek=64K).
-    let max_summary = client.max_output_tokens(model).min(20_000);
+    // Cap summary tokens to the model's output limit (Qwen3=16K, DeepSeek=64K),
+    // bounded by the user-configurable summary cap.
+    let max_summary = client.max_output_tokens(model).min(summary_cap);
     summarise_head(client, messages, split_at, model, max_summary).await
 }
 
 /// Auto-compact `messages` if needed.  Updates `state` in place.
 /// Returns `Some(new_messages)` if compaction ran, `None` otherwise.
+///
+/// Uses the default `KEEP_RECENT_MESSAGES` constant. For a configurable
+/// keep-recent count use [`auto_compact_if_needed_with_keep`].
 pub async fn auto_compact_if_needed(
     client: &dyn cc_api::LlmProvider,
     messages: &[Message],
@@ -694,8 +779,97 @@ pub async fn auto_compact_if_needed(
     model: &str,
     state: &mut AutoCompactState,
     context_window: u64,
+    summary_cap: u32,
 ) -> Option<Vec<Message>> {
-    if !should_auto_compact(input_tokens, context_window, state) {
+    auto_compact_if_needed_with_keep(
+        client,
+        messages,
+        input_tokens,
+        model,
+        state,
+        context_window,
+        KEEP_RECENT_MESSAGES,
+        summary_cap,
+    )
+    .await
+}
+
+/// Configurable variant of [`auto_compact_if_needed`].
+#[allow(clippy::too_many_arguments)]
+pub async fn auto_compact_if_needed_with_keep(
+    client: &dyn cc_api::LlmProvider,
+    messages: &[Message],
+    input_tokens: u64,
+    model: &str,
+    state: &mut AutoCompactState,
+    context_window: u64,
+    keep_recent: usize,
+    summary_cap: u32,
+) -> Option<Vec<Message>> {
+    auto_compact_if_needed_with_keep_and_limit(
+        client,
+        messages,
+        input_tokens,
+        model,
+        state,
+        context_window,
+        keep_recent,
+        summary_cap,
+        MAX_CONSECUTIVE_FAILURES,
+    )
+    .await
+}
+
+/// Fully-configurable variant of [`auto_compact_if_needed_with_keep`].
+/// `max_retries` opens the circuit breaker after this many consecutive
+/// compaction failures. Plumbed by the query loop from
+/// `Config::effective_max_compact_retries()` (CLI: --max-compact-retries).
+///
+/// Uses the default auto-compact trigger fraction. Prefer
+/// [`auto_compact_if_needed_full`] to override the trigger fraction with the
+/// `Config`-supplied value.
+#[allow(clippy::too_many_arguments)]
+pub async fn auto_compact_if_needed_with_keep_and_limit(
+    client: &dyn cc_api::LlmProvider,
+    messages: &[Message],
+    input_tokens: u64,
+    model: &str,
+    state: &mut AutoCompactState,
+    context_window: u64,
+    keep_recent: usize,
+    summary_cap: u32,
+    max_retries: u32,
+) -> Option<Vec<Message>> {
+    auto_compact_if_needed_full(
+        client,
+        messages,
+        input_tokens,
+        model,
+        state,
+        context_window,
+        keep_recent,
+        summary_cap,
+        max_retries,
+        AUTOCOMPACT_TRIGGER_FRACTION,
+    )
+    .await
+}
+
+/// Fully-parameterised variant: also takes `trigger_fraction`.
+#[allow(clippy::too_many_arguments)]
+pub async fn auto_compact_if_needed_full(
+    client: &dyn cc_api::LlmProvider,
+    messages: &[Message],
+    input_tokens: u64,
+    model: &str,
+    state: &mut AutoCompactState,
+    context_window: u64,
+    keep_recent: usize,
+    summary_cap: u32,
+    max_retries: u32,
+    trigger_fraction: f64,
+) -> Option<Vec<Message>> {
+    if !should_auto_compact_with(input_tokens, context_window, state, trigger_fraction) {
         return None;
     }
 
@@ -706,7 +880,7 @@ pub async fn auto_compact_if_needed(
         "Auto-compact triggered"
     );
 
-    match compact_conversation(client, messages, model).await {
+    match compact_conversation_with_keep(client, messages, model, keep_recent, summary_cap).await {
         Ok(new_msgs) => {
             state.on_success();
             info!(
@@ -718,7 +892,7 @@ pub async fn auto_compact_if_needed(
         }
         Err(e) => {
             warn!(error = %e, "Auto-compact failed");
-            state.on_failure();
+            state.on_failure_with_limit(max_retries);
             None
         }
     }
@@ -771,23 +945,39 @@ pub struct CompactResult {
 /// that exactly one of the two paths (proactive auto-compact vs reactive
 /// compact) fires, chosen by the `CLAUDE_REACTIVE_COMPACT` gate.
 pub fn should_compact(tokens_used: u64, context_limit: u64) -> bool {
+    should_compact_with(tokens_used, context_limit, REACTIVE_COMPACT_THRESHOLD)
+}
+
+/// Threshold-parameterised variant of [`should_compact`].
+/// `threshold_pct` mirrors `Config::reactive_compact_threshold`
+/// (CLI: `--reactive-compact-threshold`).
+pub fn should_compact_with(tokens_used: u64, context_limit: u64, threshold_pct: f64) -> bool {
     if context_limit == 0 {
         return false;
     }
-    let threshold = (context_limit as f64 * REACTIVE_COMPACT_THRESHOLD) as u64;
+    let threshold = (context_limit as f64 * threshold_pct) as u64;
     tokens_used >= threshold
 }
 
-/// Return `true` when the emergency context-collapse should fire (≥ 97 %).
+/// Return `true` when the emergency context-collapse should fire.
 ///
 /// Context-collapse is a last-resort measure: it produces an ultra-short
 /// summary and keeps only the most recent user turn so that the next API call
 /// can succeed even when the conversation is severely over-limit.
-pub fn should_context_collapse(tokens_used: u64, context_limit: u64) -> bool {
+///
+/// `threshold_override` lets the caller plumb a user-configured fraction;
+/// passing `None` falls back to `CONTEXT_COLLAPSE_THRESHOLD` (the historical
+/// 0.99 default).
+pub fn should_context_collapse(
+    tokens_used: u64,
+    context_limit: u64,
+    threshold_override: Option<f64>,
+) -> bool {
     if context_limit == 0 {
         return false;
     }
-    let threshold = (context_limit as f64 * CONTEXT_COLLAPSE_THRESHOLD) as u64;
+    let frac = threshold_override.unwrap_or(CONTEXT_COLLAPSE_THRESHOLD);
+    let threshold = (context_limit as f64 * frac) as u64;
     tokens_used >= threshold
 }
 
@@ -970,9 +1160,11 @@ pub async fn reactive_compact(
     // Phase 2: strip images before the compact API call.
     let stripped = strip_images(messages.clone());
 
-    // Phase 1 + 3: summarise the head (all but the most recent KEEP_RECENT_MESSAGES),
-    // then replace the old head with the summary message.
-    let split_at = total.saturating_sub(KEEP_RECENT_MESSAGES);
+    // Phase 1 + 3: summarise the head (all but the most recent
+    // `compact_keep_recent_messages`), then replace the old head with the
+    // summary message.
+    let keep_recent = config.compact_keep_recent_messages;
+    let split_at = total.saturating_sub(keep_recent);
     if split_at == 0 {
         // Too few messages; nothing to summarise.
         return Ok(CompactResult {
@@ -984,7 +1176,9 @@ pub async fn reactive_compact(
 
     let original_token_estimate = estimate_tokens_for_messages(&stripped[..split_at]) as u64;
 
-    let max_summary = client.max_output_tokens(&config.model).min(20_000);
+    let max_summary = client
+        .max_output_tokens(&config.model)
+        .min(config.compact_summary_max_tokens);
     let mut new_messages =
         summarise_head(client, &stripped, split_at, &config.model, max_summary).await?;
 
@@ -994,19 +1188,22 @@ pub async fn reactive_compact(
         .map(|m| m.get_all_text())
         .unwrap_or_default();
 
-    // Phase 4: re-inject recently modified file context (up to 5 files, skip >50KB).
-    const MAX_FILES: usize = 5;
-    const MAX_FILE_BYTES: u64 = 50 * 1024;
+    // Phase 4: re-inject recently modified file context. Caps come from
+    // `Config::compact_reinject_max_files` /
+    // `Config::compact_reinject_max_file_bytes` (CLI:
+    // --compact-reinject-max-files / --compact-reinject-max-file-bytes).
+    let max_files = config.compact_reinject_max_files;
+    let max_file_bytes = config.compact_reinject_max_file_bytes;
     let mut injected = 0;
-    for path in recently_modified.iter().take(MAX_FILES * 3) {
-        if injected >= MAX_FILES {
+    for path in recently_modified.iter().take(max_files.saturating_mul(3)) {
+        if injected >= max_files {
             break;
         }
         let meta = match std::fs::metadata(path) {
             Ok(m) => m,
             Err(_) => continue,
         };
-        if meta.len() > MAX_FILE_BYTES {
+        if meta.len() > max_file_bytes {
             continue;
         }
         let content = match std::fs::read_to_string(path) {
@@ -1162,17 +1359,18 @@ const CONTEXT_COLLAPSE_THRESHOLD: f64 = 0.99;
 /// all but the last read with `[Content shown N time(s); showing last occurrence only]`.
 pub fn collapse_read_tool_results(
     messages: Vec<cc_core::types::Message>,
+    fingerprint_chars: usize,
 ) -> Vec<cc_core::types::Message> {
     use cc_core::types::{ContentBlock, MessageContent, ToolResultContent};
     use std::collections::HashMap;
 
     // Helper: extract a fingerprint string from ToolResultContent.
-    fn fingerprint(content: &ToolResultContent) -> Option<String> {
+    let fingerprint = |content: &ToolResultContent| -> Option<String> {
         match content {
-            ToolResultContent::Text(t) => Some(t.chars().take(120).collect()),
+            ToolResultContent::Text(t) => Some(t.chars().take(fingerprint_chars).collect()),
             ToolResultContent::Blocks(_) => None,
         }
-    }
+    };
 
     // First pass: find all file-read tool results and count by fingerprint.
     let mut read_counts: HashMap<String, usize> = HashMap::new();
@@ -1224,16 +1422,17 @@ pub fn collapse_read_tool_results(
 /// most recent result; replace earlier results with a truncation notice.
 pub fn collapse_search_results(
     messages: Vec<cc_core::types::Message>,
+    fingerprint_chars: usize,
 ) -> Vec<cc_core::types::Message> {
     use cc_core::types::{ContentBlock, MessageContent, ToolResultContent};
     use std::collections::HashSet;
 
-    fn fingerprint(content: &ToolResultContent) -> Option<String> {
+    let fingerprint = |content: &ToolResultContent| -> Option<String> {
         match content {
-            ToolResultContent::Text(t) => Some(t.chars().take(200).collect()),
+            ToolResultContent::Text(t) => Some(t.chars().take(fingerprint_chars).collect()),
             ToolResultContent::Blocks(_) => None,
         }
-    }
+    };
 
     let mut seen_results: HashSet<String> = HashSet::new();
 

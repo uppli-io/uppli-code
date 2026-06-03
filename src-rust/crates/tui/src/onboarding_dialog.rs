@@ -53,7 +53,6 @@ pub struct OnboardingDialogState {
     // Model choice
     pub models: Vec<ModelInfo>,
     pub model_idx: usize,
-    pub fast_model: Option<String>,
 
     // Result (read after Done)
     pub chosen_provider: Option<String>,
@@ -97,7 +96,6 @@ impl OnboardingDialogState {
             key_masked: true,
             models: Vec::new(),
             model_idx: 0,
-            fast_model: None,
             chosen_provider: None,
             chosen_model: None,
             chosen_fast: None,
@@ -195,7 +193,6 @@ impl OnboardingDialogState {
                             description: m.description.clone(),
                         })
                         .collect();
-                    self.fast_model = preset.fast_model.map(|s| s.to_string());
                 }
                 self.model_idx = 0;
 
@@ -242,7 +239,6 @@ impl OnboardingDialogState {
                 if let Some(m) = self.models.get(self.model_idx) {
                     self.chosen_model = Some(m.id.clone());
                 }
-                self.chosen_fast = self.fast_model.clone();
                 self.step = OnboardingStep::Confirm;
             }
             OnboardingStep::Confirm => {
@@ -594,15 +590,6 @@ fn render_model_choice(frame: &mut Frame, state: &OnboardingDialogState, area: R
                 format!("  {}", m.description),
                 Style::default().fg(Color::DarkGray),
             ),
-        ]));
-    }
-
-    if let Some(ref fast) = state.fast_model {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("  Fast model: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(fast.clone(), Style::default().fg(Color::Yellow)),
-            Span::styled(" (for tool results)", Style::default().fg(Color::DarkGray)),
         ]));
     }
 

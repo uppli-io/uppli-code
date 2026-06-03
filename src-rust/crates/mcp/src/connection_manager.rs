@@ -285,6 +285,9 @@ impl McpConnectionManager {
     /// Background loop: wait, then attempt reconnect with exponential backoff.
     async fn reconnect_loop(name: String, state: Arc<DashMap<String, Arc<Mutex<ServerState>>>>) {
         let mut backoff = Duration::from_secs(1);
+        // Hardcoded: exponential-backoff ceiling — prevents an unhealthy
+        // MCP server from getting reconnect attempts spaced hours apart.
+        // 60 s is the standard ceiling for any backoff loop.
         const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
         loop {

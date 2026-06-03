@@ -101,15 +101,20 @@ impl RemoteSessionManager {
         Ok(())
     }
 
-    /// Start background sync loop: pushes local transcript to cloud every 30s.
+    /// Start background sync loop: pushes local transcript to cloud at a
+    /// configurable cadence (default 30s — mirrors the historical hardcoded
+    /// value; raise to reduce server load, lower for crash-safer sync on
+    /// long unattended runs).
     /// Returns a JoinHandle; caller should keep it alive.
     pub fn start_background_sync(
         self: std::sync::Arc<Self>,
         session_id: String,
         transcript_path: std::path::PathBuf,
+        sync_interval_secs: u64,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(sync_interval_secs));
             let mut last_sync_len = 0usize;
 
             loop {

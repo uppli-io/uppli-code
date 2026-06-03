@@ -45,11 +45,16 @@ pub struct ComputerUseInput {
 const DISPLAY_WIDTH_PX: u32 = 1920;
 const DISPLAY_HEIGHT_PX: u32 = 1080;
 
-/// Maximum dimensions the API accepts for screenshots.
+/// Default maximum dimensions the API accepts for screenshots. Kept here
+/// for backwards compatibility with builds without the `computer-use`
+/// feature — runtime defaults come from
+/// `cc_core::constants::DEFAULT_SCREENSHOT_MAX_WIDTH` /
+/// `DEFAULT_SCREENSHOT_MAX_HEIGHT` and may be overridden per
+/// `Config.screenshot_max_width` / `Config.screenshot_max_height`.
 #[allow(dead_code)]
-const MAX_SCREENSHOT_WIDTH: u32 = 1366;
+const MAX_SCREENSHOT_WIDTH: u32 = cc_core::constants::DEFAULT_SCREENSHOT_MAX_WIDTH;
 #[allow(dead_code)]
-const MAX_SCREENSHOT_HEIGHT: u32 = 768;
+const MAX_SCREENSHOT_HEIGHT: u32 = cc_core::constants::DEFAULT_SCREENSHOT_MAX_HEIGHT;
 #[allow(dead_code)]
 const JPEG_QUALITY: u8 = 75;
 
@@ -148,7 +153,9 @@ impl Tool for ComputerUseTool {
             return ToolResult::error(e.to_string());
         }
 
-        execute_action(params).await
+        let max_w = ctx.config.effective_screenshot_max_width();
+        let max_h = ctx.config.effective_screenshot_max_height();
+        execute_action(params, max_w, max_h).await
     }
 
     /// Override `to_definition` to emit the Anthropic computer-use-specific
@@ -181,7 +188,7 @@ pub fn computer_use_api_definition() -> Value {
 // ---------------------------------------------------------------------------
 
 #[cfg(not(feature = "computer-use"))]
-async fn execute_action(_params: ComputerUseInput) -> ToolResult {
+async fn execute_action(_params: ComputerUseInput, _max_w: u32, _max_h: u32) -> ToolResult {
     ToolResult::error(
         "The computer-use feature is not enabled in this build. \
          Recompile with --features cc-tools/computer-use to enable it.",
@@ -189,12 +196,12 @@ async fn execute_action(_params: ComputerUseInput) -> ToolResult {
 }
 
 #[cfg(feature = "computer-use")]
-async fn execute_action(params: ComputerUseInput) -> ToolResult {
+async fn execute_action(params: ComputerUseInput, max_w: u32, max_h: u32) -> ToolResult {
     use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 
     match params.action.as_str() {
         // ── Screenshot ───────────────────────────────────────────────────
-        "screenshot" => take_screenshot(),
+        "screenshot" => take_screenshot(max_w, max_h),
 
         // ── Cursor position ──────────────────────────────────────────────
         "get_cursor_position" => match Enigo::new(&Settings::default()) {
@@ -441,7 +448,7 @@ async fn execute_action(params: ComputerUseInput) -> ToolResult {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "computer-use")]
-fn take_screenshot() -> ToolResult {
+fn take_screenshot(max_w: u32, max_h: u32) -> ToolResult {
     use base64::Engine as _;
 
     // Capture the primary monitor.
@@ -462,8 +469,8 @@ fn take_screenshot() -> ToolResult {
 
     // Scale down to API limits if necessary (preserve aspect ratio).
     let (orig_w, orig_h) = (image.width(), image.height());
-    let scale_w = MAX_SCREENSHOT_WIDTH as f64 / orig_w as f64;
-    let scale_h = MAX_SCREENSHOT_HEIGHT as f64 / orig_h as f64;
+    let scale_w = max_w as f64 / orig_w as f64;
+    let scale_h = max_h as f64 / orig_h as f64;
     let scale = scale_w.min(scale_h).min(1.0);
 
     let scaled = if scale < 1.0 {

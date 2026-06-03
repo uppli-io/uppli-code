@@ -12,7 +12,11 @@ use tokio_util::sync::CancellationToken;
 
 /// Recap only needs recent context — truncate to avoid "prompt too long" on
 /// large sessions.  30 messages ≈ ~15 exchanges, plenty for "where we left off."
-const RECENT_MESSAGE_WINDOW: usize = 30;
+///
+/// This constant is the fallback default. The runtime value is read from
+/// [`AwaySummaryConfig::recent_messages`], which the caller populates from
+/// [`cc_core::config::Config::effective_away_summary_recent_messages`].
+pub const RECENT_MESSAGE_WINDOW: usize = cc_core::constants::DEFAULT_AWAY_SUMMARY_RECENT_MESSAGES;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -25,6 +29,9 @@ pub struct AwaySummaryConfig {
     pub model: String,
     /// Maximum tokens to generate.
     pub max_tokens: u32,
+    /// Number of trailing messages to include in the recap prompt.
+    /// Defaults to [`RECENT_MESSAGE_WINDOW`].
+    pub recent_messages: usize,
 }
 
 impl Default for AwaySummaryConfig {
@@ -32,6 +39,7 @@ impl Default for AwaySummaryConfig {
         Self {
             model: "claude-haiku-4-5-20251001".to_string(),
             max_tokens: 300,
+            recent_messages: RECENT_MESSAGE_WINDOW,
         }
     }
 }
@@ -60,8 +68,8 @@ commit recaps."
 /// - the cancellation token is triggered before the response arrives, or
 /// - any API / network error occurs.
 ///
-/// Only the last [`RECENT_MESSAGE_WINDOW`] messages are sent to the model to
-/// keep the prompt small.
+/// Only the last `config.recent_messages` messages (defaults to
+/// [`RECENT_MESSAGE_WINDOW`]) are sent to the model to keep the prompt small.
 pub async fn generate_away_summary(
     messages: &[Message],
     api_client: &dyn LlmProvider,
@@ -72,14 +80,9 @@ pub async fn generate_away_summary(
         return None;
     }
 
-    // Truncate to the most recent window.
-    let recent: Vec<Message> = messages
-        .iter()
-        .rev()
-        .take(RECENT_MESSAGE_WINDOW)
-        .rev()
-        .cloned()
-        .collect();
+    // Truncate to the most recent window — overridable via Config.
+    let window = config.recent_messages;
+    let recent: Vec<Message> = messages.iter().rev().take(window).rev().cloned().collect();
 
     // Append the recap instruction as a user turn.
     let mut conversation = recent;

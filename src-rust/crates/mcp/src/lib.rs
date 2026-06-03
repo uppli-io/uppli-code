@@ -911,6 +911,9 @@ pub struct McpManager {
     /// Active resource subscriptions: (server_name, uri) → change event sender.
     pub resource_subscriptions:
         DashMap<(String, String), tokio::sync::mpsc::Sender<ResourceChangedEvent>>,
+    /// Optional Config used to source tunables (e.g. OAuth timeouts /
+    /// token-expiry padding). Set via `set_config` after construction.
+    config: Option<cc_core::config::Config>,
 }
 
 #[derive(Debug, Clone)]
@@ -929,7 +932,28 @@ impl McpManager {
             failed_servers: Vec::new(),
             server_configs: HashMap::new(),
             resource_subscriptions: DashMap::new(),
+            config: None,
         }
+    }
+
+    /// Inject the runtime `Config` so MCP code can read configurable
+    /// tunables (OAuth metadata timeout, token-expiry pad seconds, etc.).
+    pub fn set_config(&mut self, config: cc_core::config::Config) {
+        self.config = Some(config);
+    }
+
+    fn mcp_oauth_metadata_timeout_secs(&self) -> u64 {
+        self.config
+            .as_ref()
+            .map(|c| c.effective_mcp_oauth_metadata_timeout_secs())
+            .unwrap_or(cc_core::constants::DEFAULT_MCP_OAUTH_METADATA_TIMEOUT_SECS)
+    }
+
+    fn mcp_token_expiry_pad_secs(&self) -> u64 {
+        self.config
+            .as_ref()
+            .map(|c| c.effective_mcp_token_expiry_pad_secs())
+            .unwrap_or(cc_core::constants::DEFAULT_MCP_TOKEN_EXPIRY_PAD_SECS)
     }
 
     /// Connect to all configured MCP servers.
@@ -1263,7 +1287,7 @@ impl McpManager {
     pub fn auth_state(&self, server_name: &str) -> McpAuthState {
         // Check whether a token is already stored
         if let Some(token) = oauth::get_mcp_token(server_name) {
-            if !token.is_expired(60) {
+            if !token.is_expired(self.mcp_token_expiry_pad_secs()) {
                 let token_expiry = token.expires_at.map(|ts| {
                     chrono::DateTime::<chrono::Utc>::from(
                         std::time::UNIX_EPOCH + std::time::Duration::from_secs(ts),
@@ -1321,7 +1345,9 @@ impl McpManager {
         // 1. Fetch OAuth Authorization Server Metadata (RFC 8414)
         let metadata_url = format!("{}/.well-known/oauth-authorization-server", base_url);
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(
+                self.mcp_oauth_metadata_timeout_secs(),
+            ))
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {}", e))?;
 

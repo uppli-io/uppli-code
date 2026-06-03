@@ -79,7 +79,9 @@ impl Tool for PowerShellTool {
 
         debug!(command = %params.command, "Executing PowerShell command");
 
-        let timeout_ms = params.timeout.min(600_000);
+        let timeout_ms = params
+            .timeout
+            .min(ctx.config.effective_powershell_timeout_max_ms());
         let timeout_dur = Duration::from_millis(timeout_ms);
 
         let mut child = match Command::new(exe)

@@ -120,7 +120,11 @@ impl Tool for FileEditTool {
         }
 
         // Syntax check — warn but don't revert.
-        let lint = crate::lint::check_syntax(&path).await;
+        let lint = crate::lint::check_syntax_with_timeout(
+            &path,
+            ctx.config.effective_lint_spawn_timeout_secs(),
+        )
+        .await;
 
         ctx.record_file_change(
             path.clone(),
@@ -154,7 +158,10 @@ impl Tool for FileEditTool {
                 let _ = mgr.notify_file_changed(&abs_path, &new_content).await;
                 let _ = mgr.notify_file_saved(&abs_path).await;
                 drop(mgr);
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    ctx.config.effective_file_edit_retry_sleep_ms(),
+                ))
+                .await;
                 let mgr = lsp.lock().await;
                 let diags = mgr.get_diagnostics_for_file(&abs_path);
                 if !diags.is_empty() {
