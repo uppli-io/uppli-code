@@ -247,10 +247,6 @@ struct Cli {
     session_memory_min_messages: Option<usize>,
 
     /// Minimum tool calls between session-memory extractions. Default 3.
-    /// Controls how often memories are refreshed during a long session.
-    #[arg(long = "session-memory-min-tool-calls", value_name = "N")]
-    session_memory_min_tool_calls: Option<usize>,
-
     /// Grant Claude access to an additional directory (can be repeated)
     #[arg(long = "add-dir", value_name = "DIR", action = ArgAction::Append)]
     add_dir: Vec<PathBuf>,
@@ -455,14 +451,6 @@ struct Cli {
     settings_path: Option<String>,
 
     // --- Batch 10 configurable parameters (sorted alphabetically) ---
-    /// Fingerprint length (chars) used to dedup repeated file reads in history.
-    #[arg(long = "collapse-read-fingerprint-chars", value_name = "CHARS")]
-    collapse_read_fingerprint_chars: Option<usize>,
-
-    /// Fingerprint length (chars) used to dedup repeated search results in history.
-    #[arg(long = "collapse-search-fingerprint-chars", value_name = "CHARS")]
-    collapse_search_fingerprint_chars: Option<usize>,
-
     /// Max output tokens used when summarising history for auto-compact.
     #[arg(long = "compact-summary-max-tokens", value_name = "TOKENS")]
     compact_summary_max_tokens: Option<u32>,
@@ -605,14 +593,6 @@ struct Cli {
     #[arg(long = "anthropic-request-timeout-secs", value_name = "SECS")]
     anthropic_request_timeout_secs: Option<u64>,
 
-    /// Throttle (seconds) for the auto-dream session-scan pipeline.
-    #[arg(long = "auto-dream-scan-interval-secs", value_name = "SECS")]
-    auto_dream_scan_interval_secs: Option<u64>,
-
-    /// Number of trailing messages the away-summary recap considers.
-    #[arg(long = "away-summary-recent-messages", value_name = "COUNT")]
-    away_summary_recent_messages: Option<usize>,
-
     /// Maximum HTTP retries the provider layer attempts before bubbling up.
     #[arg(long = "provider-max-retries", value_name = "COUNT")]
     provider_max_retries: Option<u32>,
@@ -693,29 +673,9 @@ struct Cli {
     #[arg(long = "compact-warning-buffer-tokens", value_name = "TOKENS")]
     compact_warning_buffer_tokens: Option<u64>,
 
-    /// Max bytes loaded from MEMORY.md before truncation. Default 25000.
-    #[arg(long = "memory-entrypoint-max-bytes", value_name = "BYTES")]
-    memory_entrypoint_max_bytes: Option<usize>,
-
-    /// Max lines loaded from MEMORY.md before truncation. Default 200.
-    #[arg(long = "memory-entrypoint-max-lines", value_name = "LINES")]
-    memory_entrypoint_max_lines: Option<usize>,
-
     /// Inline-vs-disk threshold (bytes) for pasted content in prompt history.
-    /// Default 1024 — content above this is stored in the paste store.
-    #[arg(long = "pasted-content-inline-threshold", value_name = "BYTES")]
-    pasted_content_inline_threshold: Option<usize>,
-
-    /// Max prompt-history entries returned by up-arrow recall. Default 100.
-    #[arg(long = "prompt-history-max-items", value_name = "COUNT")]
-    prompt_history_max_items: Option<usize>,
-
     // --- Batch 14 configurable parameters (sorted alphabetically) ---
     /// Max retries the bridge poll loop tolerates on HTTP 429 rate-limits
-    /// before bubbling up an error. Default 3.
-    #[arg(long = "bridge-poll-max-retries", value_name = "COUNT")]
-    bridge_poll_max_retries: Option<u32>,
-
     /// Wall-clock budget (seconds) for the LSP client to wait for a
     /// graceful exit after shutdown before SIGKILL-ing the server.
     /// Default 5.
@@ -738,10 +698,6 @@ struct Cli {
     oauth_refresh_timeout_secs: Option<u64>,
 
     /// Interval (seconds) between background pushes of the local transcript
-    /// to the remote-session cloud API. Default 30.
-    #[arg(long = "remote-transcript-sync-interval-secs", value_name = "SECS")]
-    remote_transcript_sync_interval_secs: Option<u64>,
-
     // --- Batch 15 configurable parameters (bridge runtime tunables, sorted alphabetically) ---
     /// HTTP request timeout (seconds) shared by every bridge HTTP client
     /// (register, poll, upload, deregister, response post). Default 30.
@@ -783,10 +739,6 @@ struct Cli {
     file_edit_retry_sleep_ms: Option<u64>,
 
     /// Retry sleep (ms) used by session-storage write paths between
-    /// successive append attempts on slow disks. Default 5.
-    #[arg(long = "session-write-retry-sleep-ms", value_name = "MS")]
-    session_write_retry_sleep_ms: Option<u64>,
-
     /// Poll interval (ms) for the optional `CLAUDE_STATUS_COMMAND`
     /// external status program. Default 500.
     #[arg(long = "status-poll-interval-ms", value_name = "MS")]
@@ -1122,16 +1074,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(v) = cli.session_memory_min_messages {
         config.session_memory_min_messages = Some(v);
     }
-    if let Some(v) = cli.session_memory_min_tool_calls {
-        config.session_memory_min_tool_calls = Some(v);
-    }
     // --- Batch 10 wiring (sorted alphabetically) ---
-    if let Some(v) = cli.collapse_read_fingerprint_chars {
-        config.collapse_read_fingerprint_chars = Some(v);
-    }
-    if let Some(v) = cli.collapse_search_fingerprint_chars {
-        config.collapse_search_fingerprint_chars = Some(v);
-    }
     if let Some(v) = cli.compact_summary_max_tokens {
         config.compact_summary_max_tokens = Some(v);
     }
@@ -1233,12 +1176,6 @@ async fn main() -> anyhow::Result<()> {
     if let Some(v) = cli.anthropic_request_timeout_secs {
         config.anthropic_request_timeout_secs = Some(v);
     }
-    if let Some(v) = cli.auto_dream_scan_interval_secs {
-        config.auto_dream_scan_interval_secs = Some(v);
-    }
-    if let Some(v) = cli.away_summary_recent_messages {
-        config.away_summary_recent_messages = Some(v);
-    }
     if let Some(v) = cli.provider_max_retries {
         config.provider_max_retries = Some(v);
     }
@@ -1293,23 +1230,8 @@ async fn main() -> anyhow::Result<()> {
     if let Some(v) = cli.compact_warning_buffer_tokens {
         config.compact_warning_buffer_tokens = Some(v);
     }
-    if let Some(v) = cli.memory_entrypoint_max_bytes {
-        config.memory_entrypoint_max_bytes = Some(v);
-    }
-    if let Some(v) = cli.memory_entrypoint_max_lines {
-        config.memory_entrypoint_max_lines = Some(v);
-    }
-    if let Some(v) = cli.pasted_content_inline_threshold {
-        config.pasted_content_inline_threshold = Some(v);
-    }
-    if let Some(v) = cli.prompt_history_max_items {
-        config.prompt_history_max_items = Some(v);
-    }
 
     // --- Batch 14 wiring (sorted alphabetically) ---
-    if let Some(v) = cli.bridge_poll_max_retries {
-        config.bridge_poll_max_retries = Some(v);
-    }
     if let Some(v) = cli.lsp_shutdown_timeout_secs {
         config.lsp_shutdown_timeout_secs = Some(v);
     }
@@ -1321,9 +1243,6 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(v) = cli.oauth_refresh_timeout_secs {
         config.oauth_refresh_timeout_secs = Some(v);
-    }
-    if let Some(v) = cli.remote_transcript_sync_interval_secs {
-        config.remote_transcript_sync_interval_secs = Some(v);
     }
 
     // --- Batch 15 wiring (bridge runtime tunables, sorted alphabetically) ---
@@ -1349,9 +1268,6 @@ async fn main() -> anyhow::Result<()> {
     // --- Batch 17 wiring (sorted alphabetically) ---
     if let Some(v) = cli.file_edit_retry_sleep_ms {
         config.file_edit_retry_sleep_ms = Some(v);
-    }
-    if let Some(v) = cli.session_write_retry_sleep_ms {
-        config.session_write_retry_sleep_ms = Some(v);
     }
     if let Some(v) = cli.status_poll_interval_ms {
         config.status_poll_interval_ms = Some(v);

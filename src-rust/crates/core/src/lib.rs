@@ -634,10 +634,6 @@ pub mod config {
         /// `None` falls back to `DEFAULT_MIN_MESSAGES_TO_EXTRACT` (20).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub session_memory_min_messages: Option<usize>,
-        /// Minimum tool calls between session memory extractions.
-        /// `None` falls back to `DEFAULT_MIN_TOOL_CALLS_BETWEEN_EXTRACTIONS` (3).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub session_memory_min_tool_calls: Option<usize>,
         pub verbose: bool,
         pub output_format: OutputFormat,
         pub mcp_servers: Vec<McpServerConfig>,
@@ -667,12 +663,6 @@ pub mod config {
         pub providers: HashMap<String, ProviderSettings>,
 
         // --- Batch 10 configurable parameters (sorted alphabetically) ---
-        /// Fingerprint length (chars) for collapse_read_tool_results dedup.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub collapse_read_fingerprint_chars: Option<usize>,
-        /// Fingerprint length (chars) for collapse_search_results dedup.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub collapse_search_fingerprint_chars: Option<usize>,
         /// Max output tokens used when summarising for auto-compact.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub compact_summary_max_tokens: Option<u32>,
@@ -811,18 +801,6 @@ pub mod config {
         /// Buffer (tokens) below context window for "about to compact" warning.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub compact_warning_buffer_tokens: Option<u64>,
-        /// Max bytes loaded from `MEMORY.md` before truncation.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub memory_entrypoint_max_bytes: Option<usize>,
-        /// Max lines loaded from `MEMORY.md` before truncation.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub memory_entrypoint_max_lines: Option<usize>,
-        /// Inline-vs-disk threshold (bytes) for pasted content in prompt history.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub pasted_content_inline_threshold: Option<usize>,
-        /// Max prompt-history entries returned by up-arrow recall.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub prompt_history_max_items: Option<usize>,
 
         // --- Batch 9 configurable parameters (sorted alphabetically) ---
         /// Max overload-retry backoff (seconds) in query loop.
@@ -859,14 +837,6 @@ pub mod config {
         /// falls back to `DEFAULT_ANTHROPIC_REQUEST_TIMEOUT_SECS` (600).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub anthropic_request_timeout_secs: Option<u64>,
-        /// Throttle (seconds) for the auto-dream session-scan pipeline.
-        /// `None` falls back to `DEFAULT_AUTO_DREAM_SCAN_INTERVAL_SECS` (600).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub auto_dream_scan_interval_secs: Option<u64>,
-        /// Number of trailing messages the away-summary recap considers.
-        /// `None` falls back to `DEFAULT_AWAY_SUMMARY_RECENT_MESSAGES` (30).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub away_summary_recent_messages: Option<usize>,
         /// Maximum HTTP retries the provider layer attempts before bubbling
         /// up. `None` falls back to `DEFAULT_PROVIDER_MAX_RETRIES` (5).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -940,12 +910,6 @@ pub mod config {
         pub powershell_timeout_max_ms: Option<u64>,
 
         // --- Batch 14 configurable parameters (sorted alphabetically) ---
-        /// Max retries the bridge poll loop tolerates on HTTP 429 rate-limits
-        /// before bubbling up an error. `None` falls back to
-        /// `DEFAULT_BRIDGE_POLL_MAX_RETRIES` (3). Higher values give slow
-        /// remote sessions more headroom before disconnecting.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub bridge_poll_max_retries: Option<u32>,
         /// Wall-clock budget (seconds) for the LSP client to wait for a
         /// graceful `exit` after `shutdown` before SIGKILL-ing the server.
         /// `None` falls back to `DEFAULT_LSP_SHUTDOWN_TIMEOUT_SECS` (5).
@@ -970,12 +934,6 @@ pub mod config {
         /// proxies need a longer ceiling.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub oauth_refresh_timeout_secs: Option<u64>,
-        /// Interval (seconds) between background pushes of the local
-        /// transcript to the remote-session cloud API. `None` falls back to
-        /// `DEFAULT_REMOTE_TRANSCRIPT_SYNC_INTERVAL_SECS` (30). Smaller
-        /// values reduce data loss on crash but cost more API calls.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub remote_transcript_sync_interval_secs: Option<u64>,
 
         // --- Batch 15 configurable parameters (bridge runtime tunables, sorted alphabetically) ---
         /// HTTP request timeout (seconds) shared by every bridge HTTP client
@@ -1046,11 +1004,6 @@ pub mod config {
         /// (200).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub file_edit_retry_sleep_ms: Option<u64>,
-        /// Retry sleep (ms) used by session-storage write paths between
-        /// successive append attempts on slow disks. `None` falls back
-        /// to `DEFAULT_SESSION_WRITE_RETRY_SLEEP_MS` (5).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub session_write_retry_sleep_ms: Option<u64>,
         /// Poll interval (ms) for the optional `CLAUDE_STATUS_COMMAND`
         /// external status program. `None` falls back to
         /// `DEFAULT_STATUS_POLL_INTERVAL_MS` (500).
@@ -1350,12 +1303,6 @@ pub mod config {
                 .unwrap_or(crate::constants::DEFAULT_MIN_MESSAGES_TO_EXTRACT)
         }
 
-        /// Resolve the minimum tool-call cadence for session memory extraction.
-        pub fn effective_session_memory_min_tool_calls(&self) -> usize {
-            self.session_memory_min_tool_calls
-                .unwrap_or(crate::constants::DEFAULT_MIN_TOOL_CALLS_BETWEEN_EXTRACTIONS)
-        }
-
         // --- Batch 5 effective_* helpers (sorted alphabetically) ---
 
         /// Resolve the effective auto-compact trigger fraction (0.0 - 1.0).
@@ -1370,43 +1317,7 @@ pub mod config {
                 .unwrap_or(crate::constants::DEFAULT_COMPACT_WARNING_BUFFER_TOKENS)
         }
 
-        /// Resolve the effective `MEMORY.md` byte cap.
-        pub fn effective_memory_entrypoint_max_bytes(&self) -> usize {
-            self.memory_entrypoint_max_bytes
-                .unwrap_or(crate::constants::DEFAULT_MEMORY_ENTRYPOINT_MAX_BYTES)
-        }
-
-        /// Resolve the effective `MEMORY.md` line cap.
-        pub fn effective_memory_entrypoint_max_lines(&self) -> usize {
-            self.memory_entrypoint_max_lines
-                .unwrap_or(crate::constants::DEFAULT_MEMORY_ENTRYPOINT_MAX_LINES)
-        }
-
-        /// Resolve the effective inline-vs-disk threshold for pasted content.
-        pub fn effective_pasted_content_inline_threshold(&self) -> usize {
-            self.pasted_content_inline_threshold
-                .unwrap_or(crate::constants::DEFAULT_PASTED_CONTENT_INLINE_THRESHOLD)
-        }
-
-        /// Resolve the effective cap on prompt-history entries returned.
-        pub fn effective_prompt_history_max_items(&self) -> usize {
-            self.prompt_history_max_items
-                .unwrap_or(crate::constants::DEFAULT_PROMPT_HISTORY_MAX_ITEMS)
-        }
-
         // --- Batch 10 effective_* helpers (sorted alphabetically) ---
-
-        /// Resolve the fingerprint length used by collapse_read dedup.
-        pub fn effective_collapse_read_fingerprint_chars(&self) -> usize {
-            self.collapse_read_fingerprint_chars
-                .unwrap_or(crate::constants::DEFAULT_COLLAPSE_READ_FINGERPRINT_CHARS)
-        }
-
-        /// Resolve the fingerprint length used by collapse_search dedup.
-        pub fn effective_collapse_search_fingerprint_chars(&self) -> usize {
-            self.collapse_search_fingerprint_chars
-                .unwrap_or(crate::constants::DEFAULT_COLLAPSE_SEARCH_FINGERPRINT_CHARS)
-        }
 
         /// Resolve the max output tokens used when summarising for compaction.
         pub fn effective_compact_summary_max_tokens(&self) -> u32 {
@@ -1647,18 +1558,6 @@ pub mod config {
                 .unwrap_or(crate::constants::DEFAULT_ANTHROPIC_REQUEST_TIMEOUT_SECS)
         }
 
-        /// Resolve the auto-dream session-scan throttle (seconds).
-        pub fn effective_auto_dream_scan_interval_secs(&self) -> u64 {
-            self.auto_dream_scan_interval_secs
-                .unwrap_or(crate::constants::DEFAULT_AUTO_DREAM_SCAN_INTERVAL_SECS)
-        }
-
-        /// Resolve the number of trailing messages the away-summary considers.
-        pub fn effective_away_summary_recent_messages(&self) -> usize {
-            self.away_summary_recent_messages
-                .unwrap_or(crate::constants::DEFAULT_AWAY_SUMMARY_RECENT_MESSAGES)
-        }
-
         /// Resolve the provider-layer HTTP retry count.
         pub fn effective_provider_max_retries(&self) -> u32 {
             self.provider_max_retries
@@ -1752,12 +1651,6 @@ pub mod config {
         // --- Batch 14 effective_* helpers (sorted alphabetically) ---
 
         /// Resolve the max retries the bridge poll loop will tolerate on
-        /// HTTP 429 rate-limits before bubbling up.
-        pub fn effective_bridge_poll_max_retries(&self) -> u32 {
-            self.bridge_poll_max_retries
-                .unwrap_or(crate::constants::DEFAULT_BRIDGE_POLL_MAX_RETRIES)
-        }
-
         /// Resolve the LSP shutdown grace period (seconds) before SIGKILL.
         pub fn effective_lsp_shutdown_timeout_secs(&self) -> u64 {
             self.lsp_shutdown_timeout_secs
@@ -1780,12 +1673,6 @@ pub mod config {
         pub fn effective_oauth_refresh_timeout_secs(&self) -> u64 {
             self.oauth_refresh_timeout_secs
                 .unwrap_or(crate::constants::DEFAULT_OAUTH_REFRESH_TIMEOUT_SECS)
-        }
-
-        /// Resolve the remote-session transcript-sync interval (seconds).
-        pub fn effective_remote_transcript_sync_interval_secs(&self) -> u64 {
-            self.remote_transcript_sync_interval_secs
-                .unwrap_or(crate::constants::DEFAULT_REMOTE_TRANSCRIPT_SYNC_INTERVAL_SECS)
         }
 
         // --- Batch 15 effective_* helpers (bridge runtime tunables, sorted alphabetically) ---
@@ -1878,12 +1765,6 @@ pub mod config {
         pub fn effective_file_edit_retry_sleep_ms(&self) -> u64 {
             self.file_edit_retry_sleep_ms
                 .unwrap_or(crate::constants::DEFAULT_FILE_EDIT_RETRY_SLEEP_MS)
-        }
-
-        /// Resolve the session-storage write retry sleep (ms).
-        pub fn effective_session_write_retry_sleep_ms(&self) -> u64 {
-            self.session_write_retry_sleep_ms
-                .unwrap_or(crate::constants::DEFAULT_SESSION_WRITE_RETRY_SLEEP_MS)
         }
 
         /// Resolve the poll interval (ms) for the optional
@@ -2297,10 +2178,6 @@ pub mod constants {
     // --- Batch 10 configurable defaults ---
     /// Maximum tokens used for the compact-conversation summary call.
     pub const DEFAULT_COMPACT_SUMMARY_MAX_TOKENS: u32 = 20_000;
-    /// Number of leading chars used as fingerprint for collapse_read dedup.
-    pub const DEFAULT_COLLAPSE_READ_FINGERPRINT_CHARS: usize = 120;
-    /// Number of leading chars used as fingerprint for collapse_search dedup.
-    pub const DEFAULT_COLLAPSE_SEARCH_FINGERPRINT_CHARS: usize = 200;
     /// Context window assumed by the /cost / /ctx-viz commands.
     pub const DEFAULT_COST_COMMAND_CONTEXT_WINDOW: u64 = 200_000;
     /// System prompt token estimate fallback used by /cost / /ctx-viz.
@@ -2366,16 +2243,6 @@ pub mod constants {
     /// "about to compact" warning state. Mirrors
     /// `WARNING_THRESHOLD_BUFFER_TOKENS` in query::compact.
     pub const DEFAULT_COMPACT_WARNING_BUFFER_TOKENS: u64 = 20_000;
-    /// Default `MEMORY.md` byte cap. Mirrors `MAX_ENTRYPOINT_BYTES` in memdir.
-    pub const DEFAULT_MEMORY_ENTRYPOINT_MAX_BYTES: usize = 25_000;
-    /// Default `MEMORY.md` line cap. Mirrors `MAX_ENTRYPOINT_LINES` in memdir.
-    pub const DEFAULT_MEMORY_ENTRYPOINT_MAX_LINES: usize = 200;
-    /// Default inline-vs-disk threshold (bytes) for pasted content in prompt
-    /// history. Mirrors `MAX_PASTED_CONTENT_LENGTH` in prompt_history.
-    pub const DEFAULT_PASTED_CONTENT_INLINE_THRESHOLD: usize = 1024;
-    /// Default cap on prompt-history entries returned by up-arrow recall.
-    /// Mirrors `MAX_HISTORY_ITEMS` in prompt_history.
-    pub const DEFAULT_PROMPT_HISTORY_MAX_ITEMS: usize = 100;
 
     // --- Batch 9 configurable defaults ---
     /// Max overload-retry backoff ceiling (seconds) in the query loop.
@@ -2503,13 +2370,6 @@ pub mod constants {
     /// hardcoded `30s` reqwest timeout. Configurable via
     /// `Config.oauth_refresh_timeout_secs` / `--oauth-refresh-timeout-secs`.
     pub const DEFAULT_OAUTH_REFRESH_TIMEOUT_SECS: u64 = 30;
-    /// Interval (seconds) between background pushes of the local transcript
-    /// to the remote-session cloud API. Mirrors the historical hardcoded
-    /// `30s` `tokio::time::interval` in
-    /// `cc_core::remote_session::RemoteSessionManager::start_background_sync`.
-    /// Configurable via `Config.remote_transcript_sync_interval_secs` /
-    /// `--remote-transcript-sync-interval-secs`.
-    pub const DEFAULT_REMOTE_TRANSCRIPT_SYNC_INTERVAL_SECS: u64 = 30;
 
     // --- Batch 15 configurable defaults (bridge runtime tunables, sorted alphabetically) ---
     /// HTTP request timeout (seconds) shared by every bridge HTTP client
